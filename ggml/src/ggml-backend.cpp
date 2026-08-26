@@ -1780,6 +1780,28 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
             }
         }
 
+        // double-buffered prefetching: initiate async copy of the next split's static weight inputs
+        if (split_id + 1 < sched->n_splits) {
+            struct ggml_backend_sched_split * next_split = &splits[split_id + 1];
+            int next_split_backend_id = next_split->backend_id;
+            ggml_backend_t next_split_backend = sched->backends[next_split_backend_id];
+
+            for (int input_id = 0; input_id < next_split->n_inputs; input_id++) {
+                struct ggml_tensor * next_input = next_split->inputs[input_id];
+                if (next_input && next_input->buffer &&
+                    ggml_backend_buffer_get_usage(next_input->buffer) == GGML_BACKEND_BUFFER_USAGE_WEIGHTS &&
+                    ggml_backend_buffer_is_host(next_input->buffer) &&
+                    !(next_input->flags & GGML_TENSOR_FLAG_INPUT)) {
+
+                    struct ggml_tensor * next_input_cpy = tensor_copy(next_input, next_split_backend_id, sched->cur_copy);
+                    if (next_input_cpy && next_split_backend->iface.cpy_tensor_async) {
+                        ggml_backend_t next_input_backend = ggml_backend_sched_get_tensor_backend(sched, next_input);
+                        next_split_backend->iface.cpy_tensor_async(next_input_backend, next_split_backend, next_input, next_input_cpy);
+                    }
+                }
+            }
+        }
+
         // record the event of this split
         if (sched->events[split_backend_id][sched->cur_copy] != NULL) {
             ggml_backend_event_record(sched->events[split_backend_id][sched->cur_copy], split_backend);

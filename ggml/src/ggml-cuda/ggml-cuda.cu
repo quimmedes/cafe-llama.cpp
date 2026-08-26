@@ -1875,6 +1875,10 @@ static bool ggml_cuda_mul_mat_id_needs_sync(const ggml_tensor * dst, const int c
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
 
+    if (src0->buffer && ggml_backend_buffer_is_host(src0->buffer)) {
+        return true;
+    }
+
     if (src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
         return true;
     }
@@ -1912,8 +1916,10 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
 
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
 
+    const bool src0_is_host = src0->buffer && ggml_backend_buffer_is_host(src0->buffer);
+
     // [TAG_MUL_MAT_ID_CUDA_GRAPHS]
-    if (src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
+    if (!src0_is_host && src1->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32) {
         static_assert(MMVQ_MAX_BATCH_SIZE == MMVF_MAX_BATCH_SIZE);
         if (ne2 <= MMVQ_MAX_BATCH_SIZE) {
             if (ggml_is_quantized(src0->type)) {
@@ -2016,6 +2022,19 @@ static void ggml_cuda_mul_mat_id(ggml_backend_cuda_context & ctx, ggml_tensor * 
         src0_slice.view_src = dst->src[0]; // non-const pointer to src0
         src0_slice.data     = (char *) src0->data + i02*nb02;
 
+        ggml_cuda_pool_alloc<char> src0_dev_buf(ctx.pool());
+        if (src0_is_host) {
+            const size_t src0_slice_bytes = ggml_nbytes(&src0_slice);
+            bool allocated = false;
+            void * cached_ptr = ctx.expert_cache.get_or_alloc(src0_slice.data, src0_slice_bytes, stream, allocated);
+            if (cached_ptr) {
+                src0_slice.data = cached_ptr;
+            } else {
+                src0_dev_buf.alloc(src0_slice_bytes);
+                CUDA_CHECK(cudaMemcpyAsync(src0_dev_buf.ptr, src0_slice.data, src0_slice_bytes, cudaMemcpyHostToDevice, stream));
+                src0_slice.data = src0_dev_buf.ptr;
+            }
+        }
         ggml_tensor src1_slice;
         memset(&src1_slice, 0, sizeof(src1_slice));
         src1_slice.buffer = src1->buffer;
@@ -5512,11 +5531,14 @@ ggml_backend_reg_t ggml_backend_cuda_reg() {
         std::lock_guard<std::mutex> lock(mutex);
         if (!initialized) {
             ggml_backend_cuda_reg_context * ctx = new ggml_backend_cuda_reg_context;
-            const int min_batch_size = getenv("GGML_OP_OFFLOAD_MIN_BATCH") ? atoi(getenv("GGML_OP_OFFLOAD_MIN_BATCH")) : 32;
-
             const ggml_cuda_device_info & info = ggml_cuda_info();
             const bool virtual_devices = info.device_count > info.physical_device_count;
 
+            int min_batch_size = 32;
+            const char * env_min_batch = getenv("GGML_OP_OFFLOAD_MIN_BATCH");
+            if (env_min_batch) {
+                min_batch_size = atoi(env_min_batch);
+            }
             for (int i = 0; i < info.device_count; i++) {
                 const int physical_id = info.devices[i].physical_device;
 

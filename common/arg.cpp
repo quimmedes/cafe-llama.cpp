@@ -259,6 +259,10 @@ static void parse_tensor_buffer_overrides(const std::string & value, std::vector
         if (buft) {
             buft_list[ggml_backend_buft_name(buft)] = buft;
         }
+        auto * host_buft = ggml_backend_dev_host_buffer_type(dev);
+        if (host_buft) {
+            buft_list[ggml_backend_buft_name(host_buft)] = host_buft;
+        }
     }
 
     for (const auto & override : string_split<std::string>(value, ',')) {
@@ -2758,6 +2762,27 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
         }
     ).set_env("LLAMA_ARG_N_CPU_MOE"));
+    add_opt(common_arg(
+        {"-hmoe", "--host-moe"},
+        "keep all Mixture of Experts (MoE) weights in pinned host memory (e.g. CUDA_Host)",
+        [](common_params & params) {
+            params.tensor_buft_overrides.push_back(llm_ffn_exps_host_override());
+        }
+    ).set_env("LLAMA_ARG_HOST_MOE"));
+    add_opt(common_arg(
+        {"-nhmoe", "--n-host-moe"}, "N",
+        "keep the Mixture of Experts (MoE) weights of the first N layers in pinned host memory",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            for (int i = 0; i < value; ++i) {
+                static std::list<std::string> buft_overrides;
+                buft_overrides.push_back(llm_ffn_exps_block_regex(i));
+                params.tensor_buft_overrides.push_back({buft_overrides.back().c_str(), common_host_buffer_type()});
+            }
+        }
+    ).set_env("LLAMA_ARG_N_HOST_MOE"));
     GGML_ASSERT(params.n_gpu_layers < 0); // string_format would need to be extended for a default >= 0
     add_opt(common_arg(
         {"-ngl", "--gpu-layers", "--n-gpu-layers"}, "N",
@@ -4091,6 +4116,27 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             }
         }
     ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE"));
+    add_opt(common_arg(
+        {"--spec-draft-host-moe", "-hmoed", "--host-moe-draft"},
+        "keep all Mixture of Experts (MoE) weights in pinned host memory for the draft model",
+        [](common_params & params) {
+            params.speculative.draft.tensor_buft_overrides.push_back(llm_ffn_exps_host_override());
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_HOST_MOE"));
+    add_opt(common_arg(
+        {"--spec-draft-n-host-moe", "--spec-draft-nhmoe", "-nhmoed", "--n-host-moe-draft"}, "N",
+        "keep the Mixture of Experts (MoE) weights of the first N layers in pinned host memory for the draft model",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            for (int i = 0; i < value; ++i) {
+                static std::list<std::string> buft_overrides_draft;
+                buft_overrides_draft.push_back(llm_ffn_exps_block_regex(i));
+                params.speculative.draft.tensor_buft_overrides.push_back({buft_overrides_draft.back().c_str(), common_host_buffer_type()});
+            }
+        }
+    ).set_spec().set_examples({LLAMA_EXAMPLE_SPECULATIVE, LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}).set_env("LLAMA_ARG_SPEC_DRAFT_N_HOST_MOE"));
 
     add_opt(common_arg(
         {"--spec-draft-n-max"}, "N",

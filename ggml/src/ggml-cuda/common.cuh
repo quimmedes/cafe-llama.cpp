@@ -1411,6 +1411,130 @@ struct ggml_cuda_stream_context {
         concurrent_events.clear();
     }
 };
+struct ggml_cuda_expert_lru_cache {
+    struct entry {
+        void * dev_ptr = nullptr;
+        size_t size = 0;
+        uint64_t last_used = 0;
+    };
+    int device = 0;
+    size_t max_bytes = 0;
+    size_t current_bytes = 0;
+    uint64_t step_counter = 0;
+    bool initialized = false;
+    bool is_elastic = false;
+
+    std::unordered_map<const void *, entry> entries;
+
+    void update_elastic_budget() {
+        if (!is_elastic) {
+            return;
+        }
+        size_t free_mem = 0;
+        size_t total_mem = 0;
+        ggml_cuda_set_device(device);
+        cudaError_t err = cudaMemGetInfo(&free_mem, &total_mem);
+        if (err == cudaSuccess) {
+            const size_t headroom = 512ULL * 1024 * 1024;
+            if (free_mem > headroom) {
+                max_bytes = current_bytes + (size_t)((free_mem - headroom) * 0.75);
+            } else {
+                max_bytes = current_bytes > 256ULL * 1024 * 1024 ? current_bytes - 128ULL * 1024 * 1024 : 0;
+            }
+        }
+    }
+
+    void init(int dev) {
+        if (initialized) {
+            return;
+        }
+        device = dev;
+        initialized = true;
+        const char * env_mb = getenv("GGML_CUDA_MOE_CACHE_MB");
+        if (env_mb) {
+            int mb = std::max(0, atoi(env_mb));
+            max_bytes = (size_t)mb * 1024 * 1024;
+            is_elastic = false;
+        } else {
+            is_elastic = true;
+            max_bytes = 1024ULL * 1024 * 1024;
+        }
+    }
+    void * get_or_alloc(const void * host_ptr, size_t size, cudaStream_t stream, bool & out_allocated) {
+        if (!initialized) {
+            init(device);
+        }
+
+        out_allocated = false;
+        ++step_counter;
+        if (is_elastic && (step_counter % 64 == 0)) {
+            update_elastic_budget();
+        }
+        auto it = entries.find(host_ptr);
+        if (it != entries.end()) {
+            it->second.last_used = step_counter;
+            return it->second.dev_ptr;
+        }
+
+        if (max_bytes == 0 || size > max_bytes) {
+            return nullptr;
+        }
+
+        while (current_bytes + size > max_bytes && !entries.empty()) {
+            auto lru_it = entries.begin();
+            for (auto iter = entries.begin(); iter != entries.end(); ++iter) {
+                if (iter->second.last_used < lru_it->second.last_used) {
+                    lru_it = iter;
+                }
+            }
+            if (lru_it->second.dev_ptr) {
+                ggml_cuda_set_device(device);
+                CUDA_CHECK(cudaFree(lru_it->second.dev_ptr));
+            }
+            current_bytes -= lru_it->second.size;
+            entries.erase(lru_it);
+        }
+
+        ggml_cuda_set_device(device);
+        void * dev_ptr = nullptr;
+        cudaError_t err = cudaMalloc(&dev_ptr, size);
+        if (err != cudaSuccess) {
+            (void)cudaGetLastError();
+            clear();
+            return nullptr;
+        }
+
+        CUDA_CHECK(cudaMemcpyAsync(dev_ptr, host_ptr, size, cudaMemcpyHostToDevice, stream));
+
+        entry new_entry;
+        new_entry.dev_ptr = dev_ptr;
+        new_entry.size = size;
+        new_entry.last_used = step_counter;
+
+        entries[host_ptr] = new_entry;
+        current_bytes += size;
+        out_allocated = true;
+
+        return dev_ptr;
+    }
+
+    void clear() {
+        if (!entries.empty()) {
+            ggml_cuda_set_device(device);
+            for (auto & kv : entries) {
+                if (kv.second.dev_ptr) {
+                    CUDA_CHECK(cudaFree(kv.second.dev_ptr));
+                }
+            }
+            entries.clear();
+            current_bytes = 0;
+        }
+    }
+
+    ~ggml_cuda_expert_lru_cache() {
+        clear();
+    }
+};
 
 struct ggml_backend_cuda_context {
     int device;
@@ -1479,7 +1603,10 @@ struct ggml_backend_cuda_context {
     explicit ggml_backend_cuda_context(int device) :
         device(device),
         name(GGML_CUDA_NAME + std::to_string(device)) {
+        expert_cache.init(device);
     }
+
+    ggml_cuda_expert_lru_cache expert_cache;
 
     ggml_cuda_stream_context concurrent_stream_context;
 
