@@ -106,7 +106,6 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
         per_layer_tok_embd = create_tensor(tn(LLM_TENSOR_PER_LAYER_TOKEN_EMBD, "weight"),
                                            { hparams.ple_head_dim, ple_rows }, 0);
     }
-    const int n_layer_all = hparams.n_layer_all;
     for (int il = 0; il < n_layer_all; ++il) {
         auto & layer = layers[il];
 
@@ -1357,37 +1356,41 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
     cur = build_norm(cur, layer.ffn_norm, nullptr, LLM_NORM_RMS, il);
     cb(cur, "mtp_ffn_norm", il);
 
-    cur = build_moe_ffn(cur,
+    ggml_tensor * moe_out =
+        build_moe_ffn(cur,
             layer.ffn_gate_inp,
             layer.ffn_up_exps,
             layer.ffn_gate_exps,
             layer.ffn_down_exps,
             nullptr,
-            nullptr,
-            hparams.n_expert_used,
+            n_expert, n_expert_used,
+            LLM_FFN_SILU, true,
             hparams.expert_weights_scale,
-            (llama_expert_gating_func_type) hparams.expert_gating_func,
-            (llama_expert_weights_norm_type) hparams.expert_weights_norm,
-            nullptr,
-            il);
-    cb(cur, "mtp_moe_out", il);
+            LLAMA_EXPERT_GATING_FUNC_TYPE_SOFTMAX, il,
+            nullptr, layer.ffn_gate_up_exps,
+            layer.ffn_up_exps_s,
+            layer.ffn_gate_exps_s,
+            layer.ffn_down_exps_s);
+    cb(moe_out, "mtp_moe_out", il);
 
-    if (layer.ffn_gate_shexp) {
-        ggml_tensor * cur_shexp = build_ffn(cur,
-                layer.ffn_up_shexp,   nullptr, nullptr,
-                layer.ffn_gate_shexp, nullptr, nullptr,
-                layer.ffn_down_shexp, nullptr, nullptr,
-                nullptr,
-                LLM_FFN_SWIGLU, LLM_NORM_NONE, il);
-        cb(cur_shexp, "mtp_ffn_shexp", il);
+    if (layer.ffn_up_shexp != nullptr) {
+        ggml_tensor * ffn_shexp =
+            build_ffn(cur,
+                layer.ffn_up_shexp, NULL, layer.ffn_up_shexp_s,
+                layer.ffn_gate_shexp, NULL, layer.ffn_gate_shexp_s,
+                layer.ffn_down_shexp, NULL, layer.ffn_down_shexp_s,
+                NULL,
+                LLM_FFN_SILU, LLM_FFN_PAR, il);
+        cb(ffn_shexp, "mtp_ffn_shexp", il);
 
-        cur = ggml_add(ctx0, cur, cur_shexp);
+        ggml_tensor * shared_gate = build_lora_mm(layer.ffn_gate_inp_shexp, cur);
+        shared_gate = ggml_sigmoid(ctx0, shared_gate);
+        ffn_shexp = ggml_mul(ctx0, ffn_shexp, shared_gate);
+
+        cur = ggml_add(ctx0, moe_out, ffn_shexp);
+    } else {
+        cur = moe_out;
     }
-
-    cur = ggml_add(ctx0, cur, inpFFN);
-    cb(cur, "mtp_ffn_residual", il);
-
-    cb(cur, "h_nextn", -1);
     res->t_h_nextn = cur;
 
     if (inp_out_ids) {

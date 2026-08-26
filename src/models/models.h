@@ -2383,7 +2383,6 @@ struct llama_model_qwen4exp : public llama_model_base {
         const llama_model & model;
     };
 
-    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
 
 struct llama_model_qwen35moe : public llama_model_base {
