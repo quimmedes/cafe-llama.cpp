@@ -3,6 +3,7 @@
 #include "llama.h"
 
 #include <array>
+#include <bitset>
 #include <cassert>
 #include <cmath>
 
@@ -225,6 +226,12 @@ struct llama_hparams {
     // output embedding dimension (0 = use n_embd)
     uint32_t n_embd_out_impl = 0;
 
+    uint32_t dflash_block_size       = 0;
+    uint32_t dflash_conv_kernel_size = 0;
+    uint32_t dflash_conv_group_size  = 0;
+    uint32_t dflash_selector_rank    = 0;
+    uint32_t dflash_selector_top_k   = 0;
+
     // llama4 smallthinker
     uint32_t n_moe_layer_step        = 0;
     uint32_t n_no_rope_layer_step    = 4;
@@ -281,13 +288,15 @@ struct llama_hparams {
     uint32_t ple_n_heads         = 0;   // (ngram_size - 1) * heads_per_ngram
     uint32_t ple_head_dim        = 0;
     uint32_t ple_eos_token_id    = 0;
-    // placeholder the PLE hash sees where an image chunk is spliced in; 0 means the
-    // file predates this key and the loader falls back to EOS
+    // the id the PLE hash stands in at image positions; 0 makes the loader fall back to EOS
     uint32_t ple_image_token_id  = 0;
-    std::array<uint32_t, LLAMA_MAX_LAYERS> is_ple_impl;
+    // the file lists PLE layer indices, so this is never a per-layer gguf array and can hold one bit per layer
+    std::bitset<LLAMA_MAX_LAYERS> is_ple_impl;
+    // the hash multipliers reach ~2e13 and have to stay 64-bit
     std::array<uint64_t, LLAMA_MAX_PLE_NGRAM>  ple_layer_multipliers;
-    std::array<uint64_t, LLAMA_MAX_PLE_HEADS>  ple_head_offsets;
-    std::array<uint64_t, LLAMA_MAX_PLE_HEADS>  ple_head_vocab_sizes;
+    // head offsets and vocab sizes are token-space indices; the gather truncates them to int32 anyway
+    std::array<uint32_t, LLAMA_MAX_PLE_HEADS>  ple_head_offsets;
+    std::array<uint32_t, LLAMA_MAX_PLE_HEADS>  ple_head_vocab_sizes;
 
     bool is_ple(uint32_t il) const;
 
