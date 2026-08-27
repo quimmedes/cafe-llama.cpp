@@ -76,14 +76,24 @@ In Mixture of Experts (MoE) models (such as **Qwen 3.8 Flash Next**, **DeepSeek-
 | `-hmoed` | `--host-moe-draft` | Keep draft model MoE weights in pinned host memory (for speculative decoding). |
 | `-cmoed` | `--cpu-moe-draft` | Keep draft model MoE weights in CPU system RAM (for speculative decoding). |
 
-### Qwen 3.8 Flash Next & MTP Speculative Decoding Example
+### Qwen 3.8 Flash Next & MTP Speculative Decoding
 
+MTP (Multi-Token Prediction) draft models in GGUF format are available at:
+👉 **[Hugging Face: quimmedes/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/quimmedes/Qwen3.8-Flash-Next-MTP-GGUF)**
+
+Available quantizations:
+- `mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf` (~2.65 GB) - Recommended for balanced memory and speed
+- `mtp-Qwen3.8-Flash-Next-Q6_K.gguf` (~3.24 GB)
+- `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` (~3.94 GB)
+- `mtp-Qwen3.8-Flash-Next-BF16.gguf` (~7.40 GB) - Full precision
+
+**Recommended Server Command:**
 ```sh
 llama-server \
   -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
   -md mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf \
   --spec-type draft-mtp \
-  --spec-draft-n-max 4 \
+  --spec-draft-n-max 2 \
   -ngl 999 \
   -hmoe \
   -fa on \
