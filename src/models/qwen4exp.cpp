@@ -86,8 +86,7 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
     const int64_t hc_lr  = hparams.hc_low_rank;
 
     const bool mtp_only = (hparams.n_layer_nextn > 0) &&
-                          (ml.get_weight(tn(LLM_TENSOR_HC_ATTN_NORM, "weight", 0).str().c_str()) == nullptr) &&
-                          (ml.get_weight(tn(LLM_TENSOR_HC_HEAD_NORM, "weight").str().c_str()) == nullptr);
+                          (ml.get_weight(tn(LLM_TENSOR_HC_ATTN_NORM, "weight", 0).str().c_str()) == nullptr);
     const int trunk_flags = mtp_only ? TENSOR_NOT_REQUIRED : 0;
 
     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, 0);
@@ -1368,9 +1367,12 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
 
     auto * inp_attn = build_attn_inp_kv();
 
-    ggml_tensor * h_norm = build_norm(h_embd, layer.nextn.hnorm, nullptr, LLM_NORM_RMS, il);
+    // grouped RMSNorm across the hc streams: RMS is computed across each n_embd stream separately
+    ggml_tensor * h_embd_3d = ggml_reshape_3d(ctx0, h_embd, n_embd, hc, n_tokens);
+    ggml_tensor * h_norm = ggml_rms_norm(ctx0, h_embd_3d, hparams.f_norm_rms_eps);
+    h_norm = ggml_reshape_2d(ctx0, h_norm, hc_dim, n_tokens);
+    h_norm = ggml_mul(ctx0, h_norm, layer.nextn.hnorm);
     cb(h_norm, "mtp_hnorm", il);
-
     // collapse the hc streams by their mean
     ggml_tensor * h_norm_2d = ggml_view_2d(ctx0, h_norm, n_embd, n_tokens,
             ggml_row_size(h_norm->type, n_embd) * hc, 0);
@@ -1502,10 +1504,14 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
     cb(res_hc, "h_nextn", -1);
     res->t_h_nextn = res_hc;
 
+    ggml_tensor * head_norm = model.hc_head_norm ? model.hc_head_norm : layer.nextn.shared_head_norm;
+    ggml_tensor * head_down = model.hc_head_down ? model.hc_head_down : layer.hc_ffn_down;
+    ggml_tensor * head_up   = model.hc_head_up   ? model.hc_head_up   : layer.hc_ffn_up;
+
     cur = build_hc_mix(res_hc,
-            layer.nextn.shared_head_norm,
-            layer.hc_ffn_down,
-            layer.hc_ffn_up,
+            head_norm,
+            head_down,
+            head_up,
             nullptr, nullptr, -1);
 
     if (inp_out_ids) {

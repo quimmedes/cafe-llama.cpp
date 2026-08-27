@@ -341,6 +341,10 @@ class _QwenMtpMixin:
                 pass
             elif name == "mtp.hyper_connection_mixer.hc_norm.weight":
                 name = f"model.layers.{cls._original_block_count}.shared_head.norm.weight"
+            elif name == "mtp.hyper_connection_mixer.input_mix_weight_down.weight":
+                name = "output_hc_down.weight"
+            elif name == "mtp.hyper_connection_mixer.input_mix_weight_up.weight":
+                name = "output_hc_up.weight"
             elif name.startswith("mtp.hyper_connection_mixer."):
                 return None
         elif cls.mtp_only:

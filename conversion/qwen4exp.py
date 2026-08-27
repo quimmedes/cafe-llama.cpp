@@ -127,6 +127,11 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
                 del self._mtp_fc
                 return [(f"blk.{self.hparams['num_hidden_layers']}.nextn.eh_proj.weight", eh_proj)]
             return []
+        if name == "mtp.hyper_connection_mixer.hc_norm.weight":
+            return [
+                ("output_hc_norm.weight", data_torch),
+                (f"blk.{self.hparams['num_hidden_layers']}.nextn.shared_head_norm.weight", data_torch),
+            ]
         if name.endswith("ple_embedding.layer_multipliers"):
             self._ple_multipliers = [int(x) for x in data_torch.tolist()]
             return []
