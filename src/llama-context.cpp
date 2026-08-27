@@ -425,13 +425,18 @@ llama_context::llama_context(
 
         // TODO: move these checks to ggml_backend_sched
         // enabling pipeline parallelism in the scheduler increases memory usage, so it is only done when necessary
+        // Enable pipeline parallelism for multi-device layer split OR single-device with host-pinned/CPU offload
+        // to overlap host-to-device weight/activation DMA streaming with GPU kernel execution (FreeToken double buffering)
+        const char * LLAMA_PIPELINE_PARALLEL = getenv("LLAMA_PIPELINE_PARALLEL");
+        bool force_pp = LLAMA_PIPELINE_PARALLEL ? atoi(LLAMA_PIPELINE_PARALLEL) != 0 : false;
         bool pipeline_parallel =
-            model.n_devices() > 1 &&
-            model.n_gpu_layers() > model.hparams.n_layer_all &&
-            model.split_mode() == LLAMA_SPLIT_MODE_LAYER &&
-            cparams.offload_kqv &&
-            !model.has_tensor_overrides();
-
+            force_pp ||
+            (model.n_devices() > 1 &&
+             model.n_gpu_layers() > model.hparams.n_layer_all &&
+             model.split_mode() == LLAMA_SPLIT_MODE_LAYER &&
+             cparams.offload_kqv &&
+             !model.has_tensor_overrides()) ||
+            (model.has_tensor_overrides() && cparams.offload_kqv);
         // pipeline parallelism requires support for async compute and events in all devices
         if (pipeline_parallel) {
             for (auto & backend : backends) {

@@ -3727,9 +3727,21 @@ static common_chat_params common_chat_templates_apply_jinja(const struct common_
         if (!autoparser.user_start.empty()) {
             delimiters.add(COMMON_CHAT_ROLE_USER, autoparser.user_start);
         }
+        // Semantic anchors for tool-calling and reasoning boundaries (FreeToken edge serving)
+        if (!autoparser.tools.format.section_start.empty()) {
+            delimiters.add(COMMON_CHAT_ROLE_SYSTEM, autoparser.tools.format.section_start);
+        }
+        if (!autoparser.tools.format.section_end.empty()) {
+            delimiters.add(COMMON_CHAT_ROLE_USER, autoparser.tools.format.section_end);
+        }
+        if (!autoparser.reasoning.start.empty()) {
+            delimiters.add(COMMON_CHAT_ROLE_ASSISTANT, autoparser.reasoning.start);
+        }
+        if (!autoparser.reasoning.end.empty()) {
+            delimiters.add(COMMON_CHAT_ROLE_ASSISTANT, autoparser.reasoning.end);
+        }
 
         auto_params.message_delimiters = std::move(delimiters);
-
         auto_params.supports_thinking = autoparser.reasoning.mode != autoparser::reasoning_mode::NONE;
         if (auto_params.supports_thinking) {
             auto_params.thinking_start_tag = trim_whitespace(autoparser.reasoning.start);
