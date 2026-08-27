@@ -2292,6 +2292,21 @@ struct llama_model_qwen4exp : public llama_model_base {
 
     struct graph_mtp : public llm_graph_context {
         graph_mtp(const llama_model & model, const llm_graph_params & params);
+
+        ggml_tensor * build_hc_mix(
+                    ggml_tensor * x,
+                    ggml_tensor * w_norm,
+                    ggml_tensor * w_down,
+                    ggml_tensor * w_up,
+                    ggml_tensor * w_inject,
+                    ggml_tensor ** inject,
+                            int   il);
+
+        ggml_tensor * build_hc_combine(
+                    ggml_tensor * residual,
+                    ggml_tensor * block_out,
+                    ggml_tensor * inject,
+                            int   il);
     };
 
     struct graph : public llm_build_delta_net_base {

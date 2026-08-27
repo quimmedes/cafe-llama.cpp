@@ -223,6 +223,13 @@ class LazyNumpyTensor(LazyBase):
 
     def tofile(self, *args, **kwargs):
         eager = LazyNumpyTensor.to_eager(self)
-        return eager.tofile(*args, **kwargs)
+        try:
+            return eager.tofile(*args, **kwargs)
+        except OSError:
+            fout = args[0]
+            mv = memoryview(eager.ravel().view(np.uint8))
+            chunk_size = 64 * 1024 * 1024
+            for offset in range(0, len(mv), chunk_size):
+                fout.write(mv[offset:offset+chunk_size])
 
     # TODO: __array_function__

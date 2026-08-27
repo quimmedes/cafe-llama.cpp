@@ -242,7 +242,7 @@ class ModelBase:
                         raise ValueError(f"Can't load 'weight_map' from {index_name!r}")
                     tensor_names_from_index.update(weight_map.keys())
                     part_dict: dict[str, None] = dict.fromkeys(weight_map.values(), None) # ty: ignore[invalid-assignment]
-                    part_names = sorted(part_dict.keys())
+                    part_names = [p for p in sorted(part_dict.keys()) if (self.dir_model / p).is_file()]
             else:
                 weight_map = {}
         else:
@@ -279,7 +279,7 @@ class ModelBase:
                         tensors[tname] = tgen
 
         # verify tensor name presence and identify potentially missing files
-        if len(tensor_names_from_index) > 0:
+        if not self.mtp_only and len(tensor_names_from_index) > 0:
             if len(tensor_names_from_parts.symmetric_difference(tensor_names_from_index)) > 0:
                 missing = sorted(tensor_names_from_index.difference(tensor_names_from_parts))
                 extra = sorted(tensor_names_from_parts.difference(tensor_names_from_index))

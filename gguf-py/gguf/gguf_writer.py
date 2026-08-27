@@ -470,7 +470,14 @@ class GGUFWriter:
                 for ti in tensors.values():
                     assert ti.tensor is not None  # can only iterate once over the tensors
                     assert ti.tensor.nbytes == ti.nbytes
-                    ti.tensor.tofile(fout)
+                    try:
+                        ti.tensor.tofile(fout)
+                    except OSError:
+                        eager = np.asarray(ti.tensor)
+                        mv = memoryview(eager.ravel().view(np.uint8))
+                        chunk_size = 64 * 1024 * 1024
+                        for offset in range(0, len(mv), chunk_size):
+                            fout.write(mv[offset:offset+chunk_size])
                     if shard_bar is not None:
                         shard_bar.update(ti.nbytes)
                     if bar is not None:

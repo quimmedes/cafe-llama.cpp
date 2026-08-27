@@ -26,10 +26,7 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
 
     model_arch = gguf.MODEL_ARCH.QWEN4EXP
 
-    # the MTP block is a separate draft head; vLLM drops it too
-    supports_mtp_export = False
-    no_mtp = True
-
+    supports_mtp_export = True
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         # shards held only until the row stride is known, normally none
@@ -69,11 +66,13 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
         ratio = hp["indexer_compress_ratio"]
         layer_types = hp["layer_types"]
         self.gguf_writer.add_attention_compress_ratios(
-            [ratio if layer_types[i] == "full_attention" else 0 for i in range(n_layer)]
+            [ratio if i < len(layer_types) and layer_types[i] == "full_attention" else 0 for i in range(self.block_count)]
         )
 
+        if self.mtp_only:
+            return
+
         # ple_layer_ids is 1-based in the HF config; empty means no n-gram table,
-        # so emit no PLE keys rather than optional ones
         ple_layers = [i - 1 for i in hp["ple_layer_ids"]]
         if not ple_layers:
             return
@@ -119,7 +118,15 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
         return int(eos)
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
-        # int64 hash constants must stay exact; 1-D tensors force F32, so use KV
+        if name in ("mtp.fc_embedding.weight", "mtp.fc_hidden.weight"):
+            if not hasattr(self, "_mtp_fc"):
+                self._mtp_fc = {}
+            self._mtp_fc[name] = data_torch
+            if len(self._mtp_fc) == 2:
+                eh_proj = torch.cat([self._mtp_fc["mtp.fc_embedding.weight"], self._mtp_fc["mtp.fc_hidden.weight"]], dim=1)
+                del self._mtp_fc
+                return [(f"blk.{self.hparams['num_hidden_layers']}.nextn.eh_proj.weight", eh_proj)]
+            return []
         if name.endswith("ple_embedding.layer_multipliers"):
             self._ple_multipliers = [int(x) for x in data_torch.tolist()]
             return []

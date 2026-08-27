@@ -335,8 +335,14 @@ class _QwenMtpMixin:
                 mtp_idx = int(parts[2])
                 name = f"model.layers.{cls._original_block_count + mtp_idx}.{parts[3]}"
                 cls.opt_num_mtp_layers = max(cls.opt_num_mtp_layers, mtp_idx + 1)
-            elif len(parts) == 3 and parts[1] in remapper:
-                name = f"model.layers.{cls._original_block_count}.{remapper[parts[1]]}.{parts[2]}"
+            elif len(parts) >= 3 and parts[1] in remapper:
+                name = f"model.layers.{cls._original_block_count}.{remapper[parts[1]]}.{'.'.join(parts[2:])}"
+            elif name in ("mtp.fc_embedding.weight", "mtp.fc_hidden.weight"):
+                pass
+            elif name == "mtp.hyper_connection_mixer.hc_norm.weight":
+                name = f"model.layers.{cls._original_block_count}.shared_head.norm.weight"
+            elif name.startswith("mtp.hyper_connection_mixer."):
+                return None
         elif cls.mtp_only:
             keep = name in (
                 "model.embed_tokens.weight", "model.norm.weight", "lm_head.weight",
