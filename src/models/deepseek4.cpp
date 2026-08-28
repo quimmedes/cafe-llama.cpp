@@ -94,7 +94,7 @@ void llama_model_deepseek4::load_arch_tensors(llama_model_loader & ml) {
 
     const bool mtp_only = (n_layer_nextn > 0) && (ml.get_weight("blk.0.attn_norm.weight") == nullptr);
     const int trunk_flags = mtp_only    ? TENSOR_NOT_REQUIRED : 0;
-    const int mtp_flags   = ml.load_mtp ? 0 : TENSOR_SKIP;
+    const int mtp_flags   = (ml.load_mtp || mtp_only) ? 0 : TENSOR_SKIP;
 
     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_vocab}, 0);
 

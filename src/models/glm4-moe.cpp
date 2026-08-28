@@ -39,7 +39,7 @@ void llama_model_glm4_moe::load_arch_tensors(llama_model_loader & ml) {
     const int trunk_flags = mtp_only  ? TENSOR_NOT_REQUIRED : 0;
     int       mtp_flags   = trunk_only ? TENSOR_NOT_REQUIRED : 0;
 
-    if (!ml.load_mtp) {
+    if (!ml.load_mtp && !mtp_only) {
         mtp_flags |= TENSOR_SKIP;
     }
 
