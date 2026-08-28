@@ -8,6 +8,7 @@
 
 void llama_model_qwen4exp::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_EXPERT_FEED_FORWARD_LENGTH,        hparams.n_ff_exp, false);
+    ml.get_key(LLM_KV_NEXTN_PREDICT_LAYERS,              hparams.n_layer_nextn, false);
     ml.get_key(LLM_KV_EXPERT_SHARED_FEED_FORWARD_LENGTH, hparams.n_ff_shexp, false);
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS,       hparams.f_norm_rms_eps);
 
@@ -112,12 +113,15 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
     const int64_t hc_dim = hc * n_embd;
     const int64_t hc_lr  = hparams.hc_low_rank;
 
-    // Check if this model only contains MTP layers
-    const bool mtp_only = (ml.get_weight(tn(LLM_TENSOR_TOKEN_EMBD, "weight").str().c_str()) == nullptr) &&
-                          (ml.get_weight(tn(LLM_TENSOR_OUTPUT, "weight").str().c_str()) == nullptr) &&
-                          (ml.get_weight(tn(LLM_TENSOR_HC_ATTN_NORM, "weight", 0).str().c_str()) == nullptr);
+    const bool mtp_only = (hparams.n_layer_nextn > 0) && (ml.get_weight(tn(LLM_TENSOR_HC_ATTN_NORM, "weight", 0).str().c_str()) == nullptr);
+    const std::string mtp_probe = tn(LLM_TENSOR_NEXTN_EH_PROJ, "weight", n_layer).str();
+    const bool trunk_only = (hparams.n_layer_nextn > 0) && (ml.get_weight(mtp_probe.c_str()) == nullptr);
+    const int trunk_flags = mtp_only   ? TENSOR_NOT_REQUIRED : 0;
+    int       mtp_flags   = trunk_only ? TENSOR_NOT_REQUIRED : 0;
 
-    const int trunk_flags = mtp_only ? TENSOR_NOT_REQUIRED : 0;
+    if (!ml.load_mtp) {
+        mtp_flags |= TENSOR_SKIP;
+    }
 
     tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), { n_embd, n_vocab }, trunk_flags);
 
@@ -151,7 +155,7 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
         auto & layer = layers[il];
 
         if (il >= n_layer) {
-            const int flags = 0;
+            const int flags = mtp_flags;
             layer.nextn.eh_proj          = create_tensor(tn(LLM_TENSOR_NEXTN_EH_PROJ,          "weight", il), { 2 * n_embd, n_embd }, flags);
             layer.nextn.embed_tokens     = create_tensor(tn(LLM_TENSOR_NEXTN_EMBED_TOKENS,     "weight", il), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED | flags);
             layer.nextn.enorm            = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM,            "weight", il), { n_embd }, flags);
