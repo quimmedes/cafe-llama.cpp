@@ -99,13 +99,22 @@ Available quantizations:
 
 **Recommended Server Command:**
 ```sh
+
+llama-server -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
+-ctk q8_0 -ctv q8_0 -kvu \
+-ngl 99 -nhmoe 36 -c 64000 \
+--no-ngram -np 1 
+
+
+
+MTP with offload
 llama-server \
   -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
   -md mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf \
   --spec-type draft-mtp \
   --spec-draft-n-max 2 \
   -ngl 999 \
-  -hmoe \
+  -nhmoe 36\
   -fa on \
   -ctk q8_0 -ctv q8_0 -kvu \
   -c 8192 -b 1024 -ub 128
