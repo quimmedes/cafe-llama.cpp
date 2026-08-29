@@ -1131,6 +1131,13 @@ struct ggml_tensor * llama_model_loader::create_tensor(
             const size_t nbytes = ggml_nbytes(t_meta);
             LLAMA_LOG_WARN("model has unused tensor %s (size = %zu bytes) -- ignoring\n", tn.str().c_str(), nbytes);
 
+            if (use_mmap) {
+                const auto * w = get_weight(tn.str().c_str());
+                if (w) {
+                    lazy_tensor_ranges[w->idx].emplace_back(w->offs, w->offs + nbytes);
+                }
+            }
+
             size_data -= nbytes;
             n_created++;
 
@@ -1287,10 +1294,12 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         return NULL;
     }
 
-    if ((flags & TENSOR_READ_LAZY) && use_mmap && tensor_read_lazy != LLAMA_TENSOR_READ_LAZY_OFF) {
+    const bool is_ngram = tn.tensor == LLM_TENSOR_PER_LAYER_TOKEN_EMBD && hparams.ple_n_heads > 0;
+    const bool enable_ngram_ssd = offload_ngram_ssd && is_ngram && use_mmap;
+    if (((flags & TENSOR_READ_LAZY) && use_mmap && tensor_read_lazy != LLAMA_TENSOR_READ_LAZY_OFF) || enable_ngram_ssd) {
         // in auto mode, small tensors are cheap enough to keep resident
         constexpr size_t auto_lazy_min_size = 4ull * 1024 * 1024 * 1024;
-        if (tensor_read_lazy == LLAMA_TENSOR_READ_LAZY_ON || ggml_nbytes(cur) > auto_lazy_min_size) {
+        if (tensor_read_lazy == LLAMA_TENSOR_READ_LAZY_ON || ggml_nbytes(cur) > auto_lazy_min_size || enable_ngram_ssd) {
             const auto & w = require_weight(tn.str().c_str());
             lazy_tensor_ranges[w.idx].emplace_back(w.offs, w.offs + ggml_nbytes(cur));
 

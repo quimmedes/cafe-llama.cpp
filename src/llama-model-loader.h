@@ -82,6 +82,8 @@ struct llama_model_loader {
     bool check_tensors;
     bool no_alloc;
     bool load_mtp;
+    bool load_ngram = true;
+    bool offload_ngram_ssd = false;
 
     // set by the caller before the create_tensor() calls
     enum llama_tensor_read_lazy tensor_read_lazy = LLAMA_TENSOR_READ_LAZY_OFF;

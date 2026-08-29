@@ -2746,6 +2746,22 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_TENSOR_READ_LAZY"));
     add_opt(common_arg(
+        {"--ngram", "--load-ngram"},
+        {"--no-ngram", "--no-load-ngram", "--disable-ngram"},
+        string_format("whether to load Qwen4 internal N-gram embedding table and PLE layers (default: %s)", params.load_ngram ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.load_ngram = value;
+        }
+    ).set_env("LLAMA_ARG_LOAD_NGRAM"));
+    add_opt(common_arg(
+        {"--ngram-ssd", "--offload-ngram-ssd"},
+        {"--no-ngram-ssd", "--no-offload-ngram-ssd"},
+        string_format("exclusively offload Qwen4 internal N-gram embedding table to SSD (default: %s)", params.offload_ngram_ssd ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.offload_ngram_ssd = value;
+        }
+    ).set_env("LLAMA_ARG_NGRAM_SSD"));
+    add_opt(common_arg(
         {"--numa"}, "TYPE",
         "attempt optimizations that help on some NUMA systems\n"
         "- distribute: spread execution evenly over all nodes\n"

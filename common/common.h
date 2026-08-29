@@ -484,6 +484,8 @@ struct common_params {
     enum llama_load_mode  load_mode  = LLAMA_LOAD_MODE_AUTO; // how to load the model
 
     enum llama_tensor_read_lazy tensor_read_lazy = LLAMA_TENSOR_READ_LAZY_AUTO; // on-demand reading of tensors marked by the arch
+    bool load_ngram = true; // whether to load Qwen4 internal N-gram / PLE layers
+    bool offload_ngram_ssd = false; // whether to exclusively offload Qwen4 internal N-gram embedding table to SSD
 
     common_cpu_params cpuparams;
     common_cpu_params cpuparams_batch;

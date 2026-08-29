@@ -347,6 +347,8 @@ extern "C" {
         bool no_host;         // bypass host buffer allowing extra buffers to be used
         bool no_alloc;        // only load metadata and simulate memory allocations
         bool load_mtp;        // whether to load MTP layers
+        bool load_ngram;      // whether to load N-gram / PLE layers (default: true)
+        bool offload_ngram_ssd; // whether to exclusively offload N-gram embedding table to SSD (default: false)
     };
 
     struct llama_sampler_seq_config {
