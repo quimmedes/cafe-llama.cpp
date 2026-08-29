@@ -416,7 +416,8 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
             cur = build_layer_attn(inp->get_attn(), mctx_hyb, cur, inp_pos, sections, il);
         }
 
-        if (il == n_layer - 1 && inp_out_ids) {
+        const bool crop_last_layer = inp_out_ids && (!cparams.embeddings_nextn || cparams.embeddings_nextn_masked);
+        if (il == n_layer - 1 && crop_last_layer) {
             // everything below is per token, so drop the rows that produce no output
             cur    = ggml_get_rows(ctx0, cur,    inp_out_ids);
             inject = ggml_get_rows(ctx0, inject, inp_out_ids);
@@ -442,6 +443,15 @@ llama_model_qwen4exp::graph::graph(const llama_model & model, const llm_graph_pa
 
         // "l_last" is the layer output name that build_cvec and imatrix look for
         cb(res_hc, "l_last", il);
+    }
+
+    ggml_tensor * flat_hc = ggml_reshape_2d(ctx0, res_hc, n_embd*hc, res_hc->ne[2]);
+    cb(flat_hc, "h_nextn", -1);
+    res->t_h_nextn = flat_hc;
+
+    if (!cparams.embeddings_nextn_masked && inp_out_ids) {
+        flat_hc = ggml_get_rows(ctx0, flat_hc, inp_out_ids);
+        res_hc  = ggml_reshape_3d(ctx0, flat_hc, n_embd, hc, n_outputs);
     }
 
     // the final mixer is the output norm: there is no separate one
