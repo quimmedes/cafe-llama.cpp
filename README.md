@@ -76,6 +76,16 @@ In Mixture of Experts (MoE) models (such as **Qwen 3.8 Flash Next**, **DeepSeek-
 | `-hmoed` | `--host-moe-draft` | Keep draft model MoE weights in pinned host memory (for speculative decoding). |
 | `-cmoed` | `--cpu-moe-draft` | Keep draft model MoE weights in CPU system RAM (for speculative decoding). |
 
+### Qwen 3.8 Flash Next / Qwen4 Internal N-Gram (PLE) Optimization
+
+Qwen 3.8 Flash Next includes an internal Prompt Lookup Expert (PLE) N-gram hash embedding table (`per_layer_token_embd`, ~51B parameters). `cafe-llama.cpp` provides dedicated flags to manage its memory footprint:
+
+| Flag | Long Flag | Description |
+|---|---|---|
+| `--ngram-ssd` | `--offload-ngram-ssd` | Exclusively offload the internal N-gram embedding table to SSD on-demand via memory mapping (`mmap`), leaving active model layers in RAM/VRAM. |
+| `--no-ngram` | `--disable-ngram`, `--no-load-ngram` | Force completely disable the internal N-gram embedding table and PLE layers, skipping all PLE tensors (0 bytes allocated in RAM/VRAM). |
+| `--ngram` | `--load-ngram` | Normal mode: load internal N-gram table and PLE layers into memory (default). |
+
 ### Qwen 3.8 Flash Next & MTP Speculative Decoding
 
 MTP (Multi-Token Prediction) draft models in GGUF format are available at:
