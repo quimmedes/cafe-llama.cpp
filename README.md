@@ -97,7 +97,7 @@ Available quantizations:
 - `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` (~3.94 GB)
 - `mtp-Qwen3.8-Flash-Next-BF16.gguf` (~7.40 GB) - Full precision
 
-**Recommended Server Command:**
+**Recommended Server Command for Qwen 3.8 Flash Next:**
 ```sh
 
 llama-server -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
