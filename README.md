@@ -102,6 +102,11 @@ Available quantizations:
 
 llama-server -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
 -ctk q8_0 -ctv q8_0 -kvu \
+ -fa on -ngl 99 -nhmoe 36 -c 64000 -np 1 
+
+Disable 51B Ngram if you have not enough RAM/VRAM
+llama-server -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
+-ctk q8_0 -ctv q8_0 -kvu \
  -fa on -ngl 99 -nhmoe 36 -c 64000 \
 --no-ngram -np 1 
 
