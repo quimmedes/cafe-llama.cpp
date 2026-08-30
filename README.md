@@ -17,6 +17,106 @@
 
 </div>
 
+## MoE Offloading & Memory Optimization
+
+In Mixture of Experts (MoE) models (such as **Qwen 3.8 Flash Next**, **DeepSeek-V2/V3**, **Mixtral**, etc.), expert weights represent the majority of parameters and VRAM. `cafe-llama.cpp` provides flags to offload MoE weights to **pinned host RAM (`CUDA_Host`)** or **CPU RAM** while keeping attention, KV cache, and routers on the GPU:
+
+| Flag | Long Flag | Description |
+|---|---|---|
+| `-hmoe` | `--host-moe` | Keep **all MoE expert weights** in pinned host memory (`CUDA_Host`). Enables zero-copy async DMA over PCIe. |
+| `-nhmoe N` | `--n-host-moe N` | Keep MoE weights of the **first N layers** in pinned host memory. |
+| `-cmoe` | `--cpu-moe` | Keep **all MoE expert weights** in CPU system RAM. |
+| `-ncmoe N` | `--n-cpu-moe N` | Keep MoE weights of the **first N layers** in CPU system RAM. |
+| `-hmoed` | `--host-moe-draft` | Keep draft model MoE weights in pinned host memory (for speculative decoding). |
+| `-cmoed` | `--cpu-moe-draft` | Keep draft model MoE weights in CPU system RAM (for speculative decoding). |
+
+### Qwen 3.8 Flash Next / Qwen4 Internal N-Gram (PLE) Optimization
+
+Qwen 3.8 Flash Next includes an internal Prompt Lookup Expert (PLE) N-gram hash embedding table (`per_layer_token_embd`, ~51B parameters). `cafe-llama.cpp` provides dedicated flags to manage its memory footprint:
+
+| Flag | Long Flag | Description |
+|---|---|---|
+| `--ngram-ssd` | `--offload-ngram-ssd` | Exclusively offload the internal N-gram embedding table to SSD on-demand via memory mapping (`mmap`), leaving active model layers in RAM/VRAM. |
+| `--no-ngram` | `--disable-ngram`, `--no-load-ngram` | Force completely disable the internal N-gram embedding table and PLE layers, skipping all PLE tensors (0 bytes allocated in RAM/VRAM). |
+| `--ngram` | `--load-ngram` | Normal mode: load internal N-gram table and PLE layers into memory (default). |
+
+### Qwen 3.8 Flash Next & MTP Speculative Decoding
+
+MTP (Multi-Token Prediction) draft models in GGUF format are available at:
+👉 **[Hugging Face: quimmedes/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/quimmedes/Qwen3.8-Flash-Next-MTP-GGUF)**
+
+Available quantizations:
+- `mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf` (~2.65 GB) - Recommended for balanced memory and speed
+- `mtp-Qwen3.8-Flash-Next-Q6_K.gguf` (~3.24 GB)
+- `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` (~3.94 GB)
+- `mtp-Qwen3.8-Flash-Next-BF16.gguf` (~7.40 GB) - Full precision
+
+**Recommended Server Command for Qwen 3.8 Flash Next:**
+```sh
+
+llama-server -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
+-ctk q8_0 -ctv q8_0 -kvu \
+ -fa on -ngl 99 -nhmoe 36 -c 64000 -np 1 
+
+Disable Ngram if you don't have enough RAM/VRAM
+llama-server -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
+-ctk q8_0 -ctv q8_0 -kvu \
+ -fa on -ngl 99 -nhmoe 36 -c 64000 \
+--no-ngram -np 1 
+
+
+
+MTP with offload
+llama-server \
+  -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
+  -md mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf \
+  --spec-type draft-mtp \
+  --spec-draft-n-max 2 \
+  -ngl 999 \
+  -nhmoe 36\
+  -fa on \
+  -ctk q8_0 -ctv q8_0 -kvu \
+  -c 8192 -b 1024 -ub 128
+```
+
+## Building from Source
+
+### 1. NVIDIA CUDA (Windows / Linux)
+```sh
+# CMake configure with CUDA backend
+cmake -B build -DGGML_CUDA=ON
+
+# Build Release
+cmake --build build --config Release -j
+```
+
+### 2. Vulkan (Cross-Platform AMD / Intel / NVIDIA)
+```sh
+# Requires Vulkan SDK installed
+cmake -B build -DGGML_VULKAN=ON
+cmake --build build --config Release -j
+```
+
+### 3. AMD ROCm / HIP (Linux / Windows)
+```sh
+cmake -B build -DGGML_HIP=ON -DAMDGPU_TARGETS="gfx1100;gfx1030"
+cmake --build build --config Release -j
+```
+
+### 4. Apple Metal (macOS)
+```sh
+cmake -B build -DGGML_METAL=ON
+cmake --build build --config Release -j
+```
+
+### 5. CPU Only (AVX2 / AVX-512)
+```sh
+cmake -B build -DGGML_CUDA=OFF -DGGML_VULKAN=OFF
+cmake --build build --config Release -j
+```
+
+
+
 ## Quick start
 
 A few options to get `llama.cpp` installed on your machine:
@@ -63,89 +163,6 @@ a wide range of hardware - locally and in the cloud.
 - Vulkan and SYCL backend support
 - CPU+GPU hybrid inference to partially accelerate models larger than the total VRAM capacity
 
-## MoE Offloading & Memory Optimization
-
-In Mixture of Experts (MoE) models (such as **Qwen 3.8 Flash Next**, **DeepSeek-V2/V3**, **Mixtral**, etc.), expert weights represent the majority of parameters and VRAM. `cafe-llama.cpp` provides flags to offload MoE weights to **pinned host RAM (`CUDA_Host`)** or **CPU RAM** while keeping attention, KV cache, and routers on the GPU:
-
-| Flag | Long Flag | Description |
-|---|---|---|
-| `-hmoe` | `--host-moe` | Keep **all MoE expert weights** in pinned host memory (`CUDA_Host`). Enables zero-copy async DMA over PCIe. |
-| `-nhmoe N` | `--n-host-moe N` | Keep MoE weights of the **first N layers** in pinned host memory. |
-| `-cmoe` | `--cpu-moe` | Keep **all MoE expert weights** in CPU system RAM. |
-| `-ncmoe N` | `--n-cpu-moe N` | Keep MoE weights of the **first N layers** in CPU system RAM. |
-| `-hmoed` | `--host-moe-draft` | Keep draft model MoE weights in pinned host memory (for speculative decoding). |
-| `-cmoed` | `--cpu-moe-draft` | Keep draft model MoE weights in CPU system RAM (for speculative decoding). |
-
-### Qwen 3.8 Flash Next / Qwen4 Internal N-Gram (PLE) Optimization
-
-Qwen 3.8 Flash Next includes an internal Prompt Lookup Expert (PLE) N-gram hash embedding table (`per_layer_token_embd`, ~51B parameters). `cafe-llama.cpp` provides dedicated flags to manage its memory footprint:
-
-| Flag | Long Flag | Description |
-|---|---|---|
-| `--ngram-ssd` | `--offload-ngram-ssd` | Exclusively offload the internal N-gram embedding table to SSD on-demand via memory mapping (`mmap`), leaving active model layers in RAM/VRAM. |
-| `--no-ngram` | `--disable-ngram`, `--no-load-ngram` | Force completely disable the internal N-gram embedding table and PLE layers, skipping all PLE tensors (0 bytes allocated in RAM/VRAM). |
-| `--ngram` | `--load-ngram` | Normal mode: load internal N-gram table and PLE layers into memory (default). |
-
-### Qwen 3.8 Flash Next & MTP Speculative Decoding
-
-MTP (Multi-Token Prediction) draft models in GGUF format are available at:
-👉 **[Hugging Face: quimmedes/Qwen3.8-Flash-Next-MTP-GGUF](https://huggingface.co/quimmedes/Qwen3.8-Flash-Next-MTP-GGUF)**
-
-Available quantizations:
-- `mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf` (~2.65 GB) - Recommended for balanced memory and speed
-- `mtp-Qwen3.8-Flash-Next-Q6_K.gguf` (~3.24 GB)
-- `mtp-Qwen3.8-Flash-Next-Q8_0.gguf` (~3.94 GB)
-- `mtp-Qwen3.8-Flash-Next-BF16.gguf` (~7.40 GB) - Full precision
-
-**Recommended Server Command:**
-```sh
-llama-server \
-  -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
-  -md mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf \
-  --spec-type draft-mtp \
-  --spec-draft-n-max 2 \
-  -ngl 999 \
-  -hmoe \
-  -fa on \
-  -ctk q8_0 -ctv q8_0 -kvu \
-  -c 8192 -b 1024 -ub 128
-```
-
-## Building from Source
-
-### 1. NVIDIA CUDA (Windows / Linux)
-```sh
-# CMake configure with CUDA backend
-cmake -B build -DGGML_CUDA=ON
-
-# Build Release
-cmake --build build --config Release -j
-```
-
-### 2. Vulkan (Cross-Platform AMD / Intel / NVIDIA)
-```sh
-# Requires Vulkan SDK installed
-cmake -B build -DGGML_VULKAN=ON
-cmake --build build --config Release -j
-```
-
-### 3. AMD ROCm / HIP (Linux / Windows)
-```sh
-cmake -B build -DGGML_HIP=ON -DAMDGPU_TARGETS="gfx1100;gfx1030"
-cmake --build build --config Release -j
-```
-
-### 4. Apple Metal (macOS)
-```sh
-cmake -B build -DGGML_METAL=ON
-cmake --build build --config Release -j
-```
-
-### 5. CPU Only (AVX2 / AVX-512)
-```sh
-cmake -B build -DGGML_CUDA=OFF -DGGML_VULKAN=OFF
-cmake --build build --config Release -j
-```
 
 The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-org/ggml) library.
 
