@@ -21,27 +21,27 @@
 
 In Mixture of Experts (MoE) models (such as **Qwen 3.8 Flash Next**, **DeepSeek-V2/V3**, **Mixtral**, etc.), expert weights represent the majority of parameters and VRAM. `cafe-llama.cpp` provides flags to offload MoE weights to **pinned host RAM (`CUDA_Host`)** or **CPU RAM** while keeping attention, KV cache, and routers on the GPU:
 
-| Flag | Long Flag | Description |
-|---|---|---|
+| Flag                  | Long Flag                | Description |
+|-----------------------|--------------------------|---|
 | `--pipeline-parallel` | `--no-pipeline-parallel` | Enable the offloading acceleration pipeline, required for `-hmoe`, `-nhmoe`, `-hmoed`. |
-| `-hmoe` | `--host-moe` | Keep **all MoE expert weights** in pinned host memory (`CUDA_Host`). Enables zero-copy async DMA over PCIe. |
-| `-nhmoe N` | `--n-host-moe N` | Keep MoE weights of the **first N layers** in pinned host memory. |
-| `-cmoe` | `--cpu-moe` | Keep **all MoE expert weights** in CPU system RAM. |
-| `-ncmoe N` | `--n-cpu-moe N` | Keep MoE weights of the **first N layers** in CPU system RAM. |
-| `-hmoed` | `--host-moe-draft` | Keep draft model MoE weights in pinned host memory (for speculative decoding). |
-| `-nhmoed N` | `--n-host-moe-draft N` | Keep draft model MoE weights of the **first N layers** in pinned host memory (for speculative decoding). |
-| `-cmoed` | `--cpu-moe-draft` | Keep draft model MoE weights in CPU system RAM (for speculative decoding). |
-| `-ncmoed N` | `--n-cpu-moe-draft N` | Keep draft model MoE weights of the **first N layers** in CPU system RAM (for speculative decoding). |
+| `-hmoe`               | `--host-moe`             | Keep **all MoE expert weights** in pinned host memory (`CUDA_Host`). Enables zero-copy async DMA over PCIe. |
+| `-nhmoe N`            | `--n-host-moe N`         | Keep MoE weights of the **first N layers** in pinned host memory. |
+| `-cmoe`               | `--cpu-moe`              | Keep **all MoE expert weights** in CPU system RAM. |
+| `-ncmoe N`            | `--n-cpu-moe N`          | Keep MoE weights of the **first N layers** in CPU system RAM. |
+| `-hmoed`              | `--host-moe-draft`       | Keep draft model MoE weights in pinned host memory (for speculative decoding). |
+| `-nhmoed N`           | `--n-host-moe-draft N`   | Keep draft model MoE weights of the **first N layers** in pinned host memory (for speculative decoding). |
+| `-cmoed`              | `--cpu-moe-draft`        | Keep draft model MoE weights in CPU system RAM (for speculative decoding). |
+| `-ncmoed N`           | `--n-cpu-moe-draft N`    | Keep draft model MoE weights of the **first N layers** in CPU system RAM (for speculative decoding). |
 
 ### Qwen 3.8 Flash Next / Qwen4 Internal N-Gram (PLE) Optimization
 
 Qwen 3.8 Flash Next includes an internal Prompt Lookup Expert (PLE) N-gram hash embedding table (`per_layer_token_embd`, ~51B parameters). `cafe-llama.cpp` provides dedicated flags to manage its memory footprint:
 
-| Flag | Long Flag | Description |
-|---|---|---|
+| Flag          | Long Flag                               | Description |
+|---------------|-----------------------------------------|---|
 | `--ngram-ssd` | `--offload-ngram-ssd`, `--no-ngram-ssd` | Exclusively offload the internal N-gram embedding table to SSD on-demand via memory mapping (`mmap`), leaving active model layers in RAM/VRAM. |
-| `--no-ngram` | `--disable-ngram`, `--no-load-ngram` | Force completely disable the internal N-gram embedding table and PLE layers, skipping all PLE tensors (0 bytes allocated in RAM/VRAM). |
-| `--ngram` | `--load-ngram` | Normal mode: load internal N-gram table and PLE layers into memory (default). |
+| `--no-ngram`  | `--disable-ngram`, `--no-load-ngram`    | Force completely disable the internal N-gram embedding table and PLE layers, skipping all PLE tensors (0 bytes allocated in RAM/VRAM). |
+| `--ngram`     | `--load-ngram`                          | Normal mode: load internal N-gram table and PLE layers into memory (default). |
 
 ### Qwen 3.8 Flash Next & MTP Speculative Decoding
 
@@ -59,13 +59,13 @@ Available quantizations:
 
 llama-server -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
 -ctk q8_0 -ctv q8_0 -kvu \
- -fa on -ngl 99 -nhmoe 36 -c 64000 -np 1 
+ -fa on -ngl 99 -nhmoe 36 -c 64000 --pipeline-parallel -np 1
 
 Disable Ngram if you don't have enough RAM/VRAM
 llama-server -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
 -ctk q8_0 -ctv q8_0 -kvu \
  -fa on -ngl 99 -nhmoe 36 -c 64000 \
---no-ngram -np 1 
+--no-ngram --pipeline-parallel -np 1
 
 
 
@@ -90,35 +90,37 @@ llama-server \
 cmake -B build -DGGML_CUDA=ON
 
 # Build Release
-cmake --build build --config Release -j
+cmake --build build --config Release -j 2 
 ```
 
 ### 2. Vulkan (Cross-Platform AMD / Intel / NVIDIA)
 ```sh
 # Requires Vulkan SDK installed
 cmake -B build -DGGML_VULKAN=ON
-cmake --build build --config Release -j
+cmake --build build --config Release -j 2
 ```
 
 ### 3. AMD ROCm / HIP (Linux / Windows)
 ```sh
 cmake -B build -DGGML_HIP=ON -DAMDGPU_TARGETS="gfx1100;gfx1030"
-cmake --build build --config Release -j
+cmake --build build --config Release -j 2
 ```
 
 ### 4. Apple Metal (macOS)
 ```sh
 cmake -B build -DGGML_METAL=ON
-cmake --build build --config Release -j
+cmake --build build --config Release -j 2
 ```
 
 ### 5. CPU Only (AVX2 / AVX-512)
 ```sh
 cmake -B build -DGGML_CUDA=OFF -DGGML_VULKAN=OFF
-cmake --build build --config Release -j
+cmake --build build --config Release -j 2
 ```
 
 
+-j N : The number of CPU threads the processor will use to compile, 
+a safe number is the amount of physical cores of the processor.
 
 ## Quick start
 
