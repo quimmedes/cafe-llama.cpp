@@ -467,17 +467,23 @@ class GGUFWriter:
                     shard_bar.reset(total=(total if total > 0 else None))
 
                 # relying on the fact that Python dicts preserve insertion order (since 3.7)
-                for ti in tensors.values():
+                for name, ti in tensors.items():
                     assert ti.tensor is not None  # can only iterate once over the tensors
                     assert ti.tensor.nbytes == ti.nbytes
+                    start = fout.tell()
                     try:
                         ti.tensor.tofile(fout)
                     except OSError:
+                        fout.seek(start)
                         eager = np.asarray(ti.tensor)
                         mv = memoryview(eager.ravel().view(np.uint8))
                         chunk_size = 64 * 1024 * 1024
                         for offset in range(0, len(mv), chunk_size):
                             fout.write(mv[offset:offset+chunk_size])
+                    # a short write here would only surface as a corrupt file at load time
+                    if fout.tell() - start != ti.nbytes:
+                        raise ValueError(
+                            f"tensor {name!r} wrote {fout.tell() - start} bytes, expected {ti.nbytes}")
                     if shard_bar is not None:
                         shard_bar.update(ti.nbytes)
                     if bar is not None:
@@ -1014,6 +1020,9 @@ class GGUFWriter:
 
     def add_sample_from_anchor(self, value: bool) -> None:
         self.add_bool(Keys.LLM.SAMPLE_FROM_ANCHOR.format(arch=self.arch), value)
+
+    def add_has_confidence_head(self, value: bool) -> None:
+        self.add_bool(Keys.LLM.HAS_CONFIDENCE_HEAD.format(arch=self.arch), value)
 
     def add_target_layers(self, value: Sequence[int]) -> None:
         self.add_array(Keys.LLM.TARGET_LAYERS.format(arch=self.arch), value)
