@@ -1838,7 +1838,8 @@ static enum ggml_status ggml_backend_sched_compute_splits(ggml_backend_sched_t s
         }
 
         // double-buffered prefetching: initiate async copy of the next split's static weight inputs
-        if (split_id + 1 < sched->n_splits) {
+        // only when pipeline parallelism is active (n_copies > 1), i.e. --pipeline-parallel
+        if (sched->n_copies > 1 && split_id + 1 < sched->n_splits) {
             struct ggml_backend_sched_split * next_split = &splits[split_id + 1];
             int next_split_backend_id = next_split->backend_id;
             ggml_backend_t next_split_backend = sched->backends[next_split_backend_id];

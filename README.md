@@ -23,12 +23,15 @@ In Mixture of Experts (MoE) models (such as **Qwen 3.8 Flash Next**, **DeepSeek-
 
 | Flag | Long Flag | Description |
 |---|---|---|
+| `--pipeline-parallel` | `--no-pipeline-parallel` | Enable the offloading acceleration pipeline, required for `-hmoe`, `-nhmoe`, `-hmoed`. |
 | `-hmoe` | `--host-moe` | Keep **all MoE expert weights** in pinned host memory (`CUDA_Host`). Enables zero-copy async DMA over PCIe. |
 | `-nhmoe N` | `--n-host-moe N` | Keep MoE weights of the **first N layers** in pinned host memory. |
 | `-cmoe` | `--cpu-moe` | Keep **all MoE expert weights** in CPU system RAM. |
 | `-ncmoe N` | `--n-cpu-moe N` | Keep MoE weights of the **first N layers** in CPU system RAM. |
 | `-hmoed` | `--host-moe-draft` | Keep draft model MoE weights in pinned host memory (for speculative decoding). |
+| `-nhmoed N` | `--n-host-moe-draft N` | Keep draft model MoE weights of the **first N layers** in pinned host memory (for speculative decoding). |
 | `-cmoed` | `--cpu-moe-draft` | Keep draft model MoE weights in CPU system RAM (for speculative decoding). |
+| `-ncmoed N` | `--n-cpu-moe-draft N` | Keep draft model MoE weights of the **first N layers** in CPU system RAM (for speculative decoding). |
 
 ### Qwen 3.8 Flash Next / Qwen4 Internal N-Gram (PLE) Optimization
 
@@ -36,7 +39,7 @@ Qwen 3.8 Flash Next includes an internal Prompt Lookup Expert (PLE) N-gram hash 
 
 | Flag | Long Flag | Description |
 |---|---|---|
-| `--ngram-ssd` | `--offload-ngram-ssd` | Exclusively offload the internal N-gram embedding table to SSD on-demand via memory mapping (`mmap`), leaving active model layers in RAM/VRAM. |
+| `--ngram-ssd` | `--offload-ngram-ssd`, `--no-ngram-ssd` | Exclusively offload the internal N-gram embedding table to SSD on-demand via memory mapping (`mmap`), leaving active model layers in RAM/VRAM. |
 | `--no-ngram` | `--disable-ngram`, `--no-load-ngram` | Force completely disable the internal N-gram embedding table and PLE layers, skipping all PLE tensors (0 bytes allocated in RAM/VRAM). |
 | `--ngram` | `--load-ngram` | Normal mode: load internal N-gram table and PLE layers into memory (default). |
 
@@ -73,10 +76,10 @@ llama-server \
   --spec-type draft-mtp \
   --spec-draft-n-max 2 \
   -ngl 999 \
-  -nhmoe 36\
+  -nhmoe 36 \
   -fa on \
   -ctk q8_0 -ctv q8_0 -kvu \
-  -c 8192 -b 1024 -ub 128
+  -c 64000 --pipeline-parallel
 ```
 
 ## Building from Source

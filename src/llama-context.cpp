@@ -425,18 +425,18 @@ llama_context::llama_context(
 
         // TODO: move these checks to ggml_backend_sched
         // enabling pipeline parallelism in the scheduler increases memory usage, so it is only done when necessary
-        // Enable pipeline parallelism for multi-device layer split OR single-device with host-pinned/CPU offload
-        // to overlap host-to-device weight/activation DMA streaming with GPU kernel execution (FreeToken double buffering)
-        const char * LLAMA_PIPELINE_PARALLEL = getenv("LLAMA_PIPELINE_PARALLEL");
-        bool force_pp = LLAMA_PIPELINE_PARALLEL ? atoi(LLAMA_PIPELINE_PARALLEL) != 0 : false;
         bool pipeline_parallel =
-            force_pp ||
-            (model.n_devices() > 1 &&
-             model.n_gpu_layers() > model.hparams.n_layer_all &&
-             model.split_mode() == LLAMA_SPLIT_MODE_LAYER &&
-             cparams.offload_kqv &&
-             !model.has_tensor_overrides()) ||
-            (model.has_tensor_overrides() && cparams.offload_kqv);
+            model.n_devices() > 1 &&
+            model.n_gpu_layers() > model.hparams.n_layer_all &&
+            model.split_mode() == LLAMA_SPLIT_MODE_LAYER &&
+            cparams.offload_kqv &&
+            !model.has_tensor_overrides();
+
+        // FreeToken opt-in (--pipeline-parallel): overlap host->device weight/activation DMA streaming
+        // off by default so plain gguf loading matches upstream llama.cpp defaults
+        if (params.pipeline_parallel) {
+            pipeline_parallel = true;
+        }
         // pipeline parallelism requires support for async compute and events in all devices
         if (pipeline_parallel) {
             for (auto & backend : backends) {
@@ -3628,6 +3628,7 @@ llama_context_params llama_context_default_params() {
         /*.offload_kqv                 =*/ true,
         /*.no_perf                     =*/ true,
         /*.op_offload                  =*/ true,
+        /*.pipeline_parallel           =*/ false,
         /*.swa_full                    =*/ true,
         /*.kv_unified                  =*/ false,
         /*.sampler                     =*/ nullptr,

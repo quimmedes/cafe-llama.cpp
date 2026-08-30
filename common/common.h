@@ -486,6 +486,7 @@ struct common_params {
     enum llama_lazy_mode lazy_mode = LLAMA_LAZY_MODE_AUTO; // on-demand reading of tensors marked by the arch
     bool load_ngram = true; // whether to load Qwen4 internal N-gram / PLE layers
     bool offload_ngram_ssd = false; // whether to exclusively offload Qwen4 internal N-gram embedding table to SSD
+    bool pipeline_parallel = false; // FreeToken: enable scheduler pipeline parallelism / host weight prefetch
 
     common_cpu_params cpuparams;
     common_cpu_params cpuparams_batch;

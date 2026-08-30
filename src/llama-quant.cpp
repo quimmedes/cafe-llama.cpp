@@ -1257,7 +1257,6 @@ static void llama_model_quantize_impl(const std::string & fname_inp, const std::
                 LLAMA_LOG_INFO("converting to %s .. ", ggml_type_name(new_type));
                 fflush(stdout);
 
-
                 const int64_t n_per_row = tensor->ne[0];
                 const int64_t nrows = tensor->ne[1];
 
