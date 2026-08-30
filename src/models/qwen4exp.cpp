@@ -168,6 +168,11 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
             layer.nextn.hnorm            = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,            "weight", il), { hc_dim }, flags);
             layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", il), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED | flags);
             layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", il), { hc_dim }, TENSOR_NOT_REQUIRED | flags);
+            // the head's own output mixer, mirroring the trunk's hc_head_*: it collapses the
+            // hc streams and stands in for the output norm, of which qwen4exp has none
+            layer.nextn.hc_head_norm     = create_tensor(tn(LLM_TENSOR_NEXTN_HC_HEAD_NORM,     "weight", il), { hc_dim },           TENSOR_NOT_REQUIRED | flags);
+            layer.nextn.hc_head_down     = create_tensor(tn(LLM_TENSOR_NEXTN_HC_HEAD_DOWN,     "weight", il), { hc_dim, hc_lr },    TENSOR_NOT_REQUIRED | flags);
+            layer.nextn.hc_head_up       = create_tensor(tn(LLM_TENSOR_NEXTN_HC_HEAD_UP,       "weight", il), { hc_lr, hc_dim },    TENSOR_NOT_REQUIRED | flags);
             layer.hc_attn_norm   = create_tensor(tn(LLM_TENSOR_HC_ATTN_NORM,   "weight", il), { hc_dim }, flags);
             layer.hc_attn_down   = create_tensor(tn(LLM_TENSOR_HC_ATTN_DOWN,   "weight", il), { hc_dim, hc_lr }, flags);
             layer.hc_attn_up     = create_tensor(tn(LLM_TENSOR_HC_ATTN_UP,     "weight", il), { hc_lr, hc_dim }, flags);
@@ -1550,9 +1555,11 @@ llama_model_qwen4exp::graph_mtp::graph_mtp(const llama_model & model, const llm_
     cb(res_hc, "h_nextn", -1);
     res->t_h_nextn = res_hc;
 
-    ggml_tensor * head_norm = model.hc_head_norm ? model.hc_head_norm : layer.nextn.shared_head_norm;
-    ggml_tensor * head_down = model.hc_head_down ? model.hc_head_down : layer.hc_ffn_down;
-    ggml_tensor * head_up   = model.hc_head_up   ? model.hc_head_up   : layer.hc_ffn_up;
+    // prefer the head's own mixer; fall back to the trunk head / ffn mixer so draft GGUFs
+    // written before the head carried its own weights still load
+    ggml_tensor * head_norm = layer.nextn.hc_head_norm ? layer.nextn.hc_head_norm : model.hc_head_norm ? model.hc_head_norm : layer.nextn.shared_head_norm;
+    ggml_tensor * head_down = layer.nextn.hc_head_down ? layer.nextn.hc_head_down : model.hc_head_down ? model.hc_head_down : layer.hc_ffn_down;
+    ggml_tensor * head_up   = layer.nextn.hc_head_up   ? layer.nextn.hc_head_up   : model.hc_head_up   ? model.hc_head_up   : layer.hc_ffn_up;
 
     cur = build_hc_mix(res_hc,
             head_norm,

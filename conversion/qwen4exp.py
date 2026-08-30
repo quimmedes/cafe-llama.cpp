@@ -127,15 +127,26 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
                 del self._mtp_fc
                 return [(f"blk.{self.hparams['num_hidden_layers']}.nextn.eh_proj.weight", eh_proj)]
             return []
+        # the head's own final hyper-connection mixer. emit it as nextn.hc_head_* so the MTP
+        # head normalises its own residual stream; keep the output_hc_* / shared_head_norm
+        # writes so the trunk and older loaders are unaffected
+        _mtp_blk = f"blk.{self.hparams['num_hidden_layers']}"
         if name == "mtp.hyper_connection_mixer.hc_norm.weight":
             return [
                 ("output_hc_norm.weight", data_torch),
-                (f"blk.{self.hparams['num_hidden_layers']}.nextn.shared_head_norm.weight", data_torch),
+                (f"{_mtp_blk}.nextn.shared_head_norm.weight", data_torch),
+                (f"{_mtp_blk}.nextn.hc_head_norm.weight", data_torch),
             ]
         if name == "mtp.hyper_connection_mixer.input_mix_weight_down.weight":
-            return [("output_hc_down.weight", data_torch)]
+            return [
+                ("output_hc_down.weight", data_torch),
+                (f"{_mtp_blk}.nextn.hc_head_down.weight", data_torch),
+            ]
         if name == "mtp.hyper_connection_mixer.input_mix_weight_up.weight":
-            return [("output_hc_up.weight", data_torch)]
+            return [
+                ("output_hc_up.weight", data_torch),
+                (f"{_mtp_blk}.nextn.hc_head_up.weight", data_torch),
+            ]
         if name.endswith("ple_embedding.layer_multipliers"):
             self._ple_multipliers = [int(x) for x in data_torch.tolist()]
             return []
