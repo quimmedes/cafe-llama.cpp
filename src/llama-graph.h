@@ -995,6 +995,8 @@ public:
     ggml_tensor * get_embd()        const { return t_embd; }
     ggml_tensor * get_embd_pooled() const { return t_embd_pooled; }
     ggml_tensor * get_h_nextn()     const { return t_h_nextn; }
+    ggml_tensor * get_mtp_dsa_sel() const { return t_mtp_dsa_sel; }
+    ggml_tensor * get_mtp_dsa_mask() const { return t_mtp_dsa_mask; }
 
     ggml_tensor * get_layer_inp(int il) const { return t_layer_inp[il]; }
 
@@ -1037,6 +1039,8 @@ public:
     // by the per-model graph builder when cparams.n_capture_layers > 0.
     ggml_tensor * t_h_capture   = nullptr;
     ggml_tensor * t_h_nextn     = nullptr; // [n_embd, n_outputs] hidden state before final output norm
+    ggml_tensor * t_mtp_dsa_sel  = nullptr;
+    ggml_tensor * t_mtp_dsa_mask = nullptr;
 
     std::vector<ggml_tensor *> t_layer_inp;
 
