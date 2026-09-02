@@ -64,9 +64,14 @@ void llama_model_glm5_next::load_arch_tensors(llama_model_loader & ml) {
     const int64_t hc         = hparams.dsv4_hc_mult;
     const int64_t hc_mix_dim = (2 + hc)*hc;
 
-    // the NextN block is loaded but only used by the MTP graph.
-    // Separated trunk_only/mtp_only handling TODO with DECODER_MTP graph in the MTP follow up
-    int mtp_flags = 0;
+    // The NextN block is loaded but only used by the MTP graph.
+    const std::string mtp_probe = "blk." + std::to_string(n_layer) + ".nextn.eh_proj.weight";
+    const bool trunk_only = (n_layer_nextn > 0) && (ml.get_weight(mtp_probe.c_str()) == nullptr);
+    int mtp_flags = trunk_only ? TENSOR_NOT_REQUIRED : 0;
+    mtp_ready = n_layer_nextn > 0 && !trunk_only && ml.load_mtp;
+    if (trunk_only) {
+        LLAMA_LOG_INFO("%s: trunk only GGUF, the MTP draft head is unavailable\n", __func__);
+    }
     if (!ml.load_mtp) {
         mtp_flags |= TENSOR_SKIP;
     }
@@ -187,6 +192,9 @@ void llama_model_glm5_next::load_arch_tensors(llama_model_loader & ml) {
 
 std::unique_ptr<llm_graph_context> llama_model_glm5_next::build_arch_graph(const llm_graph_params & params) const {
     if (params.gtype == LLM_GRAPH_TYPE_DECODER_MTP) {
+        if (!mtp_ready) {
+            throw std::runtime_error("MTP graph requested but the NextN tensors are not loaded");
+        }
         return std::make_unique<graph_mtp>(*this, params);
     }
     return std::make_unique<graph>(*this, params);
