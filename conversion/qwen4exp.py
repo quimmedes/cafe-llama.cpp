@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Iterable
+from typing import Callable, Iterable
 
 import torch
 from torch import Tensor
@@ -36,6 +36,43 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
         self._ple_rows_per_shard: int | None = None
         self._ple_map = None
         self._ple_path = None
+
+    # _QwenMtpMixin renames mtp.layers.0.* to the trailing block index, so the head reuses the
+    # existing qwen4exp mappings; only the two pieces below differ.
+    _MTP_MIXER_PREFIX = "mtp.hyper_connection_mixer."
+
+    @classmethod
+    def filter_tensors(cls, item):
+        # unindexed in the checkpoint, per-block in the GGUF
+        name, gen = item
+        if name.startswith("model." + cls._MTP_MIXER_PREFIX):
+            name = name.replace("model.", "", 1)
+        if name.startswith(cls._MTP_MIXER_PREFIX):
+            if cls.no_mtp:
+                return None
+            assert cls._original_block_count is not None
+            return f"model.layers.{cls._original_block_count}.{name[len('mtp.'):]}", gen
+        return super().filter_tensors((name, gen))
+
+    def index_tensors(self, remote_hf_model_id: str | None = None) -> dict[str, Callable[[], Tensor]]:
+        # W_e@e + W_h@h == [W_e|W_h] @ concat(e, h), so fc_embedding and fc_hidden fuse into eh_proj
+        tensors = super().index_tensors(remote_hf_model_id=remote_hf_model_id)
+
+        emb = tensors.pop("mtp.fc_embedding.weight", None)
+        hid = tensors.pop("mtp.fc_hidden.weight", None)
+        if emb is None and hid is None:
+            return tensors
+        if emb is None or hid is None:
+            raise ValueError(
+                "the qwen4exp MTP combiner needs both mtp.fc_embedding.weight and "
+                "mtp.fc_hidden.weight; pass --no-nextn to convert without the draft head"
+            )
+
+        assert self._original_block_count is not None
+        # fc_embedding first: the graph concatenates the embedding ahead of the hidden state
+        name = f"model.layers.{self._original_block_count}.eh_proj.weight"
+        tensors[name] = lambda: torch.cat([emb(), hid()], dim=1)
+        return tensors
 
     def _read_hash_constants(self, suffix: str) -> list[int]:
         """Read an int64 PLE constant straight from the checkpoint.
@@ -118,35 +155,6 @@ class Qwen4ExpTextModel(_Qwen35MRopeMixin, _LinearAttentionVReorderBase):
         return int(eos)
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
-        if name in ("mtp.fc_embedding.weight", "mtp.fc_hidden.weight"):
-            if not hasattr(self, "_mtp_fc"):
-                self._mtp_fc = {}
-            self._mtp_fc[name] = data_torch
-            if len(self._mtp_fc) == 2:
-                eh_proj = torch.cat([self._mtp_fc["mtp.fc_embedding.weight"], self._mtp_fc["mtp.fc_hidden.weight"]], dim=1)
-                del self._mtp_fc
-                return [(f"blk.{self.hparams['num_hidden_layers']}.nextn.eh_proj.weight", eh_proj)]
-            return []
-        # the head's own final hyper-connection mixer. emit it as nextn.hc_head_* so the MTP
-        # head normalises its own residual stream; keep the output_hc_* / shared_head_norm
-        # writes so the trunk and older loaders are unaffected
-        _mtp_blk = f"blk.{self.hparams['num_hidden_layers']}"
-        if name == "mtp.hyper_connection_mixer.hc_norm.weight":
-            return [
-                ("output_hc_norm.weight", data_torch),
-                (f"{_mtp_blk}.nextn.shared_head_norm.weight", data_torch),
-                (f"{_mtp_blk}.nextn.hc_head_norm.weight", data_torch),
-            ]
-        if name == "mtp.hyper_connection_mixer.input_mix_weight_down.weight":
-            return [
-                ("output_hc_down.weight", data_torch),
-                (f"{_mtp_blk}.nextn.hc_head_down.weight", data_torch),
-            ]
-        if name == "mtp.hyper_connection_mixer.input_mix_weight_up.weight":
-            return [
-                ("output_hc_up.weight", data_torch),
-                (f"{_mtp_blk}.nextn.hc_head_up.weight", data_torch),
-            ]
         if name.endswith("ple_embedding.layer_multipliers"):
             self._ple_multipliers = [int(x) for x in data_torch.tolist()]
             return []

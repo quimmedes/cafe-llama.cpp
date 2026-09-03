@@ -122,6 +122,10 @@ def parse_args() -> argparse.Namespace:
         help="Export only the multi-token prediction (MTP) head as a separate GGUF, suitable for use as a speculative draft. An 'mtp-' prefix will be added to the output file name.",
     )
     parser.add_argument(
+        "--mtp-shared-embd", dest="mtp_shared_embd", action="store_true",
+        help="With --mtp, leave out the token embeddings and lm head, which the runtime then takes from the target model. The draft is only loadable as a draft of that exact target.",
+    )
+    parser.add_argument(
         "--no-nextn", "--no-mtp", dest="no_mtp", action="store_true",
         help="Exclude NextN speculative draft tensors from the converted GGUF. Pair with --mtp or --dspark on a second run to publish target and draft as two files.",
     )
@@ -277,6 +281,11 @@ def main() -> None:
                 model_class.no_mtp = True
             if args.mtp:
                 model_class.mtp_only = True
+            if args.mtp_shared_embd:
+                if not args.mtp:
+                    logger.error("--mtp-shared-embd requires --mtp")
+                    sys.exit(1)
+                model_class.mtp_shared_embd = True
 
         model_instance = model_class(dir_model, output_type, fname_out,
                                      is_big_endian=args.bigendian, use_temp_file=args.use_temp_file,

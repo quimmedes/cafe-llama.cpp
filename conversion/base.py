@@ -120,6 +120,8 @@ class ModelBase:
     supports_mtp_export: bool = False
     mtp_only: bool = False
     no_mtp: bool = False
+    # draft head without its own token_embd, output or output_norm, the loader borrows them
+    mtp_shared_embd: bool = False
 
     def __init__(self, dir_model: Path, ftype: gguf.LlamaFileType, fname_out: Path, *, is_big_endian: bool = False,
                  use_temp_file: bool = False, eager: bool = False,
@@ -1049,6 +1051,9 @@ class ModelBase:
                 self.ftype = gguf.LlamaFileType.MOSTLY_NVFP4
             elif self._is_mxfp4:
                 self.ftype = gguf.LlamaFileType.MOSTLY_MXFP4_MOE
+
+        if self.mtp_only and self.mtp_shared_embd:
+            self.gguf_writer.add_nextn_shared_target_tensors(True)
 
         # Generate parameter weight class (useful for leader boards) if not yet determined
         if self.metadata.size_label is None and total_params > 0:

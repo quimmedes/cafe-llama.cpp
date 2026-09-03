@@ -290,6 +290,7 @@ class _QwenMtpMixin:
     tensor_map: gguf.TensorNameMap
     no_mtp: bool
     mtp_only: bool
+    mtp_shared_embd: bool
     _original_block_count: int | None = None
     opt_num_mtp_layers: int = 0
 
@@ -338,17 +339,9 @@ class _QwenMtpMixin:
             elif len(parts) >= 3 and parts[1] in remapper:
                 name = f"model.layers.{cls._original_block_count}.{remapper[parts[1]]}.{'.'.join(parts[2:])}"
             elif name in ("mtp.fc_embedding.weight", "mtp.fc_hidden.weight"):
-                pass
-            elif name == "mtp.hyper_connection_mixer.hc_norm.weight":
-                name = f"model.layers.{cls._original_block_count}.shared_head.norm.weight"
-            elif name == "mtp.hyper_connection_mixer.input_mix_weight_down.weight":
-                name = "output_hc_down.weight"
-            elif name == "mtp.hyper_connection_mixer.input_mix_weight_up.weight":
-                name = "output_hc_up.weight"
-            elif name.startswith("mtp.hyper_connection_mixer."):
-                return None
+                pass  # left for the converter to fuse into eh_proj
         elif cls.mtp_only:
-            keep = name in (
+            keep = not cls.mtp_shared_embd and name in (
                 "model.embed_tokens.weight", "model.norm.weight", "lm_head.weight",
                 "embed_tokens.weight", "norm.weight",
             )

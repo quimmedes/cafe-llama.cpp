@@ -2742,6 +2742,16 @@ class TensorNameMap:
             MODEL_TENSOR.HC_HEAD_UP: (
                 "model.hyper_connection_mixer.input_mix_weight_up",
             ),
+            # qwen4exp MTP head: its own mixer, reached through the qwen4exp converter
+            MODEL_TENSOR.NEXTN_HC_HEAD_NORM: (
+                "model.layers.{bid}.hyper_connection_mixer.hc_norm",
+            ),
+            MODEL_TENSOR.NEXTN_HC_HEAD_DOWN: (
+                "model.layers.{bid}.hyper_connection_mixer.input_mix_weight_down",
+            ),
+            MODEL_TENSOR.NEXTN_HC_HEAD_UP: (
+                "model.layers.{bid}.hyper_connection_mixer.input_mix_weight_up",
+            ),
             MODEL_TENSOR.INDEXER_Q_NORM: (
                 "model.layers.{bid}.self_attn.indexer.q_layernorm",
             ),

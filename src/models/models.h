@@ -2283,28 +2283,15 @@ struct llama_model_qwen4exp : public llama_model_base {
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
 
-    struct graph_mtp : public llm_graph_context {
-        graph_mtp(const llama_model & model, const llm_graph_params & params);
-
-        ggml_tensor * build_hc_mix(
-                    ggml_tensor * x,
-                    ggml_tensor * w_norm,
-                    ggml_tensor * w_down,
-                    ggml_tensor * w_up,
-                    ggml_tensor * w_inject,
-                    ggml_tensor ** inject,
-                            int   il);
-
-        ggml_tensor * build_hc_combine(
-                    ggml_tensor * residual,
-                    ggml_tensor * block_out,
-                    ggml_tensor * inject,
-                            int   il);
-    };
-
     struct graph : public llm_build_delta_net_base {
         graph(const llama_model & model, const llm_graph_params & params);
-    private:
+
+    protected:
+        // graph_mtp ctor: binds the members without building the trunk
+        struct no_build_t {};
+        graph(const llama_model & model, const llm_graph_params & params, no_build_t) :
+            llm_build_delta_net_base(params), model(model) {}
+
         // HC replaces every layer norm: residual is [n_embd, hc, n_tokens]
         ggml_tensor * build_hc_mix(
                     ggml_tensor * x,
@@ -2395,6 +2382,10 @@ struct llama_model_qwen4exp : public llama_model_base {
                             int   il);
 
         const llama_model & model;
+    };
+
+    struct graph_mtp : public graph {
+        graph_mtp(const llama_model & model, const llm_graph_params & params);
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
