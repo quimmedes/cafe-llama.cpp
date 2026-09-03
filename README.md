@@ -59,13 +59,13 @@ Available quantizations:
 
 llama-server -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
 -ctk q8_0 -ctv q8_0 -kvu \
- -fa on -ngl 99 -nhmoe 36 -c 64000 --pipeline-parallel -np 1
+ -fa on -ngl 99 -nhmoe 36 -c 64000 --pipeline-parallel -np 1 --no-ngram 
 
 Disable Ngram if you don't have enough RAM/VRAM
 llama-server -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
 -ctk q8_0 -ctv q8_0 -kvu \
  -fa on -ngl 99 -nhmoe 36 -c 64000 \
---no-ngram --pipeline-parallel -np 1
+--no-ngram --pipeline-parallel -np 1 --no-ngram 
 
 
 
@@ -75,11 +75,24 @@ llama-server \
   -md mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf \
   --spec-type draft-mtp \
   --spec-draft-n-max 2 \
-  -ngl 999 \
+  -ngl 99 \
   -nhmoe 36 \
   -fa on \
   -ctk q8_0 -ctv q8_0 -kvu \
-  -c 64000 --pipeline-parallel
+  -c 64000 --pipeline-parallel --no-ngram 
+  
+  
+  //Faster above 30% context load
+  
+  llama-server -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
+  -md mtp.gguf -ctk q8_0 -ctv q8_0 -kvu -fa on -c 64000 \
+  -np 1 -t 8 -b 1024 -ub 128 --spec-type draft-mtp,ngram-mod \
+  --spec-draft-n-max 2 --spec-ngram-mod-n-match 24 --spec-ngram-mod-n-min 48 \
+  --spec-ngram-mod-n-max 64 -ctkd q4_0 -ctvd q4_0 \
+  --pipeline-parallel -nhmoe 34 -ngl 99 -ngld 99 --no-ngram 
+ 
+  
+  
 ```
 
 ## Building from Source
