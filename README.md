@@ -79,6 +79,7 @@ llama-server \
   -nhmoe 36 \
   -fa on \
   -ctk q8_0 -ctv q8_0 -kvu \
+  -ctkd q4_0 -ctvd q4_0 -ngld 99 \
   -c 64000 --pipeline-parallel --no-ngram 
   
   
