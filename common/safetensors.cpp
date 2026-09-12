@@ -925,7 +925,8 @@ bool common_safetensors_has_mtp_head(const std::string & path) {
             file.read((char *) &header_len, sizeof(header_len));
             std::string header(header_len, '\0');
             file.read(header.data(), header_len);
-            for (const auto & [name, info] : json::parse(header).items()) {
+            const auto shard_header = json::parse(header);
+            for (const auto & [name, info] : shard_header.items()) {
                 (void) info;
                 if (name.rfind("mtp.", 0) == 0 || name.rfind("model.mtp.", 0) == 0) {
                     return true;
