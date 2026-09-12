@@ -531,6 +531,7 @@ namespace GGUFMeta {
 
 llama_model_loader::llama_model_loader(
         struct gguf_context * meta,
+        const struct llama_model_source * source,
         llama_model_set_tensor_data_t set_tensor_data,
         void * set_tensor_data_ud,
         const std::string & fname,
@@ -542,7 +543,7 @@ llama_model_loader::llama_model_loader(
         bool load_mtp,
         const llama_model_kv_override * param_overrides_p,
         const llama_model_tensor_buft_override * param_tensor_buft_overrides_p)
-        : metadata(meta), set_tensor_data(set_tensor_data), set_tensor_data_ud(set_tensor_data_ud) {
+        : metadata(meta), set_tensor_data(set_tensor_data), set_tensor_data_ud(set_tensor_data_ud), source(source) {
     int trace = 0;
     if (getenv("LLAMA_TRACE")) {
         trace = atoi(getenv("LLAMA_TRACE"));
@@ -701,6 +702,56 @@ llama_model_loader::llama_model_loader(
             n_elements += ggml_nelements(cur);
             n_bytes    += ggml_nbytes(cur);
             weights_map.emplace(tensor_name, llama_tensor_weight(files.back().get(), 0, metadata, cur));
+        }
+    } else if (source != nullptr) {
+        get_key(llm_kv(LLM_KV_GENERAL_ARCHITECTURE), arch_name, false);
+        llm_kv = LLM_KV(llm_arch_from_string(arch_name));
+
+        if (source->n_files == 0 || source->get_data == nullptr) {
+            throw std::runtime_error(format("%s: model source has no files", __func__));
+        }
+
+        for (size_t i = 0; i < source->n_files; ++i) {
+            files.emplace_back(new llama_file(source->files[i], "rb", use_direct_io));
+        }
+
+        // descriptors for the metadata tensors, so that the regular tensor loading path can be used
+        const int64_t n_tensors_meta = gguf_get_n_tensors(metadata);
+
+        ggml_init_params params_meta = {
+            /*.mem_size   =*/ ggml_tensor_overhead()*n_tensors_meta + ggml_tensor_overhead(),
+            /*.mem_buffer =*/ nullptr,
+            /*.no_alloc   =*/ true,
+        };
+        source_meta.reset(ggml_init(params_meta));
+        if (!source_meta) {
+            throw std::runtime_error(format("%s: failed to create a context for the metadata tensors", __func__));
+        }
+
+        for (int64_t i = 0; i < n_tensors_meta; ++i) {
+            const char * name = gguf_get_tensor_name(metadata, i);
+            const enum ggml_type type = gguf_get_tensor_type(metadata, i);
+            const int64_t * ne = gguf_get_tensor_ne(metadata, i);
+
+            int n_dims = GGML_MAX_DIMS;
+            while (n_dims > 1 && ne[n_dims - 1] == 1) {
+                n_dims--;
+            }
+
+            ggml_tensor * tensor = ggml_new_tensor(source_meta.get(), type, n_dims, ne);
+            ggml_set_name(tensor, name);
+
+            int32_t file_idx = 0;
+            uint64_t offs = 0;
+            const bool stored = source->get_offset != nullptr && source->get_offset(name, &file_idx, &offs, source->userdata);
+
+            if (file_idx < 0 || (size_t) file_idx >= files.size()) {
+                throw std::runtime_error(format("%s: invalid file index %d for tensor '%s'", __func__, file_idx, name));
+            }
+
+            n_elements += ggml_nelements(tensor);
+            n_bytes    += ggml_nbytes(tensor);
+            weights_map.emplace(name, llama_tensor_weight(files.at(file_idx).get(), (uint16_t) file_idx, (size_t) offs, tensor, !stored));
         }
     } else {
         get_key(llm_kv(LLM_KV_GENERAL_ARCHITECTURE), arch_name, false);
@@ -1411,7 +1462,15 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         return NULL;
     }
 
-    if (flags & TENSOR_READ_LAZY) {
+    // tensors produced by a model source are not stored in the files, so they cannot be read row by row
+    const auto * weight = get_weight(tn.str().c_str());
+    const bool is_provided = weight != nullptr && weight->is_provided;
+
+    if (is_provided && (ssd_streaming || (flags & TENSOR_READ_LAZY))) {
+        LLAMA_LOG_WARN("%s: tensor %s is produced by the model source, cannot be read from disk on demand\n", __func__, tn.str().c_str());
+    }
+
+    if (!is_provided && (flags & TENSOR_READ_LAZY)) {
         // --ngram-ssd pins the table to disk whatever --lazy-mode says
         const bool force = offload_ngram_ssd &&
             tn.tensor == LLM_TENSOR_PER_LAYER_TOKEN_EMBD && hparams.ple_n_heads > 0;
@@ -1420,7 +1479,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         is_lazy = lazy.add(tn.str(), cur, no_alloc ? nullptr : &require_weight(tn.str().c_str()), force);
     }
 
-    if (!is_lazy && ssd_streaming) {
+    if (!is_lazy && !is_provided && ssd_streaming) {
         // stream routed experts of the first ssd_n_streaming layers from disk (-1 = all); the rest
         // and the shared experts stay resident. experts are sparse, so only selected rows page in
         const bool is_routed_expert =
@@ -1542,12 +1601,18 @@ void llama_model_loader::get_mapping_range(size_t * first, size_t * last, void *
     *addr = mapping->addr();
     for (ggml_tensor * tensor = ggml_get_first_tensor(ctx); tensor; tensor = ggml_get_next_tensor(ctx, tensor)) {
         const auto * weight = get_weight(ggml_get_name(tensor));
-        if (!weight || weight->idx != idx) {
+        if (!weight || weight->idx != idx || weight->is_provided) {
             continue;
         }
         *first = std::min(*first, weight->offs);
         *last  = std::max(*last,  weight->offs + ggml_nbytes(tensor));
     }
+
+    // the mapping is handed to the backends as a buffer, so it has to be aligned;
+    // GGUF tensor offsets are aligned, sources such as safetensors are not
+    const size_t alignment = 32; // ggml TENSOR_ALIGNMENT
+    *first = *first & ~(alignment - 1);
+    *last  = (*last + alignment - 1) & ~(alignment - 1);
 }
 
 void llama_model_loader::unmap_weight(const llama_tensor_weight & w) const {
@@ -1723,6 +1788,33 @@ bool llama_model_loader::load_all_data(
         }
 
         size_t n_size = ggml_nbytes(cur);
+
+        if (weight->is_provided) {
+            // the data is produced by the model source
+            if (cur->buffer == nullptr) {
+                throw std::runtime_error(format("%s: the data source produced tensor '%s' but it has no buffer", __func__, ggml_get_name(cur)));
+            }
+
+            std::vector<no_init<uint8_t>> read_buf;
+            uint8_t * data = (uint8_t *) cur->data;
+
+            if (!ggml_backend_buffer_is_host(cur->buffer)) {
+                read_buf.resize(n_size);
+                data = (uint8_t *) read_buf.data();
+            }
+
+            source->get_data(ggml_get_name(cur), data, n_size, source->userdata);
+
+            if (!ggml_backend_buffer_is_host(cur->buffer)) {
+                ggml_backend_tensor_set(cur, data, 0, n_size);
+            }
+            if (check_tensors && !ggml_validate_row_data(cur->type, data, n_size)) {
+                throw std::runtime_error(format("tensor '%s' has invalid data", ggml_get_name(cur)));
+            }
+
+            size_done += n_size;
+            continue;
+        }
 
         const bool from_mapping = use_mmap || lazy.has(cur);
 

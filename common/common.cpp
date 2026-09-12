@@ -1289,6 +1289,14 @@ struct common_init_result::impl {
 
 common_init_result::common_init_result(common_params & params, bool model_only) :
     pimpl(new impl{}) {
+    if (common_safetensors_is_checkpoint(params.mmproj.path)) {
+        LOG_WRN("mmproj '%s' is a safetensors checkpoint, converting it is not supported yet\n", params.mmproj.path.c_str());
+    }
+    if (common_safetensors_is_checkpoint(params.speculative.draft.mparams.path)) {
+        LOG_INF("draft model '%s' is a safetensors checkpoint%s\n", params.speculative.draft.mparams.path.c_str(),
+                common_safetensors_has_mtp_head(params.speculative.draft.mparams.path) ? ", loading its MTP head" : "");
+    }
+
     auto mparams = common_model_params_to_llama(params);
     auto cparams = common_context_params_to_llama(params);
 
@@ -1317,7 +1325,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
             /*.shares_model =*/ !has_draft, // an MTP context runs on the weights of the main model
         };
 
-        common_fit_params(params.model.path.c_str(), &mparams, &cparams,
+        common_fit_params(params.model.path.c_str(), params.safetensors_outtype.c_str(), &mparams, &cparams,
             params.tensor_split,
             params.tensor_buft_overrides.data(),
             params.fit_params_target.data(),
@@ -1326,7 +1334,7 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
             params.verbosity >= LOG_LEVEL_DEBUG ? GGML_LOG_LEVEL_DEBUG : GGML_LOG_LEVEL_ERROR);
     }
 
-    llama_model * model = llama_model_load_from_file(params.model.path.c_str(), mparams);
+    llama_model * model = common_model_load_from_file(params.model.path, params.safetensors_outtype, mparams);
     if (model == NULL) {
         return;
     }

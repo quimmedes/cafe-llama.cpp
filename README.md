@@ -35,6 +35,28 @@ In Mixture of Experts (MoE) models (such as **Qwen 3.8 Flash Next**, **DeepSeek-
 | `-cmoed`              | `--cpu-moe-draft`        | Keep draft model MoE weights in CPU system RAM (for speculative decoding). |
 | `-ncmoed N`           | `--n-cpu-moe-draft N`    | Keep draft model MoE weights of the **first N layers** in CPU system RAM (for speculative decoding). |
 
+### Serving Safetensors Checkpoints
+
+`-m` / `--model` accepts a Hugging Face safetensors checkpoint directly: either a directory with `config.json` and its shards, or a single `.safetensors` file. No GGUF file is produced - the checkpoint metadata is read into memory and the weights are streamed from the shards while the model buffers are filled, so the shards stay untouched and no extra disk space is used.
+
+```sh
+llama-server -m /path/to/Qwen3.6-35B-A3B-FP8 -c 32768
+```
+
+| Flag | Description |
+|------|-------------|
+| `--safetensors-outtype TYPE` | Storage type for the weights stored as FP8 in the checkpoint: `q8_0` (default, keeps 8 bits instead of expanding to 16), `f16` or `bf16`. |
+
+Notes:
+
+- `-mm` / `--mmproj` accepts the same checkpoint: the vision tower is built in memory as a CLIP model, so images work without a converted `mmproj-*.gguf`.
+- MTP: `--spec-type draft-mtp` uses the MTP layer that is part of the checkpoint, and `-md <checkpoint>` loads only its MTP block as a standalone draft (`-md` with a safetensors path is detected automatically).
+- Weights stored as-is in the checkpoint (`BF16`, `F16`, `F32`) are read with `mmap` and take no extra RAM, exactly like a GGUF file. Everything else is produced by the source while the model buffers are filled: FP8 is dequantized with its 128x128 block scales, packed experts are collected into a single 3d tensor, norms and linear attention parameters are adjusted, and the vision tower is cast to F16/F32 - the same work the converter does, in memory. For a 35B FP8 checkpoint that is about 35 GB of RAM with `q8_0` (nothing is written to disk).
+- The SSD streaming flags (`-ssd`, `-nssd`, `--ngram-ssd`) cannot page those tensors from disk, the loader logs a warning when they are requested.
+- Supported checkpoints: `qwen3_5_moe` (Qwen3.5 / Qwen3.6 MoE) and `agnes` (Agnes 3.0), text model and vision tower of both. Other architectures still use the converter.
+- Agnes 3.0 runs a second FFN in parallel with the main one. It is loaded as separate tensors (`ffn_gate_par`, `ffn_up_par`, `ffn_down_par`) with the length in the new `*.feed_forward_parallel_length` key, and the graph adds its output to the main FFN - so every weight can be mapped from the checkpoint instead of being rewritten.
+- Without `-nr` the fork copies the weights of CPU layers into repacked host buffers; add `-nr` to keep them memory mapped when serving a checkpoint that does not fit in RAM, and `-ngl N` to place part of the layers in VRAM.
+
 ### Turbo KV Cache (low-bit K/V, GPU-only)
 
 Low-bit **TurboQuant** types for the attention KV cache, selected with `-ctk` / `-ctv` (draft: `-ctkd` / `-ctvd`). Rows are stored in the rotated (WHT) domain and reconstructed inside the fused flash-attention kernel, so **flash-attention (`-fa`) is required**: it is auto-enabled, and loading aborts if flash-attention is explicitly disabled. Turbo KV types are GPU-side only.

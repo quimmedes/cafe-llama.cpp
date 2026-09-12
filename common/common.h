@@ -512,6 +512,8 @@ struct common_params {
 
     struct common_params_model model;
 
+    std::string safetensors_outtype = "q8_0"; // storage type for FP8 weights in a safetensors checkpoint // NOLINT
+
     std::set<std::string> model_alias;     // model aliases                                                 // NOLINT
     std::set<std::string> model_tags;      // model tags (informational, not used for routing)              // NOLINT
     std::string hf_token             = ""; // HF token (aka bearer token)                                   // NOLINT
@@ -963,6 +965,28 @@ void common_set_adapter_lora(struct llama_context * ctx, std::vector<common_adap
 
 // model endpoint from env
 std::string common_get_model_endpoint();
+
+// true if the path is a HF safetensors checkpoint
+bool common_safetensors_is_checkpoint(const std::string & path);
+
+// load a model, reading safetensors checkpoints directly instead of a GGUF file
+// mtp_only loads just the MTP block of a checkpoint, for use as a speculative draft
+struct llama_model * common_model_load_from_file(const std::string & path, const std::string & safetensors_outtype, const struct llama_model_params & params, bool mtp_only = false);
+
+// true if the checkpoint ships an MTP head (mtp.* tensors)
+bool common_safetensors_has_mtp_head(const std::string & path);
+
+// vision tower (mmproj) of a safetensors checkpoint, ready to be handed to mtmd
+// see common_mmproj_source_create / common_mmproj_source_free
+struct common_mmproj_source {
+    struct gguf_context *     metadata = nullptr;
+    struct llama_model_source source   = {};
+    void *                    impl     = nullptr; // internal state, released by common_mmproj_source_free
+};
+
+// returns the vision tower of a safetensors checkpoint, or nullptr when it is not one
+struct common_mmproj_source * common_mmproj_source_create(const std::string & path);
+void                          common_mmproj_source_free(struct common_mmproj_source * src);
 
 // for testing purposes
 char * common_get_model_or_exit(int, char*[]);

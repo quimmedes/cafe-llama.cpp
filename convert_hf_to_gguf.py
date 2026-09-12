@@ -246,6 +246,16 @@ def main() -> None:
     with torch.inference_mode():
         output_type = ftype_map[args.outtype]
         model_type = ModelType.MMPROJ if args.mmproj else ModelType.TEXT
+
+        # a Hugging Face hub cache entry keeps the model files in a snapshot directory
+        if (dir_model / "snapshots").is_dir():
+            snapshots = [d for d in (dir_model / "snapshots").iterdir() if (d / "config.json").is_file()]
+            if len(snapshots) == 0:
+                logger.error("no snapshot with a config.json found in %s", dir_model)
+                return 1
+            dir_model = snapshots[0]
+            logger.info("using the snapshot %s", dir_model)
+
         hparams = ModelBase.load_hparams(dir_model, is_mistral_format)
         if not is_mistral_format:
             model_architecture = get_model_architecture(hparams, model_type)

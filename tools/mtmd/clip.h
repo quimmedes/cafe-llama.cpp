@@ -1,6 +1,8 @@
 #pragma once
 
 #include "ggml.h"
+#include "gguf.h"
+#include "llama.h"
 #include "mtmd.h"
 
 #include <stddef.h>
@@ -66,7 +68,9 @@ struct clip_init_result {
     struct clip_ctx * ctx_gen_a; // audio generation context
 };
 
-struct clip_init_result clip_init(const char * fname, struct clip_context_params ctx_params);
+// metadata and source are optional, they are used when the weights do not come from a GGUF file
+struct clip_init_result clip_init(const char * fname, struct clip_context_params ctx_params,
+        struct gguf_context * metadata = nullptr, const struct llama_model_source * source = nullptr);
 
 void clip_free(struct clip_ctx * ctx);
 

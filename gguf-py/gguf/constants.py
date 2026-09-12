@@ -111,6 +111,7 @@ class Keys:
         LEADING_DENSE_BLOCK_COUNT         = "{arch}.leading_dense_block_count"
         FEED_FORWARD_LENGTH               = "{arch}.feed_forward_length"
         EXPERT_FEED_FORWARD_LENGTH        = "{arch}.expert_feed_forward_length"
+        FEED_FORWARD_PARALLEL_LENGTH      = "{arch}.feed_forward_parallel_length"
         EXPERT_SHARED_FEED_FORWARD_LENGTH = "{arch}.expert_shared_feed_forward_length"
         EXPERT_CHUNK_FEED_FORWARD_LENGTH  = "{arch}.expert_chunk_feed_forward_length"
         USE_PARALLEL_RESIDUAL             = "{arch}.use_parallel_residual"
@@ -690,6 +691,9 @@ class MODEL_TENSOR(IntEnum):
     FFN_GATE             = auto()
     FFN_DOWN             = auto()
     FFN_UP               = auto()
+    FFN_GATE_PAR         = auto() # second FFN branch, Agnes 3.0
+    FFN_DOWN_PAR         = auto()
+    FFN_UP_PAR           = auto()
     FFN_ACT              = auto()
     FFN_NORM_EXP         = auto()
     FFN_GATE_EXP         = auto()
@@ -1449,6 +1453,9 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.FFN_GATE:                  "blk.{bid}.ffn_gate",
     MODEL_TENSOR.FFN_DOWN:                  "blk.{bid}.ffn_down",
     MODEL_TENSOR.FFN_UP:                    "blk.{bid}.ffn_up",
+    MODEL_TENSOR.FFN_GATE_PAR:              "blk.{bid}.ffn_gate_par",
+    MODEL_TENSOR.FFN_DOWN_PAR:              "blk.{bid}.ffn_down_par",
+    MODEL_TENSOR.FFN_UP_PAR:                "blk.{bid}.ffn_up_par",
     MODEL_TENSOR.FFN_GATE_SHEXP:            "blk.{bid}.ffn_gate_shexp",
     MODEL_TENSOR.FFN_DOWN_SHEXP:            "blk.{bid}.ffn_down_shexp",
     MODEL_TENSOR.FFN_UP_SHEXP:              "blk.{bid}.ffn_up_shexp",
@@ -2869,6 +2876,9 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.NEXTN_HNORM,
         MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD,
         MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM,
+        MODEL_TENSOR.FFN_GATE_PAR,
+        MODEL_TENSOR.FFN_UP_PAR,
+        MODEL_TENSOR.FFN_DOWN_PAR,
     ],
     MODEL_ARCH.QWEN35MOE: [
         MODEL_TENSOR.TOKEN_EMBD,

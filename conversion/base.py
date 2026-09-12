@@ -234,6 +234,9 @@ class ModelBase:
         prefix = "model" if not self.is_mistral_format else "consolidated"
         part_names: list[str] = ModelBase.get_model_part_names(self.dir_model, prefix, ".safetensors")
         is_safetensors: bool = len(part_names) > 0
+        if not is_safetensors and not self.is_mistral_format:
+            # shards may have arbitrary names (e.g. layers-0.safetensors), only the index lists them
+            is_safetensors = (self.dir_model / "model.safetensors.index.json").is_file()
         if not is_safetensors:
             part_names = ModelBase.get_model_part_names(self.dir_model, "pytorch_model", ".bin")
 

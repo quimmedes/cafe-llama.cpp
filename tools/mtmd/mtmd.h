@@ -134,6 +134,14 @@ MTMD_API mtmd_context * mtmd_init_from_file(const char * mmproj_fname,
                                             const struct llama_model * text_model,
                                             const struct mtmd_context_params ctx_params);
 
+// initialize the mtmd context from metadata and a data source instead of a GGUF file,
+// used for checkpoints that are not converted, e.g. safetensors. mmproj_name is only used for logging.
+MTMD_API mtmd_context * mtmd_init_from_source(struct gguf_context * metadata,
+                                              const struct llama_model_source * source,
+                                              const char * mmproj_name,
+                                              const struct llama_model * text_model,
+                                              const struct mtmd_context_params ctx_params);
+
 MTMD_API void mtmd_free(mtmd_context * ctx);
 
 // whether we need to set non-causal mask before llama_decode

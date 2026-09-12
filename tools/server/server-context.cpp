@@ -1061,7 +1061,7 @@ private:
         }
 
         // optionally get the memory usage of mmproj
-        if (has_mmproj && params_base.fit_params) {
+        if (has_mmproj && params_base.fit_params && !common_safetensors_is_checkpoint(mmproj_path)) {
             int64_t t_start = ggml_time_us();
             auto mmproj_mem = mtmd_get_memory_usage(mmproj_path.c_str(), mparams);
             int64_t t_elapsed = ggml_time_us() - t_start;
@@ -1159,7 +1159,13 @@ private:
                 mtmd_helper_log_set(common_log_default_callback, nullptr);
             }
 
-            mctx = mtmd_init_from_file(mmproj_path.c_str(), model_tgt, mparams);
+            {
+                std::unique_ptr<common_mmproj_source, void (*)(common_mmproj_source *)> mmproj_src(
+                        common_mmproj_source_create(mmproj_path), &common_mmproj_source_free);
+                mctx = mmproj_src
+                    ? mtmd_init_from_source(mmproj_src->metadata, &mmproj_src->source, mmproj_path.c_str(), model_tgt, mparams)
+                    : mtmd_init_from_file(mmproj_path.c_str(), model_tgt, mparams);
+            }
             if (mctx == nullptr) {
                 SRV_ERR("failed to load multimodal model, '%s'\n", mmproj_path.c_str());
                 return false;

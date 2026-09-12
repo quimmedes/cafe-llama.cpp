@@ -96,7 +96,11 @@ int main(int argc, char ** argv) {
             mparams.cb_eval_user_data = &cb_data;
             mparams.cb_eval = common_debug_cb_eval;
         }
-        ctx_mtmd.reset(mtmd_init_from_file(clip_path, model, mparams));
+        std::unique_ptr<common_mmproj_source, void (*)(common_mmproj_source *)> mmproj_src(
+                common_mmproj_source_create(clip_path), &common_mmproj_source_free);
+        ctx_mtmd.reset(mmproj_src
+                ? mtmd_init_from_source(mmproj_src->metadata, &mmproj_src->source, clip_path, model, mparams)
+                : mtmd_init_from_file(clip_path, model, mparams));
         if (!ctx_mtmd.get()) {
             LOG_ERR("Failed to load vision model from %s\n", clip_path);
             exit(1);

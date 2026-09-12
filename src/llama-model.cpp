@@ -1298,6 +1298,7 @@ void llama_model_base::load_hparams(llama_model_loader & ml) {
     std::fill(hparams.swiglu_clamp_shexp.begin(), hparams.swiglu_clamp_shexp.end(), 0.0f);
 
     ml.get_key_or_arr(LLM_KV_FEED_FORWARD_LENGTH,  hparams.n_ff_arr,   hparams.n_layer_all, false);
+    ml.get_key(LLM_KV_FEED_FORWARD_PARALLEL_LENGTH, hparams.n_ff_par, false);
     ml.get_key_or_arr(LLM_KV_ATTENTION_HEAD_COUNT, hparams.n_head_arr, hparams.n_layer_all, false);
 
     // Populate deepstack_mapping_arr - initialized to -1 (no deepstack)
@@ -1766,6 +1767,32 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
                 }
                 bufs.emplace_back(buf);
                 buf_map.emplace(idx, buf);
+            }
+
+            // tensors produced by a model source are not stored in the files, they need a regular buffer
+            std::vector<ggml_tensor *> provided;
+            for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+                const auto * w = ml.get_weight(ggml_get_name(t));
+                if (w != nullptr && w->is_provided) {
+                    provided.push_back(t);
+                }
+            }
+
+            if (!provided.empty()) {
+                size_t size = 0;
+                for (ggml_tensor * t : provided) {
+                    size += GGML_PAD(ggml_backend_buft_get_alloc_size(buft, t), GGML_MEM_ALIGN);
+                }
+
+                ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(buft, size);
+                if (buf == nullptr) {
+                    throw std::runtime_error(format("unable to allocate %s buffer for the tensors of the model source", ggml_backend_buft_name(buft)));
+                }
+                ggml_tallocr alloc = ggml_tallocr_new(buf);
+                for (ggml_tensor * t : provided) {
+                    ggml_tallocr_alloc(&alloc, t);
+                }
+                bufs.emplace_back(buf);
             }
         } else {
             ggml_backend_buffer_t buf;

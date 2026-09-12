@@ -514,6 +514,27 @@ extern "C" {
                                    void * set_tensor_data_ud, // userdata for function
               struct llama_model_params   params);
 
+    // Data source of a model that is not stored in a GGUF file, for example a safetensors checkpoint.
+    // The metadata is given as a gguf_context, the tensor data is read from the files:
+    //   - tensors accepted by get_offset are read from that file at that offset, as stored
+    //   - all other tensors are produced by get_data
+    // Both callbacks receive the tensor name, null-terminated, and the userdata pointer below.
+    typedef struct llama_model_source {
+        const char * const * files;
+        size_t               n_files;
+        // returns true and sets the location when the tensor is stored as-is in one of the files
+        bool (*get_offset)(const char * tensor_name, int32_t * file_idx, uint64_t * offset, void * userdata);
+        // fills size bytes of the tensor data, used for tensors that are not stored as-is
+        void (*get_data)  (const char * tensor_name, void * data, size_t size, void * userdata);
+        void * userdata;
+    } llama_model_source;
+
+    // Create a new model from GGUF metadata and a data source, see llama_model_source
+    LLAMA_API struct llama_model * llama_model_load_from_source(
+                    struct gguf_context * metadata,
+              const struct llama_model_source * source,
+              struct llama_model_params   params);
+
     DEPRECATED(LLAMA_API struct llama_model * llama_load_model_from_file(
                              const char * path_model,
               struct llama_model_params   params),

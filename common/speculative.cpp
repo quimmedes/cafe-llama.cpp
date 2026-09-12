@@ -2566,7 +2566,9 @@ common_speculative_init_result::common_speculative_init_result(
         // a draft head can leave out the embeddings and lm head and use the target's
         mparams.model_shared = model_tgt;
 
-        llama_model * model_dft = llama_model_load_from_file(model_path.c_str(), mparams);
+        // a safetensors checkpoint that ships an MTP head is loaded as a standalone draft
+        const bool mtp_only = common_safetensors_has_mtp_head(model_path);
+        llama_model * model_dft = common_model_load_from_file(model_path, params.safetensors_outtype, mparams, mtp_only);
         if (model_dft == NULL) {
             LOG_ERR("%s: failed to load draft model, '%s'\n", __func__, model_path.c_str());
             return;

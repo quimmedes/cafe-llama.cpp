@@ -28,6 +28,7 @@ struct common_fit_extra_model {
 //     with the exception of the context size which is modified if and only if equal to 0
 common_params_fit_status common_fit_params(
                          const char * path_model,
+                         const char * safetensors_outtype,
                  llama_model_params * mparams,
                llama_context_params * cparams,
                               float * tensor_split,          // writable buffer for tensor split, needs at least llama_max_devices elements
@@ -40,6 +41,7 @@ common_params_fit_status common_fit_params(
 // print estimated memory to stdout
 void common_fit_print(
                          const char * path_model,
+                         const char * safetensors_outtype,
                  llama_model_params * mparams,
                llama_context_params * cparams);
 

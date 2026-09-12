@@ -37,6 +37,9 @@ struct llama_model_loader {
 
         ggml_tensor * tensor;
 
+        // data is produced by the model source instead of being read from the file
+        bool is_provided = false;
+
         llama_tensor_weight(const llama_file * file, uint16_t idx, const struct gguf_context * gguf_ctx, ggml_tensor * tensor) : idx(idx), tensor(tensor) {
             const int tensor_idx = gguf_find_tensor(gguf_ctx,  ggml_get_name(tensor));
             if (tensor_idx < 0) {
@@ -45,6 +48,14 @@ struct llama_model_loader {
 
             offs = gguf_get_data_offset(gguf_ctx) + gguf_get_tensor_offset(gguf_ctx, tensor_idx);
             if (offs + ggml_nbytes(tensor) < offs || offs + ggml_nbytes(tensor) > file->size()) {
+                throw std::runtime_error(format("tensor '%s' data is not within the file bounds, model is corrupted or incomplete", ggml_get_name(tensor)));
+            }
+        }
+
+        // used by model sources that index their own files, see llama_model_source
+        llama_tensor_weight(const llama_file * file, uint16_t idx, size_t offs, ggml_tensor * tensor, bool is_provided) :
+                idx(idx), offs(offs), tensor(tensor), is_provided(is_provided) {
+            if (!is_provided && (offs + ggml_nbytes(tensor) < offs || offs + ggml_nbytes(tensor) > file->size())) {
                 throw std::runtime_error(format("tensor '%s' data is not within the file bounds, model is corrupted or incomplete", ggml_get_name(tensor)));
             }
         }
@@ -145,6 +156,8 @@ struct llama_model_loader {
     struct gguf_context * metadata; // either metadata_ptr.get() or externally set
     llama_model_set_tensor_data_t set_tensor_data;
     void * set_tensor_data_ud;
+    const struct llama_model_source * source; // data source of a model that is not a GGUF file
+    ggml_context_ptr source_meta;             // descriptors of the metadata tensors, for model sources
     std::vector<ggml_context_ptr> contexts;
 
     std::string arch_name;
@@ -187,6 +200,7 @@ struct llama_model_loader {
 
     llama_model_loader(
         struct gguf_context * metadata,
+        const struct llama_model_source * source,
         llama_model_set_tensor_data_t set_tensor_data,
         void * set_tensor_data_ud,
         const std::string & fname,

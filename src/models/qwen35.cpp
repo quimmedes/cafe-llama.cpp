@@ -88,6 +88,14 @@ void llama_model_qwen35::load_arch_tensors(llama_model_loader & ml) {
         layer.ffn_gate = create_tensor(tn(LLM_TENSOR_FFN_GATE, "weight", il), {n_embd,   n_ff}, flags);
         layer.ffn_down = create_tensor(tn(LLM_TENSOR_FFN_DOWN, "weight", il), {  n_ff, n_embd}, flags);
         layer.ffn_up   = create_tensor(tn(LLM_TENSOR_FFN_UP,   "weight", il), {n_embd,   n_ff}, flags);
+
+        // Agnes 3.0 runs a second FFN in parallel with the main one
+        if (hparams.n_ff_par > 0) {
+            const int64_t n_ff_par = hparams.n_ff_par;
+            layer.ffn_gate_par = create_tensor(tn(LLM_TENSOR_FFN_GATE_PAR, "weight", il), {n_embd,   n_ff_par}, flags | TENSOR_NOT_REQUIRED);
+            layer.ffn_down_par = create_tensor(tn(LLM_TENSOR_FFN_DOWN_PAR, "weight", il), {n_ff_par, n_embd}, flags | TENSOR_NOT_REQUIRED);
+            layer.ffn_up_par   = create_tensor(tn(LLM_TENSOR_FFN_UP_PAR,   "weight", il), {n_embd,   n_ff_par}, flags | TENSOR_NOT_REQUIRED);
+        }
     };
 
     auto load_block_mtp = [&](int il) {
@@ -471,12 +479,26 @@ ggml_tensor * llama_model_qwen35::graph::build_layer_ffn(ggml_tensor * cur, cons
     // Qwen3.5 does not use MoE FFN
     GGML_ASSERT(model.layers[il].ffn_gate_inp == nullptr);
 
-    cur = build_ffn(cur,
+    ggml_tensor * inp = cur;
+
+    cur = build_ffn(inp,
         model.layers[il].ffn_up, NULL, model.layers[il].ffn_up_s,
         model.layers[il].ffn_gate, NULL, model.layers[il].ffn_gate_s,
         model.layers[il].ffn_down, NULL, model.layers[il].ffn_down_s,
         NULL,
         LLM_FFN_SILU, LLM_FFN_PAR, il);
+
+    // Agnes 3.0 adds a second SwiGLU branch computed from the same input
+    if (model.layers[il].ffn_up_par != nullptr) {
+        ggml_tensor * par = build_ffn(inp,
+            model.layers[il].ffn_up_par, NULL, NULL,
+            model.layers[il].ffn_gate_par, NULL, NULL,
+            model.layers[il].ffn_down_par, NULL, NULL,
+            NULL,
+            LLM_FFN_SILU, LLM_FFN_PAR, il);
+        cur = ggml_add(ctx0, cur, par);
+    }
+
     cb(cur, "ffn_out", il);
 
     return cur;

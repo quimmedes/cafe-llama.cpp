@@ -329,6 +329,10 @@ struct llama_layer {
     struct ggml_tensor * ffn_gate     = nullptr; // w1
     struct ggml_tensor * ffn_down     = nullptr; // w2
     struct ggml_tensor * ffn_up       = nullptr; // w3
+    // second FFN branch, used by Agnes 3.0
+    struct ggml_tensor * ffn_gate_par = nullptr;
+    struct ggml_tensor * ffn_down_par = nullptr;
+    struct ggml_tensor * ffn_up_par   = nullptr;
     struct ggml_tensor * ffn_gate_enc = nullptr;
     struct ggml_tensor * ffn_down_enc = nullptr;
     struct ggml_tensor * ffn_up_enc   = nullptr;

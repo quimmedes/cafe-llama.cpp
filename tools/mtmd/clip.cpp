@@ -1159,6 +1159,12 @@ struct clip_model_loader {
     ggml_context_ptr ctx_meta;
     gguf_context_ptr ctx_gguf;
 
+    // a caller may provide the metadata and the tensor data, e.g. for a safetensors checkpoint
+    struct gguf_context *             ctx_gguf_ext = nullptr;
+    const struct llama_model_source * source       = nullptr;
+
+    struct gguf_context * gguf() const { return ctx_gguf_ext != nullptr ? ctx_gguf_ext : ctx_gguf.get(); }
+
     std::string fname;
 
     size_t model_size = 0; // in bytes
@@ -1174,25 +1180,58 @@ struct clip_model_loader {
     clip_model_loader(const char * fname,
             bool skip_tensors = false,
             mtmd_progress_callback progress_cb = nullptr,
-            void * progress_user_data = nullptr)
+            void * progress_user_data = nullptr,
+            struct gguf_context * metadata = nullptr,
+            const struct llama_model_source * source = nullptr)
         : fname(fname),
           progress_callback(progress_cb),
           progress_callback_user_data(progress_user_data) {
         struct ggml_context * meta = nullptr;
 
-        struct gguf_init_params params = {
-            /*.no_alloc = */ true,
-            /*.ctx      = */ &meta,
-        };
+        if (metadata != nullptr) {
+            // metadata and data come from the caller
+            ctx_gguf_ext = metadata;
+            this->source = source;
 
-        ctx_gguf = gguf_context_ptr(gguf_init_from_file(fname, params));
-        if (!ctx_gguf.get()) {
-            throw std::runtime_error(string_format("%s: failed to load CLIP model from %s. Does this file exist?\n", __func__, fname));
+            const int64_t n = gguf_get_n_tensors(metadata);
+            struct ggml_init_params params_meta = {
+                /*.mem_size   =*/ (size_t) (n + 1) * ggml_tensor_overhead(),
+                /*.mem_buffer =*/ nullptr,
+                /*.no_alloc   =*/ true,
+            };
+            meta = ggml_init(params_meta);
+            if (meta == nullptr) {
+                throw std::runtime_error(string_format("%s: failed to create a context for the metadata tensors\n", __func__));
+            }
+
+            for (int64_t i = 0; i < n; ++i) {
+                const char * name = gguf_get_tensor_name(metadata, i);
+                const enum ggml_type type = gguf_get_tensor_type(metadata, i);
+                const int64_t * ne = gguf_get_tensor_ne(metadata, i);
+
+                int n_dims = GGML_MAX_DIMS;
+                while (n_dims > 1 && ne[n_dims - 1] == 1) {
+                    n_dims--;
+                }
+
+                ggml_tensor * tensor = ggml_new_tensor(meta, type, n_dims, ne);
+                ggml_set_name(tensor, name);
+            }
+        } else {
+            struct gguf_init_params params = {
+                /*.no_alloc = */ true,
+                /*.ctx      = */ &meta,
+            };
+
+            ctx_gguf = gguf_context_ptr(gguf_init_from_file(fname, params));
+            if (!gguf()) {
+                throw std::runtime_error(string_format("%s: failed to load CLIP model from %s. Does this file exist?\n", __func__, fname));
+            }
         }
 
         ctx_meta.reset(meta);
 
-        const int n_tensors = gguf_get_n_tensors(ctx_gguf.get());
+        const int n_tensors = gguf_get_n_tensors(gguf());
 
         // print gguf info
         {
@@ -1202,10 +1241,10 @@ struct clip_model_loader {
             get_string(KEY_DESCRIPTION, description, false);
             LOG_INF("%s: model name:   %s\n",  __func__, name.c_str());
             LOG_INF("%s: description:  %s\n",  __func__, description.c_str());
-            LOG_INF("%s: GGUF version: %d\n",  __func__, gguf_get_version(ctx_gguf.get()));
-            LOG_INF("%s: alignment:    %zu\n", __func__, gguf_get_alignment(ctx_gguf.get()));
+            LOG_INF("%s: GGUF version: %d\n",  __func__, gguf_get_version(gguf()));
+            LOG_INF("%s: alignment:    %zu\n", __func__, gguf_get_alignment(gguf()));
             LOG_INF("%s: n_tensors:    %d\n",  __func__, n_tensors);
-            LOG_INF("%s: n_kv:         %d\n",  __func__, (int)gguf_get_n_kv(ctx_gguf.get()));
+            LOG_INF("%s: n_kv:         %d\n",  __func__, (int)gguf_get_n_kv(gguf()));
             LOG_INF("\n");
         }
 
@@ -1229,9 +1268,9 @@ struct clip_model_loader {
         // tensors
         if (!skip_tensors) {
             for (int i = 0; i < n_tensors; ++i) {
-                const char * name = gguf_get_tensor_name(ctx_gguf.get(), i);
-                const size_t offset = gguf_get_tensor_offset(ctx_gguf.get(), i);
-                enum ggml_type type = gguf_get_tensor_type(ctx_gguf.get(), i);
+                const char * name = gguf_get_tensor_name(gguf(), i);
+                const size_t offset = gguf_get_tensor_offset(gguf(), i);
+                enum ggml_type type = gguf_get_tensor_type(gguf(), i);
                 ggml_tensor * cur = ggml_get_tensor(meta, name);
                 size_t tensor_size = ggml_nbytes(cur);
                 model_size += tensor_size;
@@ -2102,9 +2141,12 @@ struct clip_model_loader {
         std::map<std::string, size_t> tensor_offset;
         std::vector<ggml_tensor *> tensors_to_load;
 
-        auto fin = open_ifstream_binary(fname);
-        if (!fin) {
-            throw std::runtime_error(string_format("%s: failed to open %s\n", __func__, fname.c_str()));
+        std::ifstream fin;
+        if (source == nullptr) {
+            fin = open_ifstream_binary(fname);
+            if (!fin) {
+                throw std::runtime_error(string_format("%s: failed to open %s\n", __func__, fname.c_str()));
+            }
         }
 
         // TODO @ngxson : support both audio and video in the future
@@ -2113,14 +2155,16 @@ struct clip_model_loader {
                              : "v";
 
         // get offsets
-        for (int64_t i = 0; i < gguf_get_n_tensors(ctx_gguf.get()); ++i) {
-            const char * name = gguf_get_tensor_name(ctx_gguf.get(), i);
-            tensor_offset[name] = gguf_get_data_offset(ctx_gguf.get()) + gguf_get_tensor_offset(ctx_gguf.get(), i);
+        if (source == nullptr) {
+            for (int64_t i = 0; i < gguf_get_n_tensors(gguf()); ++i) {
+                const char * name = gguf_get_tensor_name(gguf(), i);
+                tensor_offset[name] = gguf_get_data_offset(gguf()) + gguf_get_tensor_offset(gguf(), i);
+            }
         }
 
         // create data context
         struct ggml_init_params params = {
-            /*.mem_size =*/ static_cast<size_t>(gguf_get_n_tensors(ctx_gguf.get()) + 1) * ggml_tensor_overhead(),
+            /*.mem_size =*/ static_cast<size_t>(gguf_get_n_tensors(gguf()) + 1) * ggml_tensor_overhead(),
             /*.mem_buffer =*/ NULL,
             /*.no_alloc =*/ true,
         };
@@ -2179,28 +2223,32 @@ struct clip_model_loader {
 
         auto get_vector = [&](const std::string & name) {
             std::vector<float> result;
-            auto it = tensor_offset.find(name);
-            if (it == tensor_offset.end()) {
+            const auto it = tensor_offset.find(name);
+            if (source == nullptr && it == tensor_offset.end()) {
                 return result;
             }
 
-            const int64_t idx = gguf_find_tensor(ctx_gguf.get(), name.c_str());
+            const int64_t idx = gguf_find_tensor(gguf(), name.c_str());
             if (idx < 0) {
                 throw std::runtime_error(string_format("%s: failed to find tensor %s\n", __func__, name.c_str()));
             }
 
-            if (const auto type = gguf_get_tensor_type(ctx_gguf.get(), idx); type != GGML_TYPE_F32) {
+            if (const auto type = gguf_get_tensor_type(gguf(), idx); type != GGML_TYPE_F32) {
                 throw std::runtime_error(string_format("%s: %s must be %s, was %s\n", __func__,
                             name.c_str(), ggml_type_name(GGML_TYPE_F32), ggml_type_name(type)));
             }
 
-            const size_t n_bytes = gguf_get_tensor_size(ctx_gguf.get(), idx);
+            const size_t n_bytes = gguf_get_tensor_size(gguf(), idx);
             if (n_bytes == 0) {
                 throw std::runtime_error(string_format("%s: tensor %s is empty\n", __func__, name.c_str()));
             }
 
             const size_t n_elems = n_bytes / sizeof(float);
             result.resize(n_elems);
+            if (source != nullptr) {
+                source->get_data(name.c_str(), result.data(), n_bytes, source->userdata);
+                return result;
+            }
             fin.seekg(it->second, std::ios::beg);
             fin.read(reinterpret_cast<char*>(result.data()), n_bytes);
             return result;
@@ -3606,22 +3654,34 @@ struct clip_model_loader {
                 for (auto & t : tensors_to_load) {
                     ggml_tensor * cur = ggml_get_tensor(ctx_clip.ctx_data.get(), t->name);
                     GGML_ASSERT(cur && "tensor not found in ctx_data");
-                    auto it_off = tensor_offset.find(t->name);
-                    GGML_ASSERT(it_off != tensor_offset.end() && "no offset for tensor");
-                    const size_t offset = it_off->second;
-                    fin.seekg(offset, std::ios::beg);
-                    if (!fin) {
-                        throw std::runtime_error(string_format("%s: failed to seek for tensor %s\n", __func__, t->name));
-                    }
-                    size_t num_bytes = ggml_nbytes(cur);
-                    if (ggml_backend_buft_is_host(buft)) {
-                        // for the CPU and Metal backend, we can read directly into the tensor
-                        fin.read(reinterpret_cast<char *>(cur->data), num_bytes);
+                    const size_t num_bytes = ggml_nbytes(cur);
+
+                    if (source != nullptr) {
+                        // the data is produced by the caller, e.g. a safetensors checkpoint
+                        if (ggml_backend_buft_is_host(buft)) {
+                            source->get_data(t->name, cur->data, num_bytes, source->userdata);
+                        } else {
+                            read_buf.resize(num_bytes);
+                            source->get_data(t->name, read_buf.data(), num_bytes, source->userdata);
+                            ggml_backend_tensor_set(cur, read_buf.data(), 0, num_bytes);
+                        }
                     } else {
-                        // read into a temporary buffer first, then copy to device memory
-                        read_buf.resize(num_bytes);
-                        fin.read(reinterpret_cast<char *>(read_buf.data()), num_bytes);
-                        ggml_backend_tensor_set(cur, read_buf.data(), 0, num_bytes);
+                        auto it_off = tensor_offset.find(t->name);
+                        GGML_ASSERT(it_off != tensor_offset.end() && "no offset for tensor");
+                        const size_t offset = it_off->second;
+                        fin.seekg(offset, std::ios::beg);
+                        if (!fin) {
+                            throw std::runtime_error(string_format("%s: failed to seek for tensor %s\n", __func__, t->name));
+                        }
+                        if (ggml_backend_buft_is_host(buft)) {
+                            // for the CPU and Metal backend, we can read directly into the tensor
+                            fin.read(reinterpret_cast<char *>(cur->data), num_bytes);
+                        } else {
+                            // read into a temporary buffer first, then copy to device memory
+                            read_buf.resize(num_bytes);
+                            fin.read(reinterpret_cast<char *>(read_buf.data()), num_bytes);
+                            ggml_backend_tensor_set(cur, read_buf.data(), 0, num_bytes);
+                        }
                     }
                     data_loaded += num_bytes;
                     if (progress_callback && total_data_size > 0) {
@@ -3805,36 +3865,36 @@ struct clip_model_loader {
     }
 
     void get_bool(const std::string & key, bool & output, bool required = true) const {
-        const int i = gguf_find_key(ctx_gguf.get(), key.c_str());
+        const int i = gguf_find_key(gguf(), key.c_str());
         if (i < 0) {
             if (required) {
                 throw std::runtime_error("Key not found: " + key);
             }
             return;
         }
-        output = gguf_get_val_bool(ctx_gguf.get(), i);
+        output = gguf_get_val_bool(gguf(), i);
     }
 
     void get_i32(const std::string & key, int & output, bool required = true) const {
-        const int i = gguf_find_key(ctx_gguf.get(), key.c_str());
+        const int i = gguf_find_key(gguf(), key.c_str());
         if (i < 0) {
             if (required) {
                 throw std::runtime_error("Key not found: " + key);
             }
             return;
         }
-        output = gguf_get_val_i32(ctx_gguf.get(), i);
+        output = gguf_get_val_i32(gguf(), i);
     }
 
     void get_u32(const std::string & key, int & output, bool required = true) const {
-        const int i = gguf_find_key(ctx_gguf.get(), key.c_str());
+        const int i = gguf_find_key(gguf(), key.c_str());
         if (i < 0) {
             if (required) {
                 throw std::runtime_error("Key not found: " + key);
             }
             return;
         }
-        const uint32_t val = gguf_get_val_u32(ctx_gguf.get(), i);
+        const uint32_t val = gguf_get_val_u32(gguf(), i);
         // sanity check
         if (val > (uint32_t) INT32_MAX) {
             throw std::runtime_error(string_format("%s: value %u for key '%s' exceeds INT32_MAX\n",
@@ -3844,74 +3904,74 @@ struct clip_model_loader {
     }
 
     void get_f32(const std::string & key, float & output, bool required = true) const {
-        const int i = gguf_find_key(ctx_gguf.get(), key.c_str());
+        const int i = gguf_find_key(gguf(), key.c_str());
         if (i < 0) {
             if (required) {
                 throw std::runtime_error("Key not found: " + key);
             }
             return;
         }
-        output = gguf_get_val_f32(ctx_gguf.get(), i);
+        output = gguf_get_val_f32(gguf(), i);
     }
 
     void get_arr_f32(const std::string & key, std::vector<float> & output, bool required = true) const {
-        const int i = gguf_find_key(ctx_gguf.get(), key.c_str());
+        const int i = gguf_find_key(gguf(), key.c_str());
         if (i < 0) {
             if (required) {
                 throw std::runtime_error("Key not found: " + key);
             }
             return;
         }
-        if (gguf_get_kv_type(ctx_gguf.get(), i) != GGUF_TYPE_ARRAY) {
+        if (gguf_get_kv_type(gguf(), i) != GGUF_TYPE_ARRAY) {
             throw std::runtime_error(string_format("%s: key '%s' is not an array\n", __func__, key.c_str()));
         }
-        const auto type = gguf_get_arr_type(ctx_gguf.get(), i);
+        const auto type = gguf_get_arr_type(gguf(), i);
         if (type != GGUF_TYPE_FLOAT32) {
             throw std::runtime_error(string_format("%s: array '%s' has type %d, expected %d (GGUF_TYPE_FLOAT32)\n", __func__, key.c_str(), type, GGUF_TYPE_FLOAT32));
         }
-        const size_t n = gguf_get_arr_n(ctx_gguf.get(), i);
+        const size_t n = gguf_get_arr_n(gguf(), i);
         if (n > (size_t) std::numeric_limits<int>::max()) {
             throw std::runtime_error(string_format("%s: array '%s' is too large (%zu elements)\n", __func__, key.c_str(), n));
         }
         output.resize(n);
-        const float * values = (const float *)gguf_get_arr_data(ctx_gguf.get(), i);
+        const float * values = (const float *)gguf_get_arr_data(gguf(), i);
         for (size_t j = 0; j < n; ++j) {
             output[j] = values[j];
         }
     }
 
     void get_string(const std::string & key, std::string & output, bool required = true) const {
-        const int i = gguf_find_key(ctx_gguf.get(), key.c_str());
+        const int i = gguf_find_key(gguf(), key.c_str());
         if (i < 0) {
             if (required) {
                 throw std::runtime_error("Key not found: " + key);
             }
             return;
         }
-        output = std::string(gguf_get_val_str(ctx_gguf.get(), i));
+        output = std::string(gguf_get_val_str(gguf(), i));
     }
 
     void get_arr_int(const std::string & key, std::vector<int> & output, bool required = true) const {
-        const int i = gguf_find_key(ctx_gguf.get(), key.c_str());
+        const int i = gguf_find_key(gguf(), key.c_str());
         if (i < 0) {
             if (required) {
                 throw std::runtime_error("Key not found: " + key);
             }
             return;
         }
-        if (gguf_get_kv_type(ctx_gguf.get(), i) != GGUF_TYPE_ARRAY) {
+        if (gguf_get_kv_type(gguf(), i) != GGUF_TYPE_ARRAY) {
             throw std::runtime_error(string_format("%s: key '%s' is not an array\n", __func__, key.c_str()));
         }
-        const auto type = gguf_get_arr_type(ctx_gguf.get(), i);
+        const auto type = gguf_get_arr_type(gguf(), i);
         if (type != GGUF_TYPE_INT32) {
             throw std::runtime_error(string_format("%s: array '%s' has type %d, expected %d (GGUF_TYPE_INT32)\n", __func__, key.c_str(), type, GGUF_TYPE_INT32));
         }
-        const size_t n = gguf_get_arr_n(ctx_gguf.get(), i);
+        const size_t n = gguf_get_arr_n(gguf(), i);
         if (n > (size_t) std::numeric_limits<int>::max()) {
             throw std::runtime_error(string_format("%s: array '%s' is too large (%zu elements)\n", __func__, key.c_str(), n));
         }
         output.resize(n);
-        const int32_t * values = (const int32_t *)gguf_get_arr_data(ctx_gguf.get(), i);
+        const int32_t * values = (const int32_t *)gguf_get_arr_data(gguf(), i);
         for (size_t j = 0; j < n; ++j) {
             output[j] = values[j];
         }
@@ -3954,7 +4014,7 @@ struct clip_model_loader {
     }
 };
 
-struct clip_init_result clip_init(const char * fname, struct clip_context_params ctx_params) {
+struct clip_init_result clip_init(const char * fname, struct clip_context_params ctx_params, struct gguf_context * metadata, const struct llama_model_source * source) {
     clip_ctx * ctx_vision = nullptr;
     clip_ctx * ctx_audio = nullptr;
     clip_ctx * ctx_gen_audio = nullptr;
@@ -3963,7 +4023,9 @@ struct clip_init_result clip_init(const char * fname, struct clip_context_params
         clip_model_loader loader(fname,
             /* skip_tensors */ false,
             ctx_params.progress_callback,
-            ctx_params.progress_callback_user_data);
+            ctx_params.progress_callback_user_data,
+            metadata,
+            source);
         bool skip_audio = false;
 
         if (loader.has_vision) {

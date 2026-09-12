@@ -492,6 +492,17 @@ class TensorNameMap:
             "model.layers.{bid}.mlp.experts.e_score_correction",       # laguna
         ),
 
+        # Second FFN branch (Agnes 3.0)
+        MODEL_TENSOR.FFN_GATE_PAR: (
+            "model.layers.{bid}.mlp.parallel_ffn.gate_proj",
+        ),
+        MODEL_TENSOR.FFN_DOWN_PAR: (
+            "model.layers.{bid}.mlp.parallel_ffn.down_proj",
+        ),
+        MODEL_TENSOR.FFN_UP_PAR: (
+            "model.layers.{bid}.mlp.parallel_ffn.up_proj",
+        ),
+
         # Feed-forward up
         MODEL_TENSOR.FFN_UP: (
             "gpt_neox.layers.{bid}.mlp.dense_h_to_4h",                # gptneox

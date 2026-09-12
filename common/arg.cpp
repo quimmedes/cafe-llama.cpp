@@ -3120,6 +3120,18 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_EXPORT_LORA, LLAMA_EXAMPLE_DOWNLOAD, LLAMA_EXAMPLE_TOKENIZE}).set_env("LLAMA_ARG_MODEL"));
     add_opt(common_arg(
+        {"--safetensors-outtype"}, "TYPE",
+        "storage type for the weights stored as FP8 in a safetensors checkpoint\n"
+        "supported values: f16, bf16, q8_0",
+        [](common_params & params, const std::string & value) {
+            static const std::vector<std::string> allowed = { "f16", "bf16", "q8_0" };
+            if (std::find(allowed.begin(), allowed.end(), value) == allowed.end()) {
+                throw std::invalid_argument("error: invalid --safetensors-outtype: " + value + "\n");
+            }
+            params.safetensors_outtype = value;
+        }
+    ).set_examples({LLAMA_EXAMPLE_COMMON}).set_env("LLAMA_ARG_SAFETENSORS_OUTTYPE"));
+    add_opt(common_arg(
         {"-mu", "--model-url"}, "MODEL_URL",
         "model download url (default: unused)",
         [](common_params & params, const std::string & value) {

@@ -530,7 +530,9 @@ struct mtmd_context {
     mtmd_context(const char * mmproj_fname,
                    const llama_model * text_model,
                    const mtmd_context_params & ctx_params,
-                   bool no_alloc = false) :
+                   bool no_alloc = false,
+                   struct gguf_context * metadata = nullptr,
+                   const struct llama_model_source * source = nullptr) :
         print_timings   (ctx_params.print_timings),
         n_threads       (ctx_params.n_threads),
         media_marker    (ctx_params.media_marker),
@@ -579,7 +581,7 @@ struct mtmd_context {
             /* progress_callback_user_data */ ctx_params.progress_callback_user_data,
         };
 
-        auto res = clip_init(mmproj_fname, ctx_clip_params);
+        auto res = clip_init(mmproj_fname, ctx_clip_params, metadata, source);
         ctx_v = res.ctx_v;
         ctx_a = res.ctx_a;
         ctx_gen_a = res.ctx_gen_a;
@@ -1087,6 +1089,19 @@ mtmd_context * mtmd_init_from_file(const char * mmproj_fname,
         const struct mtmd_context_params ctx_params) {
     try {
         return new mtmd_context(mmproj_fname, text_model, ctx_params);
+    } catch (const std::exception & e) {
+        LOG_ERR("%s: error: %s\n", __func__, e.what());
+        return nullptr;
+    }
+}
+
+mtmd_context * mtmd_init_from_source(struct gguf_context * metadata,
+        const struct llama_model_source * source,
+        const char * mmproj_name,
+        const struct llama_model * text_model,
+        const struct mtmd_context_params ctx_params) {
+    try {
+        return new mtmd_context(mmproj_name, text_model, ctx_params, /*no_alloc*/ false, metadata, source);
     } catch (const std::exception & e) {
         LOG_ERR("%s: error: %s\n", __func__, e.what());
         return nullptr;
