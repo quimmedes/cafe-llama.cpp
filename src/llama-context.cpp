@@ -3705,6 +3705,35 @@ llama_context * llama_init_from_model(
         return nullptr;
     }
 
+    const bool turbo_k = params.type_k == GGML_TYPE_TURBO4_0 || params.type_k == GGML_TYPE_TURBO2_0 || params.type_k == GGML_TYPE_TURBO3_0;
+    const bool turbo_v = params.type_v == GGML_TYPE_TURBO4_0 || params.type_v == GGML_TYPE_TURBO2_0 || params.type_v == GGML_TYPE_TURBO3_0;
+    if (turbo_k || turbo_v) {
+        // turbo rows are stored in the rotated domain and are only reconstructed by the fused
+        // flash-attention kernel, so flash_attn is mandatory
+        if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO) {
+            LLAMA_LOG_INFO("%s: enabling flash_attn since it is required for turbo cache\n", __func__);
+            params.flash_attn_type = LLAMA_FLASH_ATTN_TYPE_ENABLED;
+        }
+        if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_DISABLED) {
+            LLAMA_LOG_ERROR("%s: turbo cache requires flash_attn to be enabled\n", __func__);
+            return nullptr;
+        }
+        // turbo2/3 blocks are 32 wide but the FWHT rotation group is 128, so the head size must
+        // divide by 128 even though the block checks below only enforce the 32 wide block size
+        for (uint32_t il = 0; il < model->hparams.n_layer(); ++il) {
+            if (turbo_k && params.type_k != GGML_TYPE_TURBO4_0 && model->hparams.n_embd_head_k(il) % 128 != 0) {
+                LLAMA_LOG_ERROR("%s: turbo2/turbo3 K cache needs n_embd_head_k to be a multiple of 128 (rotation group), got %u\n",
+                    __func__, model->hparams.n_embd_head_k(il));
+                return nullptr;
+            }
+            if (turbo_v && params.type_v != GGML_TYPE_TURBO4_0 && model->hparams.n_embd_head_v(il) % 128 != 0) {
+                LLAMA_LOG_ERROR("%s: turbo2/turbo3 V cache needs n_embd_head_v to be a multiple of 128 (rotation group), got %u\n",
+                    __func__, model->hparams.n_embd_head_v(il));
+                return nullptr;
+            }
+        }
+    }
+
     if (ggml_is_quantized(params.type_v) && params.flash_attn_type != LLAMA_FLASH_ATTN_TYPE_ENABLED) {
         if (params.flash_attn_type == LLAMA_FLASH_ATTN_TYPE_AUTO) {
             LLAMA_LOG_INFO("%s: enabling flash_attn since it is required for quantized V cache\n", __func__);

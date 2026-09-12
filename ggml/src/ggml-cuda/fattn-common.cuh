@@ -3,6 +3,7 @@
 #include "common.cuh"
 #include "convert.cuh"
 #include "vecdotq.cuh"
+#include "turbo-fattn-data.cuh"
 
 #include <cstdint>
 
@@ -617,6 +618,210 @@ static __device__ __forceinline__ void dequantize_V_q8_0(const void * __restrict
     }
 }
 
+// turbo4 K is stored normalized + FWHT rotated, so Q must be rotated the same way (see
+// k_turbo_fwht_forward). The rotation is orthonormal, so no scale correction is needed.
+template<int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_turbo4_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_turbo4_0 * K_t4 = (const block_turbo4_0 *) K_c;
+    GGML_UNUSED(Q_q8);
+    GGML_UNUSED(Q_ds_v);
+
+    constexpr int cpy_nb = ggml_cuda_get_max_cpy_bytes();
+    constexpr int cpy_ne = cpy_nb / 4;
+
+    float sum = 0.0f;
+    int   prev_ib = -1;
+    float cn[16];
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < D/2; k_KQ_0 += nthreads*cpy_ne) {
+        const int base_f2 = k_KQ_0 + (threadIdx.x % nthreads) * cpy_ne;
+        const int elem0   = base_f2 * 2;
+        const int ib      = elem0 / QK_TURBO4;
+        const int j_start = elem0 % QK_TURBO4;
+
+        if (ib != prev_ib) {
+            const float norm = __half2float(K_t4[ib].norm);
+#pragma unroll
+            for (int c = 0; c < 16; c++) {
+                cn[c] = d_turbo_centroids_4bit_fattn[c] * norm;
+            }
+            prev_ib = ib;
+        }
+
+#pragma unroll
+        for (int k_KQ_1 = 0; k_KQ_1 < cpy_ne; ++k_KQ_1) {
+            const int j0  = j_start + 2*k_KQ_1;
+            const uint8_t byte0 = K_t4[ib].qs[ j0      / 2];
+            const uint8_t byte1 = K_t4[ib].qs[(j0 + 1) / 2];
+            const uint8_t idx0  = ( j0      & 1) ? (byte0 >> 4) : (byte0 & 0xF);
+            const uint8_t idx1  = ((j0 + 1) & 1) ? (byte1 >> 4) : (byte1 & 0xF);
+
+#ifdef V_DOT2_F32_F16_AVAILABLE
+            const float2 qf = __half22float2(((const half2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1]);
+#else
+            const float2 qf = ((const float2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+#endif // V_DOT2_F32_F16_AVAILABLE
+
+            sum += cn[idx0] * qf.x + cn[idx1] * qf.y;
+        }
+    }
+    return sum;
+}
+
+// turbo2 K: 2-bit, 4 indices per byte, shared per-block norm. Same FWHT domain as turbo4.
+template<int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_turbo2_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_turbo2_0 * K_t2 = (const block_turbo2_0 *) K_c;
+    GGML_UNUSED(Q_q8);
+    GGML_UNUSED(Q_ds_v);
+
+    constexpr int cpy_nb = ggml_cuda_get_max_cpy_bytes();
+    constexpr int cpy_ne = cpy_nb / 4;
+
+    float sum = 0.0f;
+    int   prev_ib = -1;
+    float cn[4];
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < D/2; k_KQ_0 += nthreads*cpy_ne) {
+        const int base_f2 = k_KQ_0 + (threadIdx.x % nthreads) * cpy_ne;
+        const int elem0   = base_f2 * 2;
+        const int ib      = elem0 / QK_TURBO2;
+        const int j_start = elem0 % QK_TURBO2;
+
+        if (ib != prev_ib) {
+            const float norm = __half2float(K_t2[ib].norm);
+#pragma unroll
+            for (int c = 0; c < 4; c++) {
+                cn[c] = d_turbo_centroids_2bit_fattn[c] * norm;
+            }
+            prev_ib = ib;
+        }
+
+#pragma unroll
+        for (int k_KQ_1 = 0; k_KQ_1 < cpy_ne; ++k_KQ_1) {
+            const int j0 = j_start + 2*k_KQ_1;
+            const uint8_t idx0 = (K_t2[ib].qs[ j0      / 4] >> (( j0      & 3) * 2)) & 0x3;
+            const uint8_t idx1 = (K_t2[ib].qs[(j0 + 1) / 4] >> (((j0 + 1) & 3) * 2)) & 0x3;
+
+#ifdef V_DOT2_F32_F16_AVAILABLE
+            const float2 qf = __half22float2(((const half2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1]);
+#else
+            const float2 qf = ((const float2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+#endif // V_DOT2_F32_F16_AVAILABLE
+
+            sum += cn[idx0] * qf.x + cn[idx1] * qf.y;
+        }
+    }
+    return sum;
+}
+
+// turbo3 K: 3-bit, low 2 bits in qs[] (4 per byte), high bit in signs[] (8 per byte)
+template<int D, int nthreads>
+static __device__ __forceinline__ float vec_dot_fattn_vec_KQ_turbo3_0(
+    const char * __restrict__ K_c, const void * __restrict__ Q_v, const int * __restrict__ Q_q8, const void * __restrict__ Q_ds_v) {
+
+    const block_turbo3_0 * K_t3 = (const block_turbo3_0 *) K_c;
+    GGML_UNUSED(Q_q8);
+    GGML_UNUSED(Q_ds_v);
+
+    constexpr int cpy_nb = ggml_cuda_get_max_cpy_bytes();
+    constexpr int cpy_ne = cpy_nb / 4;
+
+    float sum = 0.0f;
+    int   prev_ib = -1;
+    float cn[8];
+
+#pragma unroll
+    for (int k_KQ_0 = 0; k_KQ_0 < D/2; k_KQ_0 += nthreads*cpy_ne) {
+        const int base_f2 = k_KQ_0 + (threadIdx.x % nthreads) * cpy_ne;
+        const int elem0   = base_f2 * 2;
+        const int ib      = elem0 / QK_TURBO3;
+        const int j_start = elem0 % QK_TURBO3;
+
+        if (ib != prev_ib) {
+            const float norm = __half2float(K_t3[ib].norm);
+#pragma unroll
+            for (int c = 0; c < 8; c++) {
+                cn[c] = d_turbo_centroids_3bit_fattn[c] * norm;
+            }
+            prev_ib = ib;
+        }
+
+#pragma unroll
+        for (int k_KQ_1 = 0; k_KQ_1 < cpy_ne; ++k_KQ_1) {
+            const int j0  = j_start + 2*k_KQ_1;
+            const int j1  = j0 + 1;
+            const uint8_t idx0 = ((K_t3[ib].qs[ j0  / 4] >> (( j0  & 3) * 2)) & 0x3) | (((K_t3[ib].signs[ j0  / 8] >> ( j0  & 7)) & 0x1) << 2);
+            const uint8_t idx1 = ((K_t3[ib].qs[ j1  / 4] >> (( j1  & 3) * 2)) & 0x3) | (((K_t3[ib].signs[ j1  / 8] >> ( j1  & 7)) & 0x1) << 2);
+
+#ifdef V_DOT2_F32_F16_AVAILABLE
+            const float2 qf = __half22float2(((const half2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1]);
+#else
+            const float2 qf = ((const float2 *) Q_v)[k_KQ_0/nthreads + k_KQ_1];
+#endif // V_DOT2_F32_F16_AVAILABLE
+
+            sum += cn[idx0] * qf.x + cn[idx1] * qf.y;
+        }
+    }
+    return sum;
+}
+
+// rotate one 128 wide Q row, one element per thread, block dim must be 128
+static __device__ __forceinline__ float fwht128_butterfly_inplace(float val, float * smem) {
+    const int tid = threadIdx.x;
+
+    // intra-warp passes need neither smem nor sync
+#pragma unroll
+    for (int h = 1; h <= 16; h *= 2) {
+        const float other = __shfl_xor_sync(0xFFFFFFFFULL, val, h);
+        val = (tid & h) ? (other - val) : (val + other);
+    }
+
+    smem[tid] = val;
+    __syncthreads();
+    val = (tid & 32) ? (smem[tid - 32] - val) : (val + smem[tid + 32]);
+    __syncthreads();
+
+    smem[tid] = val;
+    __syncthreads();
+    val = (tid & 64) ? (smem[tid - 64] - val) : (val + smem[tid + 64]);
+    __syncthreads();
+
+    return val;
+}
+
+static __global__ void k_turbo_fwht_forward(
+        const float * __restrict__ src, float * __restrict__ dst, const int64_t n_elements) {
+    const int64_t row = (int64_t) blockIdx.x * 128;
+    if (row >= n_elements) return;
+
+    __shared__ float buf[128];
+    const int tid = threadIdx.x;
+
+    float val = src[row + tid] * d_turbo_wht_signs1_fattn[tid];
+    val = fwht128_butterfly_inplace(val, buf);
+    dst[row + tid] = val * 0.08838834764831845f * d_turbo_wht_signs2_fattn[tid];
+}
+
+static __global__ void k_turbo_fwht_inverse(
+        const float * __restrict__ src, float * __restrict__ dst, const int64_t n_elements) {
+    const int64_t row = (int64_t) blockIdx.x * 128;
+    if (row >= n_elements) return;
+
+    __shared__ float buf[128];
+    const int tid = threadIdx.x;
+
+    float val = src[row + tid] * d_turbo_wht_signs2_fattn[tid];
+    val = fwht128_butterfly_inplace(val, buf);
+    dst[row + tid] = val * 0.08838834764831845f * d_turbo_wht_signs1_fattn[tid];
+}
+
 template <ggml_type type_K, int D, int nthreads>
 constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
     if constexpr (type_K == GGML_TYPE_F16) {
@@ -633,12 +838,68 @@ constexpr __device__ vec_dot_KQ_t get_vec_dot_KQ() {
         return vec_dot_fattn_vec_KQ_q8_0<D, nthreads>;
     } else if constexpr (type_K == GGML_TYPE_BF16) {
         return vec_dot_fattn_vec_KQ_bf16<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_TURBO4_0) {
+        return vec_dot_fattn_vec_KQ_turbo4_0<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_TURBO2_0) {
+        return vec_dot_fattn_vec_KQ_turbo2_0<D, nthreads>;
+    } else if constexpr (type_K == GGML_TYPE_TURBO3_0) {
+        return vec_dot_fattn_vec_KQ_turbo3_0<D, nthreads>;
     } else {
         static_assert(type_K == -1, "bad type");
         return nullptr;
     }
 }
 
+
+// turbo V rows are stored FWHT rotated; these reconstruct the rotated-domain value
+// (centroid * norm), matching the get_rows turbo dequant. The output un-rotate runs after
+// the attention op, so o_proj stays in the original domain.
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_turbo4_0(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_turbo4_0 * x = (const block_turbo4_0 *) vx;
+    const int64_t ib = i0 / QK_TURBO4;
+    const int     js = i0 % QK_TURBO4;
+    const float norm = __half2float(x[ib].norm);
+#pragma unroll
+    for (int l = 0; l < ne; ++l) {
+        const int j = js + l;
+        const uint8_t idx = (j & 1) ? (uint8_t) (x[ib].qs[j / 2] >> 4) : (uint8_t) (x[ib].qs[j / 2] & 0xF);
+        const float v = d_turbo_centroids_4bit_fattn[idx] * norm;
+        if constexpr (std::is_same_v<T, half>) { ((half *) dst)[l] = __float2half(v); }
+        else if constexpr (std::is_same_v<T, float>) { ((float *) dst)[l] = v; }
+    }
+}
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_turbo2_0(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_turbo2_0 * x = (const block_turbo2_0 *) vx;
+    const int64_t ib = i0 / QK_TURBO2;
+    const int     js = i0 % QK_TURBO2;
+    const float norm = __half2float(x[ib].norm);
+#pragma unroll
+    for (int l = 0; l < ne; ++l) {
+        const int j = js + l;
+        const uint8_t idx = (x[ib].qs[j / 4] >> ((j % 4) * 2)) & 0x3;
+        const float v = d_turbo_centroids_2bit_fattn[idx] * norm;
+        if constexpr (std::is_same_v<T, half>) { ((half *) dst)[l] = __float2half(v); }
+        else if constexpr (std::is_same_v<T, float>) { ((float *) dst)[l] = v; }
+    }
+}
+template <typename T, int ne>
+static __device__ __forceinline__ void dequantize_V_turbo3_0(const void * __restrict__ vx, void * __restrict__ dst, const int64_t i0) {
+    const block_turbo3_0 * x = (const block_turbo3_0 *) vx;
+    const int64_t ib = i0 / QK_TURBO3;
+    const int     js = i0 % QK_TURBO3;
+    const float norm = __half2float(x[ib].norm);
+#pragma unroll
+    for (int l = 0; l < ne; ++l) {
+        const int j = js + l;
+        const uint8_t low2 = (x[ib].qs[j / 4] >> ((j % 4) * 2)) & 0x3;
+        const uint8_t hi1  = (x[ib].signs[j / 8] >> (j % 8)) & 0x1;
+        const float v = d_turbo_centroids_3bit_fattn[low2 | (hi1 << 2)] * norm;
+        if constexpr (std::is_same_v<T, half>) { ((half *) dst)[l] = __float2half(v); }
+        else if constexpr (std::is_same_v<T, float>) { ((float *) dst)[l] = v; }
+    }
+}
 template <ggml_type type_V, typename T, int ne>
 constexpr __device__ dequantize_V_t get_dequantize_V() {
     if constexpr (type_V == GGML_TYPE_F16) {
@@ -655,6 +916,12 @@ constexpr __device__ dequantize_V_t get_dequantize_V() {
         return dequantize_V_q8_0<T, ne>;
     } else if constexpr (type_V == GGML_TYPE_BF16) {
         return dequantize_V_bf16<float, ne>;
+    } else if constexpr (type_V == GGML_TYPE_TURBO4_0) {
+        return dequantize_V_turbo4_0<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_TURBO2_0) {
+        return dequantize_V_turbo2_0<T, ne>;
+    } else if constexpr (type_V == GGML_TYPE_TURBO3_0) {
+        return dequantize_V_turbo3_0<T, ne>;
     } else {
         static_assert(type_V == -1, "bad type");
         return nullptr;
@@ -976,7 +1243,7 @@ template <int DV, int ncols1, int ncols2>
 void launch_fattn(
     ggml_backend_cuda_context & ctx, ggml_tensor * dst, fattn_kernel_t fattn_kernel, const int nwarps, const size_t nbytes_shared,
     const int nbatch_fa, const bool need_f16_K, const bool need_f16_V, const bool stream_k, const bool use_sparse,
-    const int warp_size = WARP_SIZE
+    const int warp_size = WARP_SIZE, const void * q_data = nullptr
 ) {
     constexpr int ncols = ncols1 * ncols2;
 
@@ -1224,7 +1491,7 @@ void launch_fattn(
 
         ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(blocks_num, block_dim, nbytes_shared, main_stream);
         ggml_cuda_kernel_launch(fattn_kernel, launch_params,
-        (const char *) Q->data,
+        (const char *) (q_data ? q_data : (const void *) Q->data),
         K_data,
         V_data,
         mask ? ((const char *) mask->data) : nullptr,

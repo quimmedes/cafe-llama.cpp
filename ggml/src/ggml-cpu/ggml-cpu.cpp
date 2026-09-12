@@ -474,6 +474,10 @@ static bool ggml_backend_cpu_device_supports_op(ggml_backend_dev_t dev, const st
             return ggml_is_contiguous(op->src[0]);
         case GGML_OP_SSM_SCAN:
             return ggml_get_op_params_i32(op, 0) == 1 || op->src[3]->ne[0] == 1;
+        case GGML_OP_FLASH_ATTN_EXT:
+            // turbo K/V are only implemented in the CUDA fused attention kernel
+            return !ggml_get_type_traits(op->src[1]->type)->is_turbo &&
+                   !ggml_get_type_traits(op->src[2]->type)->is_turbo;
         default:
             return true;
     }

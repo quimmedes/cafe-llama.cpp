@@ -115,6 +115,20 @@ if (CUDAToolkit_FOUND)
     ggml_cuda_fattn_vec_instances(${CMAKE_CURRENT_SOURCE_DIR} SRCS)
     list(APPEND GGML_SOURCES_CUDA ${SRCS})
 
+    # turbo K/V is gpu-side only and always compiled and dispatched, independent of GGML_CUDA_FA_QUANTS
+    list(APPEND GGML_SOURCES_CUDA
+        template-instances/fattn-vec-instance-turbo4_0-f16.cu
+        template-instances/fattn-vec-instance-turbo2_0-f16.cu
+        template-instances/fattn-vec-instance-turbo3_0-f16.cu
+        template-instances/fattn-vec-instance-f16-turbo.cu
+        template-instances/fattn-vec-instance-turbo-turbo.cu)
+    foreach (TURBO_DEF
+            GGML_CUDA_FA_TURBO4_0_F16 GGML_CUDA_FA_TURBO2_0_F16 GGML_CUDA_FA_TURBO3_0_F16
+            GGML_CUDA_FA_F16_TURBO4_0 GGML_CUDA_FA_F16_TURBO2_0 GGML_CUDA_FA_F16_TURBO3_0
+            GGML_CUDA_FA_TURBO4_0_TURBO4_0 GGML_CUDA_FA_TURBO2_0_TURBO2_0 GGML_CUDA_FA_TURBO3_0_TURBO3_0)
+        add_compile_definitions(${TURBO_DEF}=1)
+    endforeach()
+
     ggml_add_backend_library(ggml-cuda
                              ${GGML_HEADERS_CUDA}
                              ${GGML_SOURCES_CUDA}

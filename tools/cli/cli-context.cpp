@@ -444,6 +444,10 @@ int cli_context::run() {
     banner += "  /clear              clear the chat history\n";
     banner += "  /read <file>        add a text file\n";
     banner += "  /glob <pattern>     add text files using globbing pattern\n";
+    if (!params.slot_save_path.empty()) {
+        banner += "  /save <name>        save the slot KV cache under --slot-save-path\n";
+        banner += "  /restore <name>     restore a saved slot KV cache (replaces the current context)\n";
+    }
     if (has_vision) {
         banner += "  /image <file>       add an image file\n";
     }
@@ -532,6 +536,22 @@ int cli_context::run() {
 
             impl->pending_media = json::array();
             ui::show_message("Chat history cleared.");
+            continue;
+        } else if (string_starts_with(buffer, "/save ") || string_starts_with(buffer, "/restore ")) {
+            if (params.slot_save_path.empty()) {
+                ui::show_error("slot save is disabled, start the CLI with --slot-save-path PATH");
+                continue;
+            }
+            const bool is_save = string_starts_with(buffer, "/save ");
+            std::string fname = string_strip(buffer.substr(is_save ? 6 : 9));
+            json body = { {"filename", fname} };
+            std::string path = string_format("/slots/0?action=%s", is_save ? "save" : "restore");
+            try {
+                client.post(path, body.dump());
+                ui::show_message(string_format("%s slot KV to %s", is_save ? "saved" : "restored", fname.c_str()));
+            } catch (const std::exception & e) {
+                ui::show_error(string_format("failed to %s slot: %s", is_save ? "save" : "restore", e.what()));
+            }
             continue;
         } else if (
                 (string_starts_with(buffer, "/image ") && has_vision) ||

@@ -1,6 +1,7 @@
 #include "getrows.cuh"
 #include "dequantize.cuh"
 #include "convert.cuh"
+#include "turbo-quant-cuda.cuh"
 
 template<int qk, int qr, dequantize_kernel_t dequantize_kernel, typename dst_t>
 static __global__ void k_get_rows(
@@ -326,6 +327,18 @@ static void ggml_cuda_get_rows_switch_src0_type(
             break;
         case GGML_TYPE_Q4_0:
             get_rows_cuda_q<QK4_0, QR4_0, dequantize_q4_0>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_TURBO4_0:
+            get_rows_cuda_q<QK_TURBO4, QR_TURBO4_0, dequantize_turbo4_0>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_TURBO2_0:
+            get_rows_cuda_q<QK_TURBO2, QR_TURBO2_0, dequantize_turbo2_0>(src0_d, src1_d, dst_d,
+                ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
+            break;
+        case GGML_TYPE_TURBO3_0:
+            get_rows_cuda_q<QK_TURBO3, QR_TURBO3_0, dequantize_turbo3_0>(src0_d, src1_d, dst_d,
                 ne00, nb01, nb02, nb03, ne10, ne11, ne12, nb10, nb11, nb12, nb1, nb2, nb3, stream);
             break;
         case GGML_TYPE_Q4_1:

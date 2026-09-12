@@ -85,6 +85,8 @@ struct llama_model_loader {
     bool load_mtp;
     bool load_ngram = true;
     bool offload_ngram_ssd = false;
+    bool ssd_streaming = false; // stream routed experts from disk via mmap, on demand
+    int  ssd_n_streaming = -1; // routed layers whose experts stream from disk (-1 = all)
 
     // handle TENSOR_READ_LAZY
     // use case: keep PLE / engrams embd tensors on disk, read them on demand

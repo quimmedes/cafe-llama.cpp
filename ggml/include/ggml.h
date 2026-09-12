@@ -430,7 +430,19 @@ extern "C" {
         GGML_TYPE_NVFP4   = 40, // NVFP4 (4 blocks, E4M3 scale)
         GGML_TYPE_Q1_0    = 41,
         GGML_TYPE_Q2_0    = 42,
-        GGML_TYPE_COUNT   = 43,
+        // TurboQuant KV-cache codecs - runtime-only, never written to a model file.
+        // type-ids match spiritbuun/buun-llama-cpp so the two forks stay interchangeable
+        GGML_TYPE_TURBO3_0 = 43, // TurboQuant 3-bit KV cache: 2-bit PolarQuant + 1-bit QJL
+        GGML_TYPE_TURBO4_0 = 44, // TurboQuant 4-bit KV cache: 3-bit PolarQuant + 1-bit QJL
+        GGML_TYPE_TURBO2_0 = 45, // TurboQuant 2-bit KV cache: 2-bit PolarQuant, no QJL
+        GGML_TYPE_TURBO3_TCQ = 46, // TurboQuant 3-bit KV cache: TCQ (Trellis-Coded Quantization)
+        GGML_TYPE_TURBO2_TCQ = 47, // TurboQuant 2-bit KV cache: TCQ (k=2, L=8, 256 states)
+        GGML_TYPE_TURBO8_0 = 48, // TurboQuant 8-bit KV cache: FWHT + uniform 256-level grid + per-block absmax, no QJL
+        GGML_TYPE_TURBO1   = 49, // RESERVED (codec never shipped here; slot kept for type-id stability)
+        GGML_TYPE_TURBO1_NSN = 50, // RESERVED
+        GGML_TYPE_TURBO1_CQ = 51, // RESERVED
+        GGML_TYPE_TURBO1_TCQ = 52, // turbo1 Trellis-Coded: FWHT + k=1/L=8 trellis, separate K/V 256-state codebooks (1.25 bpw)
+        GGML_TYPE_COUNT   = 53,
     };
 
     // [TAG_GGML_PREC]
@@ -2971,6 +2983,7 @@ extern "C" {
         bool                     is_quantized;
         ggml_to_float_t          to_float;
         ggml_from_float_t        from_float_ref;
+        bool                     is_turbo; // needs rotated Q, handled in the fused attention kernel
     };
 
     GGML_API const struct ggml_type_traits * ggml_get_type_traits(enum ggml_type type);

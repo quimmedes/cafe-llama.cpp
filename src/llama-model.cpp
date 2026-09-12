@@ -2779,6 +2779,8 @@ llama_model_params llama_model_default_params() {
         /*.load_mtp                    =*/ false,
         /*.load_ngram                  =*/ true,
         /*.offload_ngram_ssd           =*/ false,
+        /*.ssd_streaming               =*/ false,
+        /*.ssd_n_streaming            =*/ -1,
     };
 
     return result;

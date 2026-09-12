@@ -448,6 +448,26 @@ static fattn_vec_case_t ggml_cuda_get_fattn_vec_case(const int64_t head_size, co
     FATTN_VEC_CASES_ALL_D(Q8_0, BF16)
     FATTN_VEC_CASES_ALL_D(BF16, BF16)
 
+    // turbo K/V instances are 128/256 wide and always compiled (see ggml-cuda/CMakeLists.txt)
+    FATTN_VEC_CASE(128, TURBO4_0, F16)
+    FATTN_VEC_CASE(256, TURBO4_0, F16)
+    FATTN_VEC_CASE(128, TURBO2_0, F16)
+    FATTN_VEC_CASE(256, TURBO2_0, F16)
+    FATTN_VEC_CASE(128, TURBO3_0, F16)
+    FATTN_VEC_CASE(256, TURBO3_0, F16)
+    FATTN_VEC_CASE(128, F16, TURBO4_0)
+    FATTN_VEC_CASE(256, F16, TURBO4_0)
+    FATTN_VEC_CASE(128, F16, TURBO2_0)
+    FATTN_VEC_CASE(256, F16, TURBO2_0)
+    FATTN_VEC_CASE(128, F16, TURBO3_0)
+    FATTN_VEC_CASE(256, F16, TURBO3_0)
+    FATTN_VEC_CASE(128, TURBO4_0, TURBO4_0)
+    FATTN_VEC_CASE(256, TURBO4_0, TURBO4_0)
+    FATTN_VEC_CASE(128, TURBO2_0, TURBO2_0)
+    FATTN_VEC_CASE(256, TURBO2_0, TURBO2_0)
+    FATTN_VEC_CASE(128, TURBO3_0, TURBO3_0)
+    FATTN_VEC_CASE(256, TURBO3_0, TURBO3_0)
+
     return nullptr;
 }
 
@@ -490,6 +510,9 @@ static bool ggml_cuda_fattn_kv_type_supported(const ggml_type type) {
         case GGML_TYPE_Q5_0:
         case GGML_TYPE_Q5_1:
         case GGML_TYPE_Q8_0:
+        case GGML_TYPE_TURBO4_0:
+        case GGML_TYPE_TURBO2_0:
+        case GGML_TYPE_TURBO3_0:
             return true;
         default:
             return false;
@@ -580,6 +603,13 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
             return BEST_FATTN_KERNEL_NONE;
     }
 
+    const bool turbo_K = K->type == GGML_TYPE_TURBO4_0 || K->type == GGML_TYPE_TURBO2_0 || K->type == GGML_TYPE_TURBO3_0;
+    const bool turbo_V = V->type == GGML_TYPE_TURBO4_0 || V->type == GGML_TYPE_TURBO2_0 || V->type == GGML_TYPE_TURBO3_0;
+    if ((turbo_K || turbo_V) && Q->ne[0] % 128 != 0) {
+        // turbo blocks are 128 wide, so the head size must be a multiple of that
+        return BEST_FATTN_KERNEL_NONE;
+    }
+
     if (!ggml_cuda_fattn_kv_type_supported(K->type) || !ggml_cuda_fattn_kv_type_supported(V->type)) {
         return BEST_FATTN_KERNEL_NONE;
     }
@@ -591,6 +621,11 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes:
     // 192 satisfies % 64 == 0 but has no vec instance (DKQ != DV); force it onto the MMA path.
     const bool can_use_vector_kernel = Q->ne[0] <= 256 && Q->ne[0] % 64 == 0 && Q->ne[0] != 192 && K->ne[1] % FATTN_KQ_STRIDE == 0;
+
+    // turbo has vector kernel instances only, and just for 128 wide blocks
+    if (turbo_K || turbo_V) {
+        return can_use_vector_kernel && Q->ne[0] % 128 == 0 ? BEST_FATTN_KERNEL_VEC : BEST_FATTN_KERNEL_NONE;
+    }
 
     // If Turing tensor cores are available, use them:
     if (turing_mma_available(cc) && Q->ne[0] != 40 && Q->ne[0] != 72) {

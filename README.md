@@ -28,10 +28,24 @@ In Mixture of Experts (MoE) models (such as **Qwen 3.8 Flash Next**, **DeepSeek-
 | `-nhmoe N`            | `--n-host-moe N`         | Keep MoE weights of the **first N layers** in pinned host memory. |
 | `-cmoe`               | `--cpu-moe`              | Keep **all MoE expert weights** in CPU system RAM. |
 | `-ncmoe N`            | `--n-cpu-moe N`          | Keep MoE weights of the **first N layers** in CPU system RAM. |
+| `-ssd`                | `--ssd-streaming`, `--no-ssd-streaming` | Stream **routed expert weights from SSD on-demand** via `mmap`: only the experts a token actually selects page into RAM, the rest stay on disk. |
+| `-nssd N`             | `--ssd-n-streaming N`    | Stream the MoE experts of the **first N layers** from SSD (implies `--ssd-streaming`); analogous to `-ncmoe`/`-nhmoe`, but the destination is SSD instead of RAM. |
 | `-hmoed`              | `--host-moe-draft`       | Keep draft model MoE weights in pinned host memory (for speculative decoding). |
 | `-nhmoed N`           | `--n-host-moe-draft N`   | Keep draft model MoE weights of the **first N layers** in pinned host memory (for speculative decoding). |
 | `-cmoed`              | `--cpu-moe-draft`        | Keep draft model MoE weights in CPU system RAM (for speculative decoding). |
 | `-ncmoed N`           | `--n-cpu-moe-draft N`    | Keep draft model MoE weights of the **first N layers** in CPU system RAM (for speculative decoding). |
+
+### Turbo KV Cache (low-bit K/V, GPU-only)
+
+Low-bit **TurboQuant** types for the attention KV cache, selected with `-ctk` / `-ctv` (draft: `-ctkd` / `-ctvd`). Rows are stored in the rotated (WHT) domain and reconstructed inside the fused flash-attention kernel, so **flash-attention (`-fa`) is required**: it is auto-enabled, and loading aborts if flash-attention is explicitly disabled. Turbo KV types are GPU-side only.
+
+| Type      | Approx bits/value | Compression vs fp16 | Constraint |
+|-----------|-------------------|---------------------|------------|
+| `turbo4`  | ~4.1              | ~3.9x               | none       |
+| `turbo3`  | ~3.5              | ~4.6x               | head dim (K/V) must be a multiple of 128 |
+| `turbo2`  | ~2.5              | ~6.4x               | head dim (K/V) must be a multiple of 128 |
+
+Lower-bit K/V lets long-context KV fit in VRAM. Example: `-ctk turbo4 -ctv turbo4 -fa on`.
 
 ### Qwen 3.8 Flash Next / Qwen4 Internal N-Gram (PLE) Optimization
 

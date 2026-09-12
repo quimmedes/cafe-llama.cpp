@@ -323,6 +323,8 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
         ml.model_shared = params.model_shared;
         ml.load_ngram = params.load_ngram;
         ml.offload_ngram_ssd = params.offload_ngram_ssd;
+        ml.ssd_streaming             = params.ssd_streaming;
+        ml.ssd_n_streaming           = params.ssd_n_streaming;
 
         ml.print_info();
         std::unique_ptr<llama_model> model_ptr(llama_model_create(ml, params));

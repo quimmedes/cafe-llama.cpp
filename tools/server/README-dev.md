@@ -23,6 +23,12 @@ In-scope types of feature:
 
 Note: For security reasons, features that require reading or writing external files must be **disabled by default**. This covers features like: MCP, model save/load
 
+Planned (NOT implemented): on-disk KV cache for very large contexts
+
+Persisting a large context to disk between sessions is already covered above (save/load state, `--slot-save-path`). That is a write-once / read-once pattern and does not touch the decode loop.
+
+Streaming the live KV cache from disk *while generating* is NOT implemented and should not be added as a flag on its own. Attention reads the whole cache every decoded token, so there is no sparsity to exploit: paging the cache from disk means dragging the full (growing) cache over the device every token, which collapses t/s. This only becomes viable once attention itself selects a sparse subset of cached tokens (e.g. token/page selection, a la Quest/HNSA). The prerequisite work is therefore a sparse token-selection attention; once that exists a file-backed `llama_memory_i` behind it can be added. Until then, keep the live cache in memory.
+
 Out-of-scope features:
 
 - Backend:

@@ -943,6 +943,90 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .type_size                = 0,
         .is_quantized             = false,
     },
+    [GGML_TYPE_TURBO3_0] = {
+        .type_name                = "turbo3",
+        .blck_size                = QK_TURBO3,
+        .type_size                = sizeof(block_turbo3_0),
+        .is_quantized             = true,
+        .is_turbo                 = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_turbo3_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_turbo3_0_ref,
+    },
+    [GGML_TYPE_TURBO4_0] = {
+        .type_name                = "turbo4",
+        .blck_size                = QK_TURBO4,
+        .type_size                = sizeof(block_turbo4_0),
+        .is_quantized             = true,
+        .is_turbo                 = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_turbo4_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_turbo4_0_ref,
+    },
+    [GGML_TYPE_TURBO8_0] = {
+        .type_name                = "turbo8",
+        .blck_size                = QK_TURBO8,
+        .type_size                = sizeof(block_turbo8_0),
+        .is_quantized             = true,
+        .is_turbo                 = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_turbo8_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_turbo8_0_ref,
+    },
+    [GGML_TYPE_TURBO2_0] = {
+        .type_name                = "turbo2",
+        .blck_size                = QK_TURBO2,
+        .type_size                = sizeof(block_turbo2_0),
+        .is_quantized             = true,
+        .is_turbo                 = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_turbo2_0,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_turbo2_0_ref,
+    },
+    [GGML_TYPE_TURBO3_TCQ] = {
+        .type_name                = "turbo3_tcq",
+        .blck_size                = QK_TURBO3_TCQ,
+        .type_size                = sizeof(block_turbo3_tcq),
+        .is_quantized             = true,
+        .is_turbo                 = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_turbo3_tcq,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_turbo3_tcq_ref,
+    },
+    [GGML_TYPE_TURBO2_TCQ] = {
+        .type_name                = "turbo2_tcq",
+        .blck_size                = QK_TURBO2_TCQ,
+        .type_size                = sizeof(block_turbo2_tcq),
+        .is_quantized             = true,
+        .is_turbo                 = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_turbo2_tcq,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_turbo2_tcq_ref,
+    },
+    [GGML_TYPE_TURBO1] = { // RESERVED (codec removed 2026-07-05); metadata kept so the slot stays well-defined
+        .type_name                = "turbo1",
+        .blck_size                = QK_TURBO1,
+        .type_size                = sizeof(block_turbo1),
+        .is_quantized             = true,
+        .is_turbo                 = true,
+    },
+    [GGML_TYPE_TURBO1_NSN] = { // RESERVED (codec removed 2026-07-05); metadata kept so the slot stays well-defined
+        .type_name                = "turbo1_nsn",
+        .blck_size                = QK_TURBO1_NSN,
+        .type_size                = sizeof(block_turbo1_nsn),
+        .is_quantized             = true,
+        .is_turbo                 = true,
+    },
+    [GGML_TYPE_TURBO1_CQ] = { // RESERVED (codec removed 2026-07-05); metadata kept so the slot stays well-defined
+        .type_name                = "turbo1_cq",
+        .blck_size                = QK_TURBO1_CQ,
+        .type_size                = sizeof(block_turbo1_cq),
+        .is_quantized             = true,
+        .is_turbo                 = true,
+    },
+    [GGML_TYPE_TURBO1_TCQ] = {
+        .type_name                = "turbo1_tcq",
+        .blck_size                = QK_TURBO1_TCQ,
+        .type_size                = sizeof(block_turbo1_tcq),
+        .is_quantized             = true,
+        .is_turbo                 = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_turbo1_tcq,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_turbo1_tcq_ref,
+    },
 };
 
 const struct ggml_type_traits * ggml_get_type_traits(enum ggml_type type) {
@@ -8076,6 +8160,13 @@ size_t ggml_quantize_chunk(
         case GGML_TYPE_IQ1_M:   result = quantize_iq1_m  (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ4_NL:  result = quantize_iq4_nl (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_IQ4_XS:  result = quantize_iq4_xs (src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_TURBO2_0: result = quantize_turbo2_0(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_TURBO3_0: result = quantize_turbo3_0(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_TURBO4_0: result = quantize_turbo4_0(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_TURBO8_0: result = quantize_turbo8_0(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_TURBO3_TCQ: result = quantize_turbo3_tcq(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_TURBO2_TCQ: result = quantize_turbo2_tcq(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
+        case GGML_TYPE_TURBO1_TCQ: result = quantize_turbo1_tcq(src + start, (char *) dst + start_row * row_size, nrows, n_per_row, imatrix); break;
         case GGML_TYPE_F16:
             {
                 size_t elemsize = sizeof(ggml_fp16_t);

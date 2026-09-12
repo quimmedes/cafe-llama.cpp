@@ -315,6 +315,10 @@ const std::vector<ggml_type> kv_cache_types = {
     GGML_TYPE_IQ4_NL,
     GGML_TYPE_Q5_0,
     GGML_TYPE_Q5_1,
+    // turbo is gpu-side only; K and V cache, requires flash_attn + head_size 128/256 (enforced in llama-context)
+    GGML_TYPE_TURBO4_0,
+    GGML_TYPE_TURBO2_0,
+    GGML_TYPE_TURBO3_0,
 };
 
 static ggml_type kv_cache_type_from_str(const std::string & s) {
@@ -2736,6 +2740,36 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_NGRAM_SSD"));
     add_opt(common_arg(
+        {"--ssd-streaming", "-ssd"},
+        {"--no-ssd-streaming"},
+        string_format("stream non-active routed experts from disk, keep a bounded resident cache (default: %s)", params.ssd_streaming ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.ssd_streaming = value;
+        }
+    ).set_env("LLAMA_ARG_SSD_STREAMING"));
+    add_opt(common_arg(
+        {"--ssd-streaming-cache-experts"}, "N",
+        "size of the resident routed-expert cache while streaming from disk:\n"
+        "- an integer sets the number of expert slots\n"
+        "- a byte budget such as 32GB sets the size in bytes\n"
+        "- when omitted the budget is computed automatically\n",
+        [](common_params & params, const std::string & value) {
+            params.ssd_streaming_cache_experts = value;
+        }
+    ).set_env("LLAMA_ARG_SSD_STREAMING_CACHE_EXPERTS"));
+    add_opt(common_arg(
+        {"--ssd-n-streaming", "-nssd"}, "N",
+        "stream the MoE expert weights of the first N layers from disk (implies --ssd-streaming)\n"
+        "(analogous to --n-cpu-moe, but the destination is SSD instead of RAM)",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.ssd_n_streaming = value;
+            params.ssd_streaming   = true;
+        }
+    ).set_env("LLAMA_ARG_SSD_N_STREAMING"));
+    add_opt(common_arg(
         {"--numa"}, "TYPE",
         "attempt optimizations that help on some NUMA systems\n"
         "- distribute: spread execution evenly over all nodes\n"
@@ -3659,7 +3693,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
                 params.slot_save_path += DIRECTORY_SEPARATOR;
             }
         }
-    ).set_examples({LLAMA_EXAMPLE_SERVER}));
+    ).set_examples({LLAMA_EXAMPLE_SERVER, LLAMA_EXAMPLE_CLI}));
     add_opt(common_arg(
         {"--media-path"}, "PATH",
         "directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled)",

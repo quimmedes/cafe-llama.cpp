@@ -353,6 +353,8 @@ extern "C" {
         bool load_mtp;        // whether to load MTP layers
         bool load_ngram;      // whether to load N-gram / PLE layers (default: true)
         bool offload_ngram_ssd; // whether to exclusively offload N-gram embedding table to SSD (default: false)
+        bool ssd_streaming; // stream non-active routed experts from disk, bounded by the resident set (default: false)
+        int32_t ssd_n_streaming; // routed layers whose experts stream from disk, like --n-cpu-moe (default: -1 = all)
     };
 
     struct llama_sampler_seq_config {

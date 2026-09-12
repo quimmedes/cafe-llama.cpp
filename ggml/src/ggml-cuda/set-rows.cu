@@ -1,7 +1,19 @@
 #include "set-rows.cuh"
 #include "cpy-utils.cuh"
+#include "turbo-quant-cuda.cuh"
 
 typedef void (*set_rows_kernel_t)(const char * src, char * dst);
+
+// definitions for the externs in turbo-quant-cuda.cuh
+bool g_turbo_meansub_suppress = false;   // skip the encode mean-sub tap
+bool g_turbo_innerq_calibrated = false;  // set by InnerQ calibration
+
+// turbo fattn-side hooks (defined in fattn.cu upstream), opt-in via TURBO_Q_CALIBRATE / InnerQ.
+// inert until the turbo fattn path exists here, they do not touch stored K/V
+void turbo_innerq_init_fattn() {}
+void turbo_innerq_update_fattn_scales(const float * scale_inv) { (void) scale_inv; }
+void turbo_q_calibrate_init() {}
+void turbo_q_calibrate_finalize() {}
 
 // Generic quantized set_rows kernel template
 template <typename idx_t, typename block_type, int qk, void (*quantize_func)(const float *, block_type *)>
@@ -317,6 +329,56 @@ static void set_rows_cuda(ggml_backend_cuda_context & ctx, const ggml_tensor * s
             nb1, nb2, nb3,
             stream
         );
+    } else if (dst->type == GGML_TYPE_TURBO4_0) {
+        set_rows_cuda_quant<idx_t, block_turbo4_0, QK_TURBO4, quantize_f32_turbo4_0_block>(
+            src0_d, src1_d, (block_turbo4_0*)dst->data,
+            ne00, ne01, ne02, ne03,
+            ne10, ne11, ne12, ne13,
+            nb01, nb02, nb03,
+            nb10, nb11, nb12,
+            nb1, nb2, nb3,
+            stream
+        );
+    } else if (dst->type == GGML_TYPE_TURBO2_0) {
+        GGML_ASSERT(ne00 % QK_TURBO2_GROUP == 0);
+        const int64_t ne_total_groups = (ne00 * ne01 * ne02 * ne03) / QK_TURBO2_GROUP;
+        const int num_blocks_grid = (ne_total_groups + CUDA_SET_ROWS_BLOCK_SIZE - 1) / CUDA_SET_ROWS_BLOCK_SIZE;
+        const int64_t s01_f = nb01/sizeof(float); const int64_t s02_f = nb02/sizeof(float); const int64_t s03_f = nb03/sizeof(float);
+        const int64_t s10_i = nb10/sizeof(idx_t); const int64_t s11_i = nb11/sizeof(idx_t); const int64_t s12_i = nb12/sizeof(idx_t);
+        if (ne_total_groups > 0 && ne00 > 0 && ne01 > 0 && ne02 > 0 && ne11 > 0 && ne12 > 0) {
+            const uint3 ne00_fd = init_fastdiv_values((uint32_t) ne00);
+            const uint3 ne01_fd = init_fastdiv_values((uint32_t) ne01);
+            const uint3 ne02_fd = init_fastdiv_values((uint32_t) ne02);
+            const uint3 ne11_fd = init_fastdiv_values((uint32_t) ne11);
+            const uint3 ne12_fd = init_fastdiv_values((uint32_t) ne12);
+            // turbo2 is K/V-agnostic, no InnerQ channel scale; mean-sub table absent in this build
+            k_set_rows_turbo2<idx_t><<<num_blocks_grid, CUDA_SET_ROWS_BLOCK_SIZE, 0, stream>>>(
+                src0_d, src1_d, (block_turbo2_0*)dst->data,
+                ne_total_groups, ne00, ne01, ne02, ne10, ne11, ne12, ne13,
+                s01_f, s02_f, s03_f, s10_i, s11_i, s12_i,
+                nullptr, nb1, nb2, nb3,
+                ne00_fd, ne01_fd, ne02_fd, ne11_fd, ne12_fd);
+        }
+    } else if (dst->type == GGML_TYPE_TURBO3_0) {
+        GGML_ASSERT(ne00 % QK_TURBO3_GROUP == 0);
+        const int64_t ne_total_groups = (ne00 * ne01 * ne02 * ne03) / QK_TURBO3_GROUP;
+        const int num_blocks_grid = (ne_total_groups + CUDA_SET_ROWS_BLOCK_SIZE - 1) / CUDA_SET_ROWS_BLOCK_SIZE;
+        const int64_t s01_f = nb01/sizeof(float); const int64_t s02_f = nb02/sizeof(float); const int64_t s03_f = nb03/sizeof(float);
+        const int64_t s10_i = nb10/sizeof(idx_t); const int64_t s11_i = nb11/sizeof(idx_t); const int64_t s12_i = nb12/sizeof(idx_t);
+        if (ne_total_groups > 0 && ne00 > 0 && ne01 > 0 && ne02 > 0 && ne11 > 0 && ne12 > 0) {
+            const uint3 ne00_fd = init_fastdiv_values((uint32_t) ne00);
+            const uint3 ne01_fd = init_fastdiv_values((uint32_t) ne01);
+            const uint3 ne02_fd = init_fastdiv_values((uint32_t) ne02);
+            const uint3 ne11_fd = init_fastdiv_values((uint32_t) ne11);
+            const uint3 ne12_fd = init_fastdiv_values((uint32_t) ne12);
+            // turbo3 scales x by d_innerq_channel_scale, identity after turbo_innerq_init()
+            k_set_rows_turbo3<idx_t><<<num_blocks_grid, CUDA_SET_ROWS_BLOCK_SIZE, 0, stream>>>(
+                src0_d, src1_d, (block_turbo3_0*)dst->data,
+                ne_total_groups, ne00, ne01, ne02, ne10, ne11, ne12, ne13,
+                s01_f, s02_f, s03_f, s10_i, s11_i, s12_i,
+                1, nullptr, -1, nb1, nb2, nb3,
+                ne00_fd, ne01_fd, ne02_fd, ne11_fd, ne12_fd);
+        }
     } else {
         GGML_ABORT("unsupported type %s", ggml_type_name(dst->type));
     }
@@ -379,6 +441,15 @@ void ggml_cuda_op_set_rows(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
 
     GGML_ASSERT(src0->type == GGML_TYPE_F32 || (src0->type == GGML_TYPE_F16 && dst->type == GGML_TYPE_F16));
     GGML_ASSERT(src1->type == GGML_TYPE_I64 || src1->type == GGML_TYPE_I32);
+
+    // turbo3 encode scales by d_innerq_channel_scale; upload identity once before first launch
+    if (dst->type == GGML_TYPE_TURBO3_0) {
+        static bool turbo3_innerq_ready = false;
+        if (!turbo3_innerq_ready) {
+            turbo_innerq_init();
+            turbo3_innerq_ready = true;
+        }
+    }
 
     if (src0->type == GGML_TYPE_F32) {
         if (src1->type == GGML_TYPE_I64) {
