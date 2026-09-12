@@ -886,7 +886,7 @@ struct llama_model * common_safetensors_load_model(const std::string & path, con
 
 static fs::path st_checkpoint_dir(const std::string & path);
 
-static void st_add_meta_agnes(gguf_context * meta, const fs::path & dir, const json & cfg, const std::string & model_name);
+static void st_add_meta_agnes(gguf_context * meta, const json & cfg, const std::string & model_name);
 static void st_build_plans_agnes(st_loader & L, gguf_context * meta, const fs::path & dir, const json & cfg, enum st_mode mode);
 
 struct llama_model * common_model_load_from_file(const std::string & path, const std::string & safetensors_outtype, const struct llama_model_params & params, bool mtp_only) {
@@ -1216,7 +1216,7 @@ struct llama_model * common_safetensors_load_model(const std::string & path, con
         gguf_context * meta = gguf_init_empty();
 
         if (model_type == "agnes") {
-            st_add_meta_agnes(meta, dir, cfg, dir.filename().string());
+            st_add_meta_agnes(meta, cfg, dir.filename().string());
             st_add_meta_vocab(meta, dir, cfg);
             st_build_plans_agnes(*L, meta, dir, cfg, mode);
         } else {
@@ -1614,7 +1614,7 @@ void common_mmproj_source_free(common_mmproj_source * src) {
 // Agnes 3.0: hybrid delta rule / global attention, dense FFN with a parallel branch
 // ---------------------------------------------------------------------------
 
-static void st_add_meta_agnes(gguf_context * meta, const fs::path & dir, const json & cfg, const std::string & model_name) {
+static void st_add_meta_agnes(gguf_context * meta, const json & cfg, const std::string & model_name) {
     const json & t = cfg.at("text_config");
 
     const uint32_t n_layer  = t.at("num_hidden_layers").get<uint32_t>();
@@ -1796,9 +1796,6 @@ static void st_build_plans_agnes(st_loader & L, gguf_context * meta, const fs::p
     const json & t = cfg.at("text_config");
 
     const uint32_t n_layer  = t.at("num_hidden_layers").get<uint32_t>();
-    const uint32_t n_ff     = t.at("intermediate_size").get<uint32_t>();
-    const uint32_t n_ff_par = t.value("parallel_ffn_intermediate_size", 0u);
-
     L.num_k_heads = t.at("linear_num_key_heads").get<uint32_t>();
     L.num_v_heads = t.at("linear_num_value_heads").get<uint32_t>();
     L.head_k_dim  = t.at("linear_key_head_dim").get<uint32_t>();
