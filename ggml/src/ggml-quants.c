@@ -2095,6 +2095,63 @@ static void quantize_row_q4_0_impl(const float * GGML_RESTRICT x, block_q4_0 * G
     }
 }
 
+// q1_0 keeps one sign per weight and one scale per block, so the signs are already fixed:
+// sign(x) minimises the error for any positive scale, which leaves the scale as the only
+// free parameter. Minimising sum_j w_j (x_j - d*s_j)^2 over d gives
+//
+//     d = sum_j w_j |x_j| / sum_j w_j
+//
+// With uniform weights that is the mean of |x| the reference path computes, so the
+// existing behaviour is the unweighted optimum. An importance matrix holds the mean
+// square activation per column, and a weight error of dw_j costs dw_j^2 E[a_j^2] at the
+// output, so passing it in as w_j is what makes the scale follow the columns the model
+// actually reads.
+static void quantize_row_q1_0_impl(const float * GGML_RESTRICT x, block_q1_0 * GGML_RESTRICT y,
+                                   int64_t n_per_row, const float * GGML_RESTRICT quant_weights) {
+    static const int qk = QK1_0;
+
+    assert(n_per_row % qk == 0);
+
+    const int nb = n_per_row / qk;
+
+    for (int i = 0; i < nb; i++) {
+        const float * xb = x + i*qk;
+        const float * wb = quant_weights + i*qk;
+
+        float sum_wx = 0.0f;
+        float sum_w  = 0.0f;
+        for (int j = 0; j < qk; j++) {
+            const float w = wb[j];
+            sum_wx += w * fabsf(xb[j]);
+            sum_w  += w;
+        }
+
+        // a block the importance matrix never saw carries no preference, so fall back to
+        // the unweighted mean rather than emitting a zero scale
+        float d;
+        if (sum_w > 0.0f) {
+            d = sum_wx / sum_w;
+        } else {
+            float sum_abs = 0.0f;
+            for (int j = 0; j < qk; j++) {
+                sum_abs += fabsf(xb[j]);
+            }
+            d = sum_abs / qk;
+        }
+
+        y[i].d = GGML_FP32_TO_FP16(d);
+
+        for (int j = 0; j < qk / 8; ++j) {
+            y[i].qs[j] = 0;
+        }
+        for (int j = 0; j < qk; ++j) {
+            if (xb[j] >= 0.0f) {
+                y[i].qs[j / 8] |= (1 << (j % 8));
+            }
+        }
+    }
+}
+
 size_t quantize_q1_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrow, int64_t n_per_row, const float * quant_weights) {
     if (!quant_weights) {
         quantize_row_q1_0_ref(src, dst, (int64_t)nrow*n_per_row);
@@ -2103,7 +2160,7 @@ size_t quantize_q1_0(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, 
     size_t row_size = ggml_row_size(GGML_TYPE_Q1_0, n_per_row);
     char * qrow = (char *)dst;
     for (int64_t row = 0; row < nrow; ++row) {
-        quantize_row_q1_0_ref(src, (block_q1_0*)qrow, n_per_row);
+        quantize_row_q1_0_impl(src, (block_q1_0*)qrow, n_per_row, quant_weights);
         src += n_per_row;
         qrow += row_size;
     }
