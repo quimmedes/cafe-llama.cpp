@@ -2308,7 +2308,8 @@ int llama_bench(int argc, char ** argv) {
             uint32_t n_ctx_needed = inst.n_prompt + inst.n_gen + inst.n_depth;
             cparams.n_ctx = std::max(cparams.n_ctx, n_ctx_needed);
 
-            common_fit_params(inst.model.c_str(), &mparams, &cparams,
+            // llama-bench loads GGUF only, so the FP8 storage type is unused here; use the common default
+            common_fit_params(inst.model.c_str(), "q8_0", &mparams, &cparams,
                 fit_tensor_split.data(),
                 fit_overrides.data(),
                 margins.data(),

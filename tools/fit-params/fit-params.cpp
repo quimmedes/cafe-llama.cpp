@@ -31,7 +31,7 @@ int llama_fit_params(int argc, char ** argv) {
     auto cparams = common_context_params_to_llama(params);
 
     if (!params.fit_params_print) {
-        const common_params_fit_status status = common_fit_params(params.model.path.c_str(), &mparams, &cparams,
+        const common_params_fit_status status = common_fit_params(params.model.path.c_str(), params.safetensors_outtype.c_str(), &mparams, &cparams,
                 params.tensor_split, params.tensor_buft_overrides.data(), params.fit_params_target.data(), params.fit_params_min_ctx,
                 nullptr,
                 params.verbosity >= LOG_LEVEL_DEBUG ? GGML_LOG_LEVEL_DEBUG : GGML_LOG_LEVEL_ERROR);
