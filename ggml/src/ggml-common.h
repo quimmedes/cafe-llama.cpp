@@ -248,6 +248,15 @@ typedef struct {
 } block_q5_1;
 static_assert(sizeof(block_q5_1) == 2 * sizeof(ggml_half) + sizeof(uint32_t) + QK5_1 / 2, "wrong q5_1 block size/padding");
 
+#define QK_F8 128
+#define QR_F8 1
+
+typedef struct {
+    GGML_EXTENSION float d;        // scale of the block, fp32 so that a source scale stays exact
+    GGML_EXTENSION uint8_t qs[QK_F8]; // E4M3 codes, one byte per value
+} block_f8;
+static_assert(sizeof(block_f8) == sizeof(float) + QK_F8, "wrong f8 block size/padding");
+
 #define QK8_0 32
 typedef struct {
     ggml_half d;       // delta

@@ -1018,6 +1018,14 @@ static const struct ggml_type_traits type_traits[GGML_TYPE_COUNT] = {
         .is_quantized             = true,
         .is_turbo                 = true,
     },
+    [GGML_TYPE_F8_E4M3] = {
+        .type_name                = "f8_e4m3",
+        .blck_size                = QK_F8,
+        .type_size                = sizeof(block_f8),
+        .is_quantized             = true,
+        .to_float                 = (ggml_to_float_t) dequantize_row_f8,
+        .from_float_ref           = (ggml_from_float_t) quantize_row_f8_ref,
+    },
     [GGML_TYPE_TURBO1_TCQ] = {
         .type_name                = "turbo1_tcq",
         .blck_size                = QK_TURBO1_TCQ,

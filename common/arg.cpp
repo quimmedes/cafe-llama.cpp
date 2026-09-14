@@ -3120,11 +3120,22 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_examples({LLAMA_EXAMPLE_COMMON, LLAMA_EXAMPLE_EXPORT_LORA, LLAMA_EXAMPLE_DOWNLOAD, LLAMA_EXAMPLE_TOKENIZE}).set_env("LLAMA_ARG_MODEL"));
     add_opt(common_arg(
+        {"--safetensors-native"},
+        "keep the fp8 weights of a safetensors checkpoint in fp8 instead of requantizing them\n"
+        "same as --safetensors-outtype native",
+        [](common_params & params) {
+            params.safetensors_outtype = "native";
+        }
+    ).set_examples({LLAMA_EXAMPLE_COMMON}));
+
+    add_opt(common_arg(
         {"--safetensors-outtype"}, "TYPE",
-        "storage type for the weights stored as FP8 in a safetensors checkpoint\n"
-        "supported values: f16, bf16, q8_0",
+        "storage type for the quantized weights of a safetensors checkpoint\n"
+        "supported values: auto, native, f16, bf16, q8_0, q4_0\n"
+        "auto keeps FP8 weights at 8 bits and packed int4 weights at 4 bits\n"
+        "native keeps the fp8 weights exactly as the checkpoint stores them",
         [](common_params & params, const std::string & value) {
-            static const std::vector<std::string> allowed = { "f16", "bf16", "q8_0" };
+            static const std::vector<std::string> allowed = { "auto", "native", "f16", "bf16", "q8_0", "q4_0" };
             if (std::find(allowed.begin(), allowed.end(), value) == allowed.end()) {
                 throw std::invalid_argument("error: invalid --safetensors-outtype: " + value + "\n");
             }

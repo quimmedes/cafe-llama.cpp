@@ -374,6 +374,13 @@ void server_model_meta::update_caps() {
         common_models_handler_apply(handler, params); // note: this won't download the model because offline=true
         if (params.no_mmproj || params.mmproj.path.empty()) {
             multimodal = { false, false };
+        } else if (common_safetensors_is_checkpoint(params.mmproj.path)) {
+            // the tower of a safetensors checkpoint is built in memory, there is no GGUF file to read
+            std::unique_ptr<common_mmproj_source, void (*)(common_mmproj_source *)> mmproj_src(
+                    common_mmproj_source_create(params.mmproj.path), &common_mmproj_source_free);
+            multimodal = mmproj_src
+                ? mtmd_get_cap_from_source(mmproj_src->metadata, &mmproj_src->source, params.mmproj.path.c_str())
+                : mtmd_caps{ false, false };
         } else {
             multimodal = mtmd_get_cap_from_file(params.mmproj.path.c_str());
         }

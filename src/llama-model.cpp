@@ -1782,9 +1782,12 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
             }
 
             if (!provided.empty()) {
+                // the allocator below pads every tensor to the alignment of the buffer type, not just to the memory alignment
+                const size_t alignment = ggml_backend_buft_get_alignment(buft);
+
                 size_t size = 0;
                 for (ggml_tensor * t : provided) {
-                    size += GGML_PAD(ggml_backend_buft_get_alloc_size(buft, t), GGML_MEM_ALIGN);
+                    size += GGML_PAD(ggml_backend_buft_get_alloc_size(buft, t), alignment);
                 }
 
                 ggml_backend_buffer_t buf = ggml_backend_buft_alloc_buffer(buft, size);

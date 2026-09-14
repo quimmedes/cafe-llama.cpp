@@ -512,7 +512,7 @@ struct common_params {
 
     struct common_params_model model;
 
-    std::string safetensors_outtype = "q8_0"; // storage type for FP8 weights in a safetensors checkpoint // NOLINT
+    std::string safetensors_outtype = "auto"; // storage type for the quantized weights of a safetensors checkpoint // NOLINT
 
     std::set<std::string> model_alias;     // model aliases                                                 // NOLINT
     std::set<std::string> model_tags;      // model tags (informational, not used for routing)              // NOLINT

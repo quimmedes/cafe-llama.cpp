@@ -550,6 +550,58 @@ void dequantize_row_q5_1(const block_q5_1 * GGML_RESTRICT x, float * GGML_RESTRI
     }
 }
 
+size_t quantize_f8(const float * GGML_RESTRICT src, void * GGML_RESTRICT dst, int64_t nrows, int64_t n_per_row, const float * quant_weights) {
+    (void) quant_weights;
+    const int64_t nblock = n_per_row / QK_F8;
+    block_f8 * out = (block_f8 *) dst;
+    for (int64_t row = 0; row < nrows; ++row) {
+        const float * x = src + row * n_per_row;
+        for (int64_t b = 0; b < nblock; ++b) {
+            const float * xb = x + b * QK_F8;
+            float amax = 0.0f;
+            for (int j = 0; j < QK_F8; ++j) {
+                amax = fmaxf(amax, fabsf(xb[j]));
+            }
+            const float d = amax / 448.0f;
+            const float id = d != 0.0f ? 1.0f / d : 0.0f;
+            out[b].d = d;
+            for (int j = 0; j < QK_F8; ++j) {
+                out[b].qs[j] = ggml_fp32_to_e4m3(xb[j] * id);
+            }
+        }
+        out += nblock;
+    }
+    return (size_t) nrows * nblock * sizeof(block_f8);
+}
+
+void quantize_row_f8_ref(const float * GGML_RESTRICT x, block_f8 * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_F8 == 0);
+    const int64_t nb = k / QK_F8;
+    for (int64_t b = 0; b < nb; ++b) {
+        float amax = 0.0f;
+        for (int j = 0; j < QK_F8; ++j) {
+            amax = fmaxf(amax, fabsf(x[b * QK_F8 + j]));
+        }
+        const float d = amax / 448.0f;
+        const float id = d != 0.0f ? 1.0f / d : 0.0f;
+        y[b].d = d;
+        for (int j = 0; j < QK_F8; ++j) {
+            y[b].qs[j] = ggml_fp32_to_e4m3(x[b * QK_F8 + j] * id);
+        }
+    }
+}
+
+void dequantize_row_f8(const block_f8 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
+    assert(k % QK_F8 == 0);
+    const int64_t nb = k / QK_F8;
+    for (int64_t b = 0; b < nb; ++b) {
+        const float d = x[b].d;
+        for (int j = 0; j < QK_F8; ++j) {
+            y[b * QK_F8 + j] = d * ggml_e4m3_to_fp32(x[b].qs[j]);
+        }
+    }
+}
+
 void dequantize_row_q8_0(const block_q8_0 * GGML_RESTRICT x, float * GGML_RESTRICT y, int64_t k) {
     static const int qk = QK8_0;
 

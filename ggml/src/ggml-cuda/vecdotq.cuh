@@ -331,6 +331,27 @@ static __device__ __forceinline__ float vec_dot_mxfp4_q8_1(
 #define VDR_NVFP4_Q8_1_MMVQ 4
 #define VDR_NVFP4_Q8_1_MMQ  8
 
+#define VDR_F8_E4M3_Q8_1_MMVQ 4
+
+// the fp8 blocks keep the codes of the checkpoint and carry one fp32 scale for 128 values
+static __device__ __forceinline__ float vec_dot_f8_q8_1(
+    const void * __restrict__ vbq, const block_q8_1 * __restrict__ bq8_1, const int & kbx, const int & iqs) {
+
+    const block_f8 * bq4 = (const block_f8 *) vbq + kbx;
+
+    // iqs is a value offset in the 128 value block, one fp8 block covers 4 q8_1 blocks
+    const block_q8_1 * bq8 = bq8_1 + iqs / QK8_1;
+    const int iq = iqs % QK8_1;
+
+    float sumi = 0.0f;
+#pragma unroll
+    for (int j = 0; j < VDR_F8_E4M3_Q8_1_MMVQ; ++j) {
+        sumi += ggml_cuda_e4m3_to_fp32(bq4->qs[iqs + j]) * (float) bq8->qs[iq + j];
+    }
+
+    return bq4->d * __low2float(bq8->ds) * sumi;
+}
+
 static __device__ __forceinline__ float vec_dot_nvfp4_q8_1(
                                         const void * __restrict__ vbq,
                                         const block_q8_1 * __restrict__ bq8_1,

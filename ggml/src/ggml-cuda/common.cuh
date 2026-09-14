@@ -124,6 +124,21 @@
 #    define GGML_CUDA_USE_PDL
 #endif  // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && (CUDART_VERSION >= 12030 || (!(defined(_MSC_VER) && !defined(__clang__)) && CUDART_VERSION >= 11080))
 
+// E4M3: sign, 4 exponent bits (bias 7), 3 mantissa bits, used by the fp8 weight type
+static __device__ __forceinline__ float ggml_cuda_e4m3_to_fp32(uint8_t x) {
+    if (x == 0x7F || x == 0xFF) {
+        return 0.0f; // NaN
+    }
+    const float sign = (x & 0x80) ? -1.0f : 1.0f;
+    const int   exp  = (x >> 3) & 0xF;
+    const int   man  = x & 0x7;
+
+    if (exp == 0) {
+        return sign * (float) man * (1.0f/512.0f); // subnormal
+    }
+    return sign * (1.0f + (float) man/8.0f) * exp2f((float) (exp - 7));
+}
+
 static __device__ __forceinline__ void ggml_cuda_syncwarp() {
 #ifndef GGML_USE_HIP
     __syncwarp();
@@ -1052,6 +1067,14 @@ struct ggml_cuda_type_traits<GGML_TYPE_NVFP4> {
     static constexpr int qr = QR_NVFP4;
     static constexpr int qi = QI_NVFP4;
     static constexpr int bs = sizeof(block_nvfp4);
+};
+
+template<>
+struct ggml_cuda_type_traits<GGML_TYPE_F8_E4M3> {
+    static constexpr int qk = QK_F8;
+    static constexpr int qr = QR_F8;
+    static constexpr int qi = QK_F8; // index unit is one value, so the 4 mmvq threads per 32 values cover the block
+    static constexpr int bs = sizeof(block_f8);
 };
 
 template<>

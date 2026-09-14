@@ -141,3 +141,6 @@ struct clip_cap {
     bool has_audio;
 };
 struct clip_cap clip_get_cap(const char * fname);
+
+// the tower of a safetensors checkpoint is built in memory, so there is no GGUF file to read
+struct clip_cap clip_get_cap_from_source(struct gguf_context * metadata, const struct llama_model_source * source, const char * name);

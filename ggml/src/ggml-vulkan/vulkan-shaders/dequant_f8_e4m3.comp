@@ -1,0 +1,32 @@
+#version 450
+
+#include "dequant_head.glsl"
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly buffer A {block_f8_e4m3 data_a[];};
+layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
+
+void main() {
+    const uint i = gl_WorkGroupID.x * 4 + gl_LocalInvocationID.x / 64;
+
+    const uint tid = gl_LocalInvocationID.x % 64;
+    const uint il  = tid / 4;
+    const uint ir  = tid % 4;
+    const uint ib = 4*i + ir;
+    if (ib >= p.nel / 128) {
+        return;
+    }
+
+    const uint b_idx = 512*i + 128*ir + 8*il;
+
+    const float d = data_a[ib].d;
+
+    [[unroll]] for (uint l = 0; l < 8; ++l) {
+        const uint c = uint(data_a[ib].qs[8*il + l]);
+        const uint e = (c >> 3u) & 0xFu;
+        const uint m = c & 0x7u;
+        const float v = e == 0u ? float(m) * (1.0f / 512.0f) : (1.0f + float(m) / 8.0f) * exp2(float(e) - 7.0f);
+        data_b[b_idx + l] = D_TYPE(d * ((c & 0x80u) != 0u ? -v : v));
+    }
+}

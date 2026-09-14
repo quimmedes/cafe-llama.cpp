@@ -5185,6 +5185,7 @@ static bool ggml_backend_cuda_device_supports_op(ggml_backend_dev_t dev, const g
                 switch (a->type) {
                     case GGML_TYPE_F32:
                     case GGML_TYPE_F16:
+                    case GGML_TYPE_F8_E4M3:
                     case GGML_TYPE_Q1_0:
                     case GGML_TYPE_Q2_0:
                     case GGML_TYPE_Q4_0:

@@ -2605,6 +2605,19 @@ struct mtmd_caps mtmd_get_cap_from_file(const char * fname) {
     }
 }
 
+struct mtmd_caps mtmd_get_cap_from_source(struct gguf_context * metadata, const struct llama_model_source * source, const char * fname) {
+    try {
+        auto tmp = clip_get_cap_from_source(metadata, source, fname);
+        mtmd_caps cap;
+        cap.inp_audio  = tmp.has_audio;
+        cap.inp_vision = tmp.has_vision;
+        return cap;
+    } catch (const std::exception & e) {
+        LOG_ERR("%s: failed to get capabilities of '%s': %s\n", __func__, fname, e.what());
+        return mtmd_caps{ false, false };
+    }
+}
+
 //
 // Debugging API (NOT intended for public use)
 //

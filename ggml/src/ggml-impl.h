@@ -509,6 +509,61 @@ static inline float ggml_e8m0_to_fp32_half(uint8_t x) {
 #define GGML_E8M0_TO_FP32(x) ggml_e8m0_to_fp32(x)
 #define GGML_E8M0_TO_FP32_HALF(x) ggml_e8m0_to_fp32_half(x)
 
+// E4M3: sign, 4 exp bits (bias=7), 3 mantissa bits, the format of the quantized fp8 checkpoints
+static inline float ggml_e4m3_to_fp32(uint8_t x) {
+    if (x == 0x7F || x == 0xFF) {
+        return 0.0f; // NaN
+    }
+    const uint32_t e = (x >> 3) & 0xF;
+    const uint32_t m = x & 0x7;
+    if (e == 0) {
+        const float v = m * (1.0f / 512.0f); // subnormal
+        return (x & 0x80) ? -v : v;
+    }
+    // normal: 1.m x 2^(e-7), built directly as the fp32 bits of that value
+    const uint32_t bits = ((uint32_t) (x & 0x80) << 24) | ((e + 120) << 23) | (m << 20);
+    float v;
+    memcpy(&v, &bits, sizeof(v));
+    return v;
+}
+
+// round to nearest even, clamping to the range of E4M3
+static inline uint8_t ggml_fp32_to_e4m3(float x) {
+    const uint8_t sign = (x < 0.0f) ? 0x80 : 0x00;
+
+    const float a = fabsf(x);
+    if (isnan(a)) {
+        return (uint8_t) (sign | 0x7F);
+    }
+    if (a > 448.0f) {
+        return (uint8_t) (sign | 0x7E); // clamp to the largest finite value
+    }
+
+    if (a >= 0x1p-6f) {
+        // normal range: a = (2m) * 2^(e - 1) with frexp giving a = m * 2^e
+        int e;
+        (void) frexpf(a, &e);
+        const int exp = e + 6; // bias 7
+        const float scaled = a / exp2f(exp - 7); // in [1, 2)
+        int man = (int) lrintf((scaled - 1.0f) * 8.0f);
+        if (man == 8) {
+            man = 0;
+            if (exp >= 15) {
+                return (uint8_t) (sign | 0x7E);
+            }
+            return (uint8_t) (sign | ((exp + 1) << 3));
+        }
+        return (uint8_t) (sign | (exp << 3) | man);
+    }
+
+    // subnormal range
+    int man = (int) lrintf(a / 0x1p-9f);
+    if (man > 7) {
+        man = 7;
+    }
+    return (uint8_t) (sign | man);
+}
+
 // UE4M3: unsigned, 4 exp bits (bias=7), 3 mantissa bits
 // Returns value * 0.5 to match kvalues_mxfp4 convention (kvalues = 2 * E2M1_float)
 static inline float ggml_ue4m3_to_fp32(uint8_t x) {

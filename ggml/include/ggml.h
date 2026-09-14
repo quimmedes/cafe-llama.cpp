@@ -442,7 +442,8 @@ extern "C" {
         GGML_TYPE_TURBO1_NSN = 50, // RESERVED
         GGML_TYPE_TURBO1_CQ = 51, // RESERVED
         GGML_TYPE_TURBO1_TCQ = 52, // turbo1 Trellis-Coded: FWHT + k=1/L=8 trellis, separate K/V 256-state codebooks (1.25 bpw)
-        GGML_TYPE_COUNT   = 53,
+        GGML_TYPE_F8_E4M3 = 53, // FP8 E4M3 weights, one fp32 scale per block of 128 values
+        GGML_TYPE_COUNT   = 54,
     };
 
     // [TAG_GGML_PREC]

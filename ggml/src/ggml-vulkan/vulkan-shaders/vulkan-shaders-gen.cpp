@@ -51,6 +51,7 @@ const std::vector<std::string> type_names = {
     "f16",
     "q1_0",
     "q2_0",
+    "f8_e4m3",
     "q4_0",
     "q4_1",
     "q5_0",

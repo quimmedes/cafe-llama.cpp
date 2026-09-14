@@ -1290,7 +1290,7 @@ struct common_init_result::impl {
 common_init_result::common_init_result(common_params & params, bool model_only) :
     pimpl(new impl{}) {
     if (common_safetensors_is_checkpoint(params.mmproj.path)) {
-        LOG_WRN("mmproj '%s' is a safetensors checkpoint, converting it is not supported yet\n", params.mmproj.path.c_str());
+        LOG_INF("mmproj '%s' is a safetensors checkpoint, its vision tower is built in memory\n", params.mmproj.path.c_str());
     }
     if (common_safetensors_is_checkpoint(params.speculative.draft.mparams.path)) {
         LOG_INF("draft model '%s' is a safetensors checkpoint%s\n", params.speculative.draft.mparams.path.c_str(),

@@ -143,6 +143,28 @@ vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
 }
 #endif
 
+#if defined(DATA_A_F8_E4M3)
+float f8_e4m3_to_float(uint c) {
+    const uint e = (c >> 3u) & 0xFu;
+    const uint m = c & 0x7u;
+    if (e == 0xFu && m == 0x7u) {
+        return 0.0f; // NaN code, same decode as the cpu and cuda paths
+    }
+    const float v = e == 0u ? float(m) * (1.0f / 512.0f) : (1.0f + float(m) / 8.0f) * exp2(float(e) - 7.0f);
+    return (c & 0x80u) != 0u ? -v : v;
+}
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    return vec2(f8_e4m3_to_float(uint(data_a[a_offset + ib].qs[iqs])),
+                f8_e4m3_to_float(uint(data_a[a_offset + ib].qs[iqs + 1])));
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    return vec4(f8_e4m3_to_float(uint(data_a[a_offset + ib].qs[iqs])),
+                f8_e4m3_to_float(uint(data_a[a_offset + ib].qs[iqs + 1])),
+                f8_e4m3_to_float(uint(data_a[a_offset + ib].qs[iqs + 2])),
+                f8_e4m3_to_float(uint(data_a[a_offset + ib].qs[iqs + 3])));
+}
+#endif
+
 #if defined(DATA_A_Q2_0)
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     const uint bits = uint(data_a[a_offset + ib].qs[iqs / 4u]) >> (2u * (iqs % 4u));
@@ -568,6 +590,12 @@ vec2 get_dm(uint ib, uint a_offset) {
 vec2 get_dm(uint ib, uint a_offset) {
     const float d = float(data_a[a_offset + ib].d);
     return vec2(d, 0);
+}
+#endif
+
+#if defined(DATA_A_F8_E4M3)
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(data_a[a_offset + ib].d, 0);
 }
 #endif
 

@@ -448,6 +448,43 @@ void ggml_vec_dot_q5_1_q8_1_generic(int n, float * GGML_RESTRICT s, size_t bs, c
     *s = sumf;
 }
 
+// the fp8 weight blocks keep the codes of the checkpoint, the scale is applied here
+void quantize_row_f8(const float * GGML_RESTRICT x, void * GGML_RESTRICT y, int64_t k) {
+    quantize_row_f8_ref(x, (block_f8 *) y, k);
+}
+
+void ggml_vec_dot_f8_q8_0(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
+    assert(n % QK_F8 == 0);
+    assert(nrc == 1);
+    UNUSED(nrc);
+    UNUSED(bx);
+    UNUSED(by);
+    UNUSED(bs);
+
+    const block_f8  * GGML_RESTRICT x = vx;
+    const block_q8_0 * GGML_RESTRICT y = vy;
+
+    const int nb = n / QK_F8;
+
+    float sumf = 0.0f;
+    for (int i = 0; i < nb; ++i) {
+        // the activations stay in q8_0 blocks of 32, one fp8 block covers 4 of them
+        const block_q8_0 * y0 = y + (size_t) i * (QK_F8 / QK8_0);
+
+        for (int k = 0; k < QK_F8 / QK8_0; ++k) {
+            const float d = x[i].d * GGML_FP16_TO_FP32(y0[k].d);
+
+            float sumi = 0.0f;
+            for (int j = 0; j < QK8_0; ++j) {
+                sumi += ggml_e4m3_to_fp32(x[i].qs[k*QK8_0 + j]) * (float) y0[k].qs[j];
+            }
+            sumf += d * sumi;
+        }
+    }
+
+    *s = sumf;
+}
+
 void ggml_vec_dot_q8_0_q8_0_generic(int n, float * GGML_RESTRICT s, size_t bs, const void * GGML_RESTRICT vx, size_t bx, const void * GGML_RESTRICT vy, size_t by, int nrc) {
     const int qk = QK8_0;
     const int nb = n / qk;

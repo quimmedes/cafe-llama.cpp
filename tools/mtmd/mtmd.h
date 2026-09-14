@@ -371,6 +371,9 @@ struct mtmd_caps {
 };
 MTMD_API struct mtmd_caps mtmd_get_cap_from_file(const char * mmproj_fname);
 
+// same, for the tower of a safetensors checkpoint: it is built in memory, so there is no GGUF file to open
+MTMD_API struct mtmd_caps mtmd_get_cap_from_source(struct gguf_context * metadata, const struct llama_model_source * source, const char * mmproj_name);
+
 /////////////////////////////////////////
 // EXPERIMENTAL API for audio generation, subjected to breaking changes
 

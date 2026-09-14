@@ -4081,6 +4081,14 @@ struct clip_cap clip_get_cap(const char * fname) {
     return res;
 }
 
+struct clip_cap clip_get_cap_from_source(struct gguf_context * metadata, const struct llama_model_source * source, const char * name) {
+    clip_cap res;
+    clip_model_loader loader(name, /* skip_tensors= */ true, nullptr, nullptr, metadata, source);
+    res.has_vision = loader.has_vision;
+    res.has_audio  = loader.has_audio;
+    return res;
+}
+
 void clip_free(clip_ctx * ctx) {
     if (ctx == nullptr) {
         return;
