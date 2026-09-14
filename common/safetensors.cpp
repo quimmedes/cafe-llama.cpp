@@ -376,6 +376,7 @@ struct st_map {
     int neg_exp = 0;
     int split_rows = 0; // a flat source that the architecture reads as that many rows
     enum st_reorder_kind reorder = ST_RE_NONE;
+    int fused = 0;      // experts fused in a single 3d tensor: 1 gate and up, 2 down
 };
 
 // returns false when the tensor is not part of the text model
@@ -452,6 +453,17 @@ static bool st_map_tensor(const std::string & name, int64_t n_layer, st_map & re
         const std::string tail = rest.substr(strlen("mlp.experts."));
         const size_t p = tail.find('.');
         if (p == std::string::npos) {
+            // MTP export stores the experts of the layer fused in a 3d tensor
+            if (tail == "gate_up_proj") {
+                res.fused = 1;
+                expert_base = base + "ffn_up_exps.weight";
+                return true;
+            }
+            if (tail == "down_proj") {
+                res.fused = 2;
+                expert_base = base + "ffn_down_exps.weight";
+                return true;
+            }
             return false;
         }
         expert = atoll(tail.substr(0, p).c_str());
@@ -2455,6 +2467,8 @@ static void st_build_plans(st_loader & L, gguf_context * meta, const fs::path & 
     std::unordered_map<std::string, std::vector<st_ref>> exps_scale2;
     std::unordered_map<std::string, std::vector<st_ref>> exps_iscale;
     std::unordered_map<std::string, int>                 exps_nvfp4;
+    std::unordered_map<std::string, int>                 exps_nvfp4_recip;
+    std::unordered_map<std::string, int>                 exps_f8_mode; // fp8 scale: 0 per 128 columns, 1 per tensor, 2 per row
 
     auto add_plan = [&](std::unique_ptr<st_plan> plan) {
         if (L.plans.count(plan->name) != 0) {
@@ -2531,6 +2545,39 @@ static void st_build_plans(st_loader & L, gguf_context * meta, const fs::path & 
             continue;
         }
 
+        if (m.fused != 0) {
+            // MTP export fuses the experts of the layer: one 3d tensor per projection
+            if (ref.ndim != 3 || ref.ne[0] != (int64_t) n_expert ||
+                (m.fused == 1 && ref.ne[1] % 2 != 0)) {
+                throw std::runtime_error("unexpected fused expert tensor '" + src_name + "'");
+            }
+            const uint64_t elem = (uint64_t) st_dtype_size(ref.dtype);
+            auto add_experts = [&](const std::string & out, int64_t row_offs, int64_t nrows) {
+                auto & weights = exps[out];
+                if (weights.empty()) {
+                    weights.resize(n_expert);
+                }
+                for (int64_t e = 0; e < (int64_t) n_expert; ++e) {
+                    st_ref s = ref;
+                    s.offs = ref.offs + (uint64_t) e * ref.ne[1] * ref.ne[2] * elem + (uint64_t) row_offs * ref.ne[2] * elem;
+                    s.ndim = 2;
+                    s.ne[0] = nrows;
+                    s.ne[1] = ref.ne[2];
+                    s.ne[2] = 1;
+                    weights[e] = s;
+                }
+            };
+            if (m.fused == 1) {
+                // gate and up share one 3d tensor, split in half along the rows
+                const int64_t half = ref.ne[1] / 2;
+                add_experts(expert_base, half, half);
+                add_experts(std::string(expert_base.begin(), expert_base.end() - strlen("ffn_up_exps.weight")) + "ffn_gate_exps.weight", 0, half);
+            } else {
+                add_experts(expert_base, 0, ref.ne[1]);
+            }
+            continue;
+        }
+
         // quantized weights keep their scales in sibling tensors
         const std::string stem = st_ends_with(base_name, ".weight") ?
             base_name.substr(0, base_name.size() - strlen(".weight")) : std::string();
@@ -2555,9 +2602,16 @@ static void st_build_plans(st_loader & L, gguf_context * meta, const fs::path & 
 
             if (ref.dtype == ST_DT_U8) {
                 // NVFP4 experts carry their E4M3 block scales and their global scales with each expert
-                const auto it_scale  = find_sibling(".weight_scale");
-                const auto it_scale2 = find_sibling(".weight_scale_2");
-                const auto it_iscale = find_sibling(".input_scale");
+                auto it_scale  = find_sibling(".weight_scale");
+                auto it_scale2 = find_sibling(".weight_scale_2");
+                auto it_iscale = find_sibling(".input_scale");
+                int recip = 0;
+                if (it_scale2 == tensors.end() || it_iscale == tensors.end()) {
+                    // compressed-tensors calls them the global scales and stores the reciprocal of the factor
+                    it_scale2 = find_sibling(".weight_global_scale");
+                    it_iscale = find_sibling(".input_global_scale");
+                    recip = 1;
+                }
                 if (it_scale == tensors.end() || it_scale2 == tensors.end() || it_iscale == tensors.end()) {
                     throw std::runtime_error("missing NVFP4 scales of expert " + name);
                 }
@@ -2570,10 +2624,27 @@ static void st_build_plans(st_loader & L, gguf_context * meta, const fs::path & 
                 exps_scale2[expert_base][expert] = it_scale2->second;
                 exps_iscale[expert_base][expert] = it_iscale->second;
                 exps_nvfp4[expert_base] = 1;
+                exps_nvfp4_recip[expert_base] = recip;
             } else {
                 const auto it_scale = tensors.find(name + "_scale_inv");
                 if (it_scale != tensors.end()) {
                     scales[expert] = it_scale->second;
+                } else {
+                    // compressed-tensors fp8: one scale per tensor, or one per output channel
+                    const auto it_ws = find_sibling(".weight_scale");
+                    if (it_ws != tensors.end()) {
+                        scales[expert] = it_ws->second;
+                        const st_ref & s = it_ws->second;
+                        const int64_t n_scale = s.ndim >= 2 ? s.ne[0] * s.ne[1] : s.ne[0];
+                        if (n_scale == 1) {
+                            exps_f8_mode[expert_base] = 1;
+                        } else if (s.ndim >= 2 && s.ne[1] == 1) {
+                            if (s.ne[0] != ref.ne[0]) {
+                                throw std::runtime_error("unexpected fp8 scale shape of expert " + name);
+                            }
+                            exps_f8_mode[expert_base] = 2;
+                        }
+                    }
                 }
             }
             continue;
@@ -2798,6 +2869,7 @@ static void st_build_plans(st_loader & L, gguf_context * meta, const fs::path & 
                 sc->ne[0]    = n_expert;
                 sc->type     = GGML_TYPE_F32;
                 sc->stack_src = *side.second;
+                sc->stack_reciprocal = exps_nvfp4_recip[base];
                 add_plan(std::move(sc));
             }
         } else {
@@ -2805,6 +2877,12 @@ static void st_build_plans(st_loader & L, gguf_context * meta, const fs::path & 
             plan->ne[1]    = plan->exps[0].ne[0];
             plan->ne[2]    = n_expert;
             plan->type     = plan->exps[0].dtype == ST_DT_F8 ? L.fp8_type : st_ggml_type(plan->exps[0].dtype);
+            const int f8_mode = exps_f8_mode[base];
+            if (f8_mode == 1) {
+                plan->scale_per_tensor = 1;
+            } else if (f8_mode == 2) {
+                plan->scale_per_row = 1;
+            }
         }
 
         for (int64_t e = 0; e < (int64_t) plan->exps.size(); ++e) {
