@@ -34,6 +34,13 @@
 namespace fs = std::filesystem;
 using json = nlohmann::json;
 
+// fseek takes a 32 bit offset on windows, the shards are larger than that
+#ifdef _WIN32
+#    define st_fseek _fseeki64
+#else
+#    define st_fseek fseeko
+#endif
+
 // FP8 weights use per 128x128 block scales
 static constexpr int64_t ST_BLOCK = 128;
 
@@ -185,7 +192,7 @@ struct st_shard {
     }
 
     void read(uint64_t offs, void * dst, size_t size) const {
-        if (fseek(file, (long) (data_offs + offs), SEEK_SET) != 0) {
+        if (st_fseek(file, (int64_t) (data_offs + offs), SEEK_SET) != 0) {
             throw std::runtime_error(string_format("seek failed in '%s' at %zu", name.c_str(), (size_t) offs));
         }
         if (size > 0 && fread(dst, 1, size, file) != size) {
