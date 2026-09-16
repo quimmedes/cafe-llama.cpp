@@ -327,6 +327,10 @@ static std::pair<int, llama_model *> llama_model_load(struct gguf_context * meta
         ml.ssd_n_streaming           = params.ssd_n_streaming;
         ml.ssd_expert_advice         = params.ssd_expert_advice;
         ml.ssd_warm_dense            = params.ssd_warm_dense;
+        ml.ssd_direct                = params.ssd_direct;
+        ml.ssd_io_threads            = params.ssd_io_threads;
+        ml.ssd_cache_mb              = params.ssd_cache_mb;
+        ml.ssd_release_mmap          = params.ssd_release_mmap;
 
         ml.print_info();
         std::unique_ptr<llama_model> model_ptr(llama_model_create(ml, params));

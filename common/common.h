@@ -492,6 +492,10 @@ struct common_params {
     int32_t ssd_n_streaming = -1; // routed layers whose experts stream from disk (-1 = all, requires ssd_streaming)
     std::string ssd_expert_advice = "random"; // MADV advice for streamed expert ranges: random, sequential, normal, willneed
     bool ssd_warm_dense = false; // sequentially warm the dense (non-streamed) parts of the model files after load
+    bool ssd_direct = false; // read streamed expert slices with O_DIRECT, bypassing the page cache
+    int32_t ssd_io_threads = 0; // parallel I/O lanes for streamed expert reads (0 = serial)
+    int32_t ssd_cache_mb = 0; // resident expert cache budget in MiB (0 = shared full-tensor slots)
+    bool ssd_release_mmap = false; // release the model mapping for streamed expert files after binding
 
     bool pipeline_parallel = false; // FreeToken: enable scheduler pipeline parallelism / host weight prefetch
 

@@ -1705,6 +1705,10 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
                                       : params.ssd_expert_advice == "willneed"   ? 3
                                       : 0;
     mparams.ssd_warm_dense            = params.ssd_warm_dense;
+    mparams.ssd_direct                = params.ssd_direct;
+    mparams.ssd_io_threads            = params.ssd_io_threads;
+    mparams.ssd_cache_mb              = params.ssd_cache_mb;
+    mparams.ssd_release_mmap          = params.ssd_release_mmap;
     mparams.tensor_split    = params.tensor_split;
     mparams.check_tensors   = params.check_tensors;
     mparams.use_extra_bufts = !params.no_extra_bufts;

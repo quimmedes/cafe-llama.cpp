@@ -2829,6 +2829,10 @@ llama_model_params llama_model_default_params() {
         /*.ssd_n_streaming            =*/ -1,
         /*.ssd_expert_advice          =*/ 0,
         /*.ssd_warm_dense             =*/ false,
+        /*.ssd_direct                 =*/ false,
+        /*.ssd_io_threads             =*/ 0,
+        /*.ssd_cache_mb               =*/ 0,
+        /*.ssd_release_mmap           =*/ false,
     };
 
     return result;

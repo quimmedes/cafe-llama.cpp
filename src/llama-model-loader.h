@@ -100,6 +100,10 @@ struct llama_model_loader {
     int  ssd_n_streaming = -1; // routed layers whose experts stream from disk (-1 = all)
     int  ssd_expert_advice = 0; // MADV advice for streamed expert ranges: 0 random, 1 sequential, 2 normal, 3 willneed
     bool ssd_warm_dense = false; // sequentially warm the dense parts of the files into the page cache after load
+    bool ssd_direct = false; // read streamed expert slices with O_DIRECT
+    int  ssd_io_threads = 0; // parallel I/O lanes for streamed expert reads (0 = serial)
+    int  ssd_cache_mb = 0; // resident expert cache budget in MiB (0 = shared full-tensor slots)
+    bool ssd_release_mmap = false; // release the model mapping for streamed expert files after binding
 
     // handle TENSOR_READ_LAZY
     // use case: keep PLE / engrams embd tensors on disk, read them on demand

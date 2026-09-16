@@ -2788,6 +2788,40 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_SSD_WARM_DENSE"));
     add_opt(common_arg(
+        {"--ssd-direct"}, {"--no-ssd-direct"},
+        string_format("read streamed expert slices with O_DIRECT, bypassing the page cache (default: %s)", params.ssd_direct ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.ssd_direct = value;
+        }
+    ).set_env("LLAMA_ARG_SSD_DIRECT"));
+    add_opt(common_arg(
+        {"--ssd-io-threads"}, "N",
+        "number of parallel I/O lanes used to read streamed experts from disk (0 = serial, default: 0)",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.ssd_io_threads = value;
+        }
+    ).set_env("LLAMA_ARG_SSD_IO_THREADS"));
+    add_opt(common_arg(
+        {"--ssd-cache-mb"}, "N",
+        "resident expert cache budget in MiB for streamed experts (0 = shared full-tensor slots, default: 0)",
+        [](common_params & params, int value) {
+            if (value < 0) {
+                throw std::invalid_argument("invalid value");
+            }
+            params.ssd_cache_mb = value;
+        }
+    ).set_env("LLAMA_ARG_SSD_CACHE_MB"));
+    add_opt(common_arg(
+        {"--ssd-release-mmap"}, {"--no-ssd-release-mmap"},
+        string_format("release the model mapping for streamed expert files after binding (default: %s)", params.ssd_release_mmap ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.ssd_release_mmap = value;
+        }
+    ).set_env("LLAMA_ARG_SSD_RELEASE_MMAP"));
+    add_opt(common_arg(
         {"--numa"}, "TYPE",
         "attempt optimizations that help on some NUMA systems\n"
         "- distribute: spread execution evenly over all nodes\n"

@@ -358,6 +358,10 @@ extern "C" {
         int32_t ssd_n_streaming; // routed layers whose experts stream from disk, like --n-cpu-moe (default: -1 = all)
         int32_t ssd_expert_advice; // MADV advice for streamed expert ranges: 0 random, 1 sequential, 2 normal, 3 willneed
         bool ssd_warm_dense; // sequentially warm the dense (non-streamed) parts of the model files after load
+        bool ssd_direct; // read streamed expert slices with O_DIRECT, bypassing the page cache
+        int32_t ssd_io_threads; // parallel I/O lanes for streamed expert reads (0 = serial)
+        int32_t ssd_cache_mb; // resident expert cache budget in MiB (0 = shared full-tensor slots)
+        bool ssd_release_mmap; // release the model mapping for streamed expert files after binding
     };
 
     struct llama_sampler_seq_config {
