@@ -2770,6 +2770,24 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_SSD_N_STREAMING"));
     add_opt(common_arg(
+        {"--ssd-expert-advice"}, "ADVICE",
+        "madvise() advice for the streamed expert ranges: random, sequential, normal or willneed\n"
+        "(default: random; sequential/normal let the kernel read ahead across an expert's rows)",
+        [](common_params & params, const std::string & value) {
+            if (value != "random" && value != "sequential" && value != "normal" && value != "willneed") {
+                throw std::invalid_argument("invalid value");
+            }
+            params.ssd_expert_advice = value;
+        }
+    ).set_env("LLAMA_ARG_SSD_EXPERT_ADVICE"));
+    add_opt(common_arg(
+        {"--ssd-warm-dense"}, {"--no-ssd-warm-dense"},
+        string_format("sequentially warm the dense (non-streamed) parts of the model files into the page cache after load (default: %s)", params.ssd_warm_dense ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.ssd_warm_dense = value;
+        }
+    ).set_env("LLAMA_ARG_SSD_WARM_DENSE"));
+    add_opt(common_arg(
         {"--numa"}, "TYPE",
         "attempt optimizations that help on some NUMA systems\n"
         "- distribute: spread execution evenly over all nodes\n"

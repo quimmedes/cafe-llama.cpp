@@ -1700,6 +1700,11 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.offload_ngram_ssd = params.offload_ngram_ssd;
     mparams.ssd_streaming             = params.ssd_streaming;
     mparams.ssd_n_streaming           = params.ssd_n_streaming;
+    mparams.ssd_expert_advice         = params.ssd_expert_advice == "sequential" ? 1
+                                      : params.ssd_expert_advice == "normal"     ? 2
+                                      : params.ssd_expert_advice == "willneed"   ? 3
+                                      : 0;
+    mparams.ssd_warm_dense            = params.ssd_warm_dense;
     mparams.tensor_split    = params.tensor_split;
     mparams.check_tensors   = params.check_tensors;
     mparams.use_extra_bufts = !params.no_extra_bufts;

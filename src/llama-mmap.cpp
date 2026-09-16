@@ -466,7 +466,8 @@ struct llama_mmap::impl {
 #ifdef _POSIX_MAPPED_FILES
     std::vector<std::pair<size_t, size_t>> mapped_fragments;
 
-    impl(struct llama_file * file, size_t prefetch, bool numa, const llama_mmap::ranges & lazy_ranges) {
+    impl(struct llama_file * file, size_t prefetch, bool numa, const llama_mmap::ranges & lazy_ranges,
+         const llama_mmap::ranges & expert_ranges, int expert_advice) {
         size = file->size();
         int fd = file->file_id();
         int flags = MAP_SHARED;
@@ -505,6 +506,26 @@ struct llama_mmap::impl {
         for (const auto & range : lazy_ranges) {
             advise(range.first, range.second, POSIX_MADV_RANDOM, "POSIX_MADV_RANDOM");
         }
+        // streamed expert slices are large and contiguous, so a stronger advice can let the
+        // kernel read them ahead instead of faulting one page at a time
+#if defined(POSIX_MADV_NORMAL)
+        if (expert_advice != 0) {
+            const int advice = expert_advice == 1 ? POSIX_MADV_SEQUENTIAL
+                             : expert_advice == 2 ? POSIX_MADV_NORMAL
+                             : expert_advice == 3 ? POSIX_MADV_WILLNEED
+                             : POSIX_MADV_RANDOM;
+            const char * advice_name = expert_advice == 1 ? "POSIX_MADV_SEQUENTIAL"
+                                     : expert_advice == 2 ? "POSIX_MADV_NORMAL"
+                                     : expert_advice == 3 ? "POSIX_MADV_WILLNEED"
+                                     : "POSIX_MADV_RANDOM";
+            for (const auto & range : expert_ranges) {
+                advise(range.first, range.second, advice, advice_name);
+            }
+        }
+#else
+        GGML_UNUSED(expert_ranges);
+        GGML_UNUSED(expert_advice);
+#endif
         if (numa) {
             if (posix_madvise(addr, file->size(), POSIX_MADV_RANDOM)) {
                 LLAMA_LOG_WARN("warning: posix_madvise(.., POSIX_MADV_RANDOM) failed: %s\n",
@@ -573,8 +594,11 @@ struct llama_mmap::impl {
 #elif defined(_WIN32)
     HANDLE hMapping = nullptr;
 
-    impl(struct llama_file * file, size_t prefetch, bool numa, const llama_mmap::ranges & lazy_ranges) {
+    impl(struct llama_file * file, size_t prefetch, bool numa, const llama_mmap::ranges & lazy_ranges,
+         const llama_mmap::ranges & expert_ranges, int expert_advice) {
         GGML_UNUSED(numa);
+        GGML_UNUSED(expert_ranges);
+        GGML_UNUSED(expert_advice);
 
         size = file->size();
 
@@ -642,10 +666,13 @@ struct llama_mmap::impl {
         }
     }
 #else
-    impl(struct llama_file * file, size_t prefetch, bool numa, const llama_mmap::ranges & lazy_ranges) {
+    impl(struct llama_file * file, size_t prefetch, bool numa, const llama_mmap::ranges & lazy_ranges,
+         const llama_mmap::ranges & expert_ranges, int expert_advice) {
         GGML_UNUSED(file);
         GGML_UNUSED(prefetch);
         GGML_UNUSED(numa);
+        GGML_UNUSED(expert_ranges);
+        GGML_UNUSED(expert_advice);
         GGML_UNUSED(lazy_ranges);
 
         throw std::runtime_error("mmap not supported");
@@ -664,7 +691,7 @@ struct llama_mmap::impl {
 };
 
 llama_mmap::llama_mmap(struct llama_file * file, size_t prefetch, bool numa,
-        const ranges & lazy_ranges) : pimpl(std::make_unique<impl>(file, prefetch, numa, lazy_ranges)) {}
+        const ranges & lazy_ranges, const ranges & expert_ranges, int expert_advice) : pimpl(std::make_unique<impl>(file, prefetch, numa, lazy_ranges, expert_ranges, expert_advice)) {}
 llama_mmap::~llama_mmap() = default;
 
 size_t llama_mmap::size() const { return pimpl->size; }

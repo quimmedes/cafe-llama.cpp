@@ -1887,6 +1887,10 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         }
     }
 
+    if (ml.ssd_warm_dense) {
+        ml.warm_dense();
+    }
+
     if (use_mmap_buffer) {
         for (auto & mapping : ml.mappings) {
             pimpl->mappings.emplace_back(std::move(mapping));
@@ -2823,6 +2827,8 @@ llama_model_params llama_model_default_params() {
         /*.offload_ngram_ssd           =*/ false,
         /*.ssd_streaming               =*/ false,
         /*.ssd_n_streaming            =*/ -1,
+        /*.ssd_expert_advice          =*/ 0,
+        /*.ssd_warm_dense             =*/ false,
     };
 
     return result;

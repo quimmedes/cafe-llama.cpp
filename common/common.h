@@ -490,6 +490,8 @@ struct common_params {
     bool ssd_streaming = false; // stream non-active routed experts from disk, keep a bounded resident cache
     std::string ssd_streaming_cache_experts; // expert cache budget: expert slots, byte budget, or empty for auto
     int32_t ssd_n_streaming = -1; // routed layers whose experts stream from disk (-1 = all, requires ssd_streaming)
+    std::string ssd_expert_advice = "random"; // MADV advice for streamed expert ranges: random, sequential, normal, willneed
+    bool ssd_warm_dense = false; // sequentially warm the dense (non-streamed) parts of the model files after load
 
     bool pipeline_parallel = false; // FreeToken: enable scheduler pipeline parallelism / host weight prefetch
 

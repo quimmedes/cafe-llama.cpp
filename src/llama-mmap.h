@@ -47,7 +47,7 @@ struct llama_mmap {
 
     llama_mmap(const llama_mmap &) = delete;
     llama_mmap(struct llama_file * file, size_t prefetch = (size_t) -1, bool numa = false,
-               const ranges & lazy_ranges = {});
+               const ranges & lazy_ranges = {}, const ranges & expert_ranges = {}, int expert_advice = 0);
     ~llama_mmap();
 
     size_t size() const;

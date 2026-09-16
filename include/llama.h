@@ -356,6 +356,8 @@ extern "C" {
         bool offload_ngram_ssd; // whether to exclusively offload N-gram embedding table to SSD (default: false)
         bool ssd_streaming; // stream non-active routed experts from disk, bounded by the resident set (default: false)
         int32_t ssd_n_streaming; // routed layers whose experts stream from disk, like --n-cpu-moe (default: -1 = all)
+        int32_t ssd_expert_advice; // MADV advice for streamed expert ranges: 0 random, 1 sequential, 2 normal, 3 willneed
+        bool ssd_warm_dense; // sequentially warm the dense (non-streamed) parts of the model files after load
     };
 
     struct llama_sampler_seq_config {

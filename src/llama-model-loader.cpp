@@ -1132,7 +1132,7 @@ ggml_backend_buffer_type_t llama_model_loader::lazy_read::buft() {
     return ggml_backend_dev_buffer_type(cpu_dev);
 }
 
-bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_tensor * t, const llama_tensor_weight * w, bool force) {
+bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_tensor * t, const llama_tensor_weight * w, bool force, bool expert) {
     if (mode == LLAMA_LAZY_MODE_OFF && !force) {
         return false;
     }
@@ -1151,6 +1151,9 @@ bool llama_model_loader::lazy_read::add(const std::string & name, const ggml_ten
 
     if (w) {
         ranges[w->idx].emplace_back(w->offs, w->offs + ggml_nbytes(t));
+        if (expert) {
+            expert_ranges[w->idx].emplace_back(w->offs, w->offs + ggml_nbytes(t));
+        }
         tensors.insert(name);
 
         LLAMA_LOG_INFO("%s: tensor %s (size = %zu MiB) lazy read enabled\n",
@@ -1489,7 +1492,7 @@ struct ggml_tensor * llama_model_loader::create_tensor(
             tn.tensor == LLM_TENSOR_FFN_GATE_EXPS || tn.tensor == LLM_TENSOR_FFN_UP_EXPS || tn.tensor == LLM_TENSOR_FFN_DOWN_EXPS;
         const bool stream_layer = ssd_n_streaming < 0 || tn.bid < ssd_n_streaming;
         if (is_routed_expert && stream_layer) {
-            is_lazy = lazy.add(tn.str(), cur, no_alloc ? nullptr : &require_weight(tn.str().c_str()), true);
+            is_lazy = lazy.add(tn.str(), cur, no_alloc ? nullptr : &require_weight(tn.str().c_str()), true, true);
         }
     }
 
@@ -1578,7 +1581,7 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
             const size_t prefetch_size = prefetch && use_mmap ? -1 : 0;
 
             std::unique_ptr<llama_mmap> mapping = std::make_unique<llama_mmap>(file.get(), prefetch_size, is_numa,
-                    lazy.for_file(idx));
+                    lazy.for_file(idx), lazy.expert_for_file(idx), ssd_expert_advice);
             mmaps_used.emplace_back(mapping->size(), 0);
             if (mlock_mmaps) {
                 std::unique_ptr<llama_mlock> mlock_mmap(new llama_mlock());
@@ -1592,6 +1595,56 @@ void llama_model_loader::init_mappings(bool prefetch, llama_mlocks * mlock_mmaps
     // compute the total size of all tensors for progress reporting
     for (const auto & it : weights_map) {
         size_data += ggml_nbytes(it.second.tensor);
+    }
+}
+
+void llama_model_loader::warm_dense() {
+    if (!llama_mmap::SUPPORTED || (!use_mmap && !lazy.any())) {
+        return;
+    }
+
+    constexpr size_t chunk = 4ull * 1024 * 1024;
+    std::vector<char> buf(chunk);
+
+    for (uint32_t idx = 0; idx < files.size(); idx++) {
+        const auto & lazy_ranges = lazy.for_file(idx);
+        if (lazy_ranges.empty()) {
+            continue;
+        }
+
+        const size_t fsize = files[idx]->size();
+
+        // merge the lazy ranges, then read everything else
+        std::vector<std::pair<size_t, size_t>> lz = lazy_ranges;
+        std::sort(lz.begin(), lz.end());
+        std::vector<std::pair<size_t, size_t>> merged;
+        for (const auto & r : lz) {
+            if (!merged.empty() && r.first <= merged.back().second) {
+                merged.back().second = std::max(merged.back().second, r.second);
+            } else {
+                merged.emplace_back(r.first, r.second);
+            }
+        }
+
+        auto warm = [&](size_t beg, size_t end) {
+            for (size_t a = beg; a < end; ) {
+                const size_t n = std::min(chunk, end - a);
+                files[idx]->seek(a, SEEK_SET);
+                files[idx]->read_raw(buf.data(), n);
+                a += n;
+            }
+        };
+
+        size_t pos = 0;
+        for (const auto & r : merged) {
+            if (pos < r.first) {
+                warm(pos, std::min(r.first, fsize));
+            }
+            pos = std::max(pos, std::min(r.second, fsize));
+        }
+        if (pos < fsize) {
+            warm(pos, fsize);
+        }
     }
 }
 

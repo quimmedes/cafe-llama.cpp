@@ -98,6 +98,8 @@ struct llama_model_loader {
     bool offload_ngram_ssd = false;
     bool ssd_streaming = false; // stream routed experts from disk via mmap, on demand
     int  ssd_n_streaming = -1; // routed layers whose experts stream from disk (-1 = all)
+    int  ssd_expert_advice = 0; // MADV advice for streamed expert ranges: 0 random, 1 sequential, 2 normal, 3 willneed
+    bool ssd_warm_dense = false; // sequentially warm the dense parts of the files into the page cache after load
 
     // handle TENSOR_READ_LAZY
     // use case: keep PLE / engrams embd tensors on disk, read them on demand
@@ -108,7 +110,8 @@ struct llama_model_loader {
         // decide whether this tensor is read lazily
         // pass w to also record it, or nullptr to only ask
         // force ignores the mode and the size gate, for tensors the caller wants off memory
-        bool add(const std::string & name, const ggml_tensor * t, const llama_tensor_weight * w, bool force = false);
+        // expert marks routed-expert ranges so they get their own madvise() advice
+        bool add(const std::string & name, const ggml_tensor * t, const llama_tensor_weight * w, bool force = false, bool expert = false);
 
         // a tensor the model never loads: record it so prefetch and MAP_POPULATE skip its bytes
         void skip(const llama_tensor_weight & w);
@@ -128,11 +131,19 @@ struct llama_model_loader {
             return it == ranges.end() ? none : it->second;
         }
 
+        const llama_mmap::ranges & expert_for_file(uint32_t idx) const {
+            static const llama_mmap::ranges none;
+
+            const auto it = expert_ranges.find(idx);
+            return it == expert_ranges.end() ? none : it->second;
+        }
+
         // lazy tensors are gathered on the host, so no offload setting applies to them
         static ggml_backend_buffer_type_t buft();
 
     private:
         std::map<uint32_t, llama_mmap::ranges> ranges;
+        std::map<uint32_t, llama_mmap::ranges> expert_ranges;
         std::set<std::string>                  tensors;
     } lazy;
 
@@ -274,6 +285,10 @@ struct llama_model_loader {
     void done_getting_tensors(bool partial = false) const;
 
     void init_mappings(bool prefetch = true, llama_mlocks * mlock_mmaps = nullptr);
+
+    // sequentially read the dense (non-lazy) parts of the mapped files into the page cache, so the
+    // first tokens do not pay for them as random 4 KiB faults
+    void warm_dense();
 
     void get_mapping_range(size_t * first, size_t * last, void ** addr, int idx, ggml_context * ctx) const;
 
