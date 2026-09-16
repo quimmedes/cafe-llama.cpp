@@ -217,17 +217,17 @@ void llama_model_qwen4exp::load_arch_tensors(llama_model_loader & ml) {
             layer.nextn.enorm            = create_tensor(tn(LLM_TENSOR_NEXTN_ENORM,            "weight", il), { n_embd }, flags);
             layer.nextn.hnorm            = create_tensor(tn(LLM_TENSOR_NEXTN_HNORM,            "weight", il), { hc_dim }, flags);
             layer.nextn.shared_head_head = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_HEAD, "weight", il), { n_embd, n_vocab }, TENSOR_NOT_REQUIRED | flags);
-            layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", il), { hc_dim }, TENSOR_NOT_REQUIRED | flags);
+            layer.nextn.shared_head_norm = create_tensor(tn(LLM_TENSOR_NEXTN_SHARED_HEAD_NORM, "weight", il), { n_embd, hc }, TENSOR_NOT_REQUIRED | TENSOR_ALLOW_RESHAPE | flags);
             // the head's own output mixer, mirroring the trunk's hc_head_*: it collapses the
             // hc streams and stands in for the output norm, of which qwen4exp has none
-            layer.nextn.hc_head_norm     = create_tensor(tn(LLM_TENSOR_NEXTN_HC_HEAD_NORM,     "weight", il), { hc_dim },           TENSOR_NOT_REQUIRED | flags);
+            layer.nextn.hc_head_norm     = create_tensor(tn(LLM_TENSOR_NEXTN_HC_HEAD_NORM,     "weight", il), { n_embd, hc },           TENSOR_NOT_REQUIRED | TENSOR_ALLOW_RESHAPE | flags);
             layer.nextn.hc_head_down     = create_tensor(tn(LLM_TENSOR_NEXTN_HC_HEAD_DOWN,     "weight", il), { hc_dim, hc_lr },    TENSOR_NOT_REQUIRED | flags);
             layer.nextn.hc_head_up       = create_tensor(tn(LLM_TENSOR_NEXTN_HC_HEAD_UP,       "weight", il), { hc_lr, hc_dim },    TENSOR_NOT_REQUIRED | flags);
-            layer.hc_attn_norm   = create_tensor(tn(LLM_TENSOR_HC_ATTN_NORM,   "weight", il), { hc_dim }, flags);
+            layer.hc_attn_norm   = create_tensor(tn(LLM_TENSOR_HC_ATTN_NORM,   "weight", il), { n_embd, hc }, TENSOR_ALLOW_RESHAPE | flags);
             layer.hc_attn_down   = create_tensor(tn(LLM_TENSOR_HC_ATTN_DOWN,   "weight", il), { hc_dim, hc_lr }, flags);
             layer.hc_attn_up     = create_tensor(tn(LLM_TENSOR_HC_ATTN_UP,     "weight", il), { hc_lr, hc_dim }, flags);
             layer.hc_attn_inject = create_tensor(tn(LLM_TENSOR_HC_ATTN_INJECT, "weight", il), { hc_dim, hc }, flags);
-            layer.hc_ffn_norm    = create_tensor(tn(LLM_TENSOR_HC_FFN_NORM,    "weight", il), { hc_dim }, flags);
+            layer.hc_ffn_norm    = create_tensor(tn(LLM_TENSOR_HC_FFN_NORM,    "weight", il), { n_embd, hc }, TENSOR_ALLOW_RESHAPE | flags);
             layer.hc_ffn_down    = create_tensor(tn(LLM_TENSOR_HC_FFN_DOWN,    "weight", il), { hc_dim, hc_lr }, flags);
             layer.hc_ffn_up      = create_tensor(tn(LLM_TENSOR_HC_FFN_UP,      "weight", il), { hc_lr, hc_dim }, flags);
             layer.hc_ffn_inject  = create_tensor(tn(LLM_TENSOR_HC_FFN_INJECT,  "weight", il), { hc_dim, hc }, flags);
