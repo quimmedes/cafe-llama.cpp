@@ -1462,6 +1462,26 @@ ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_fwht(ggml_metal_
     return res;
 }
 
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_turbo_fwht_forward(ggml_metal_library_t lib, enum ggml_type type) {
+    char name[256];
+    snprintf(name, sizeof(name), "kernel_turbo_fwht_forward_%s", ggml_type_name(type));
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
+    }
+    return res;
+}
+
+ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_turbo_fwht_inverse(ggml_metal_library_t lib, enum ggml_type type) {
+    char name[256];
+    snprintf(name, sizeof(name), "kernel_turbo_fwht_inverse_%s", ggml_type_name(type));
+    ggml_metal_pipeline_with_params res = ggml_metal_library_get_pipeline(lib, name);
+    if (!res.pipeline) {
+        res = ggml_metal_library_compile_pipeline(lib, name, name, nullptr);
+    }
+    return res;
+}
+
 // note: reuse the argsort kernel for the bitonic top_k fallback
 ggml_metal_pipeline_with_params ggml_metal_library_get_pipeline_top_k(ggml_metal_library_t lib, const ggml_tensor * op) {
     assert(op->op == GGML_OP_TOP_K);
