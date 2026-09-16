@@ -276,7 +276,7 @@ static void common_params_fit_impl(
         if (n_seq_max > 1) {
             LOG_TRC("%s: context size unset -> using %" PRIu32 " for %" PRIu32 " sequences:\n",
                 __func__, n_ctx_max, n_seq_max);
-            dmds_full = common_get_device_memory_data_impl(path_model, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
+            dmds_full = common_get_device_memory_data_impl(path_model, safetensors_outtype, mparams, cparams, devs, hp_ngl, hp_nct, hp_nex, log_level);
         }
     }
     add_extra_memory(dmds_full);
