@@ -1750,7 +1750,34 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         // a lazy context is mapped whatever the load mode, but the memory-fit pass maps nothing
         const bool is_lazy_mapped = ctx_key.lazy && !ml.no_alloc;
 
-        if ((ml.use_mmap || is_lazy_mapped) && use_mmap_buffer && buffer_from_host_ptr_supported && is_default_buft) {
+        bool use_mmap_for_ctx = (ml.use_mmap || is_lazy_mapped) && use_mmap_buffer && buffer_from_host_ptr_supported && is_default_buft;
+        if (use_mmap_for_ctx && !ctx_key.lazy && !ggml_backend_buft_is_host(buft)) {
+            if (ml.ssd_streaming || ml.offload_ngram_ssd) {
+                use_mmap_for_ctx = false;
+            } else {
+                size_t ctx_tensors_size = 0;
+                size_t span_size = 0;
+                for (uint32_t idx = 0; idx < ml.files.size(); idx++) {
+                    size_t first = 0, last = 0;
+                    void * addr = nullptr;
+                    ml.get_mapping_range(&first, &last, &addr, idx, ctx);
+                    if (last > first) {
+                        span_size += (last - first);
+                    }
+                }
+                for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+                    const auto * w = ml.get_weight(ggml_get_name(t));
+                    if (w && !w->is_provided) {
+                        ctx_tensors_size += ggml_nbytes(t);
+                    }
+                }
+                if (span_size > 0 && ctx_tensors_size * 2 < span_size) {
+                    use_mmap_for_ctx = false;
+                }
+            }
+        }
+
+        if (use_mmap_for_ctx) {
             GGML_ASSERT(!ml.no_alloc);
             for (uint32_t idx = 0; idx < ml.files.size(); idx++) {
                 // only the mmap region containing the tensors in the model is mapped to the backend buffer

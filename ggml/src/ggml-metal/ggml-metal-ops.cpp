@@ -2841,6 +2841,7 @@ static bool ggml_metal_op_flash_attn_ext_use_kv_f16(const ggml_tensor * op) {
     // depending on compute/bandwidth ratio, dequant to f16 kv is not always beneficial
     // ref: https://github.com/ggml-org/llama.cpp/pull/27390#issuecomment-5355152767
     // TODO: tune per device
+
     if (op->src[0]->ne[1] < 32) {
         return false;
     }
@@ -2851,6 +2852,9 @@ static bool ggml_metal_op_flash_attn_ext_use_kv_f16(const ggml_tensor * op) {
         case GGML_TYPE_Q5_0:
         case GGML_TYPE_Q5_1:
         case GGML_TYPE_Q8_0:
+        case GGML_TYPE_TURBO4_0:
+        case GGML_TYPE_TURBO2_0:
+        case GGML_TYPE_TURBO3_0:
             return true;
         default:
             return false;
@@ -3104,6 +3108,14 @@ size_t ggml_metal_op_flash_attn_ext_extra_idx(const ggml_tensor * op) {
     return GGML_PAD(sizeof(int32_t)*(size_t) n_kv_max_padded*ne31*ne32*ne33, 16);
 }
 
+size_t ggml_metal_op_flash_attn_ext_extra_q_rot(const ggml_tensor * op) {
+    assert(op->op == GGML_OP_FLASH_ATTN_EXT);
+    if (ggml_get_type_traits(op->src[1]->type)->is_turbo) {
+        return GGML_PAD(ggml_nbytes(op->src[0]), 16);
+    }
+    return 0;
+}
+
 int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
     ggml_tensor * op = ctx->node(idx);
 
@@ -3191,6 +3203,23 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
 
     ggml_metal_buffer_id bid_idx = bid_kv_f16;
     bid_idx.offs += ggml_metal_op_flash_attn_ext_extra_kv_f16(op);
+    ggml_metal_buffer_id bid_q_rot = bid_idx;
+    bid_q_rot.offs += ggml_metal_op_flash_attn_ext_extra_idx(op);
+
+    const bool is_turbo_k = ggml_get_type_traits(op->src[1]->type)->is_turbo;
+    const bool is_turbo_v = ggml_get_type_traits(op->src[2]->type)->is_turbo;
+
+    if (is_turbo_k) {
+        int64_t n_el = ggml_nelements(op->src[0]);
+        auto pipeline_fwht = ggml_metal_library_get_pipeline_turbo_fwht_forward(lib, op->src[0]->type);
+        ggml_metal_encoder_set_pipeline(enc, pipeline_fwht);
+        ggml_metal_encoder_set_bytes   (enc, &n_el, sizeof(n_el), 0);
+        ggml_metal_encoder_set_buffer  (enc, bid_src0,            1);
+        ggml_metal_encoder_set_buffer  (enc, bid_q_rot,           2);
+        ggml_metal_encoder_set_threadgroup_memory_size(enc, 128 * sizeof(float), 0);
+        ggml_metal_encoder_dispatch_threadgroups(enc, (n_el + 127)/128, 1, 1, 128, 1, 1);
+        bid_src0 = bid_q_rot;
+    }
 
     ggml_metal_buffer_id bid_k = bid_src1;
     ggml_metal_buffer_id bid_v = bid_src2;
@@ -3470,7 +3499,7 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
                 : ggml_metal_tuning::fa_vec_pick(
                           props_dev->device_id,
                           props_dev->gpu_family,
-                          (int) op->src[1]->type,
+                          use_kv_f16 ? (int) GGML_TYPE_F16 : (op->src[1]->type == GGML_TYPE_TURBO4_0 ? (int) GGML_TYPE_Q4_0 : (int) op->src[1]->type),
                           (int) ne00, (int) ne20,   // dk, dv (ne00 == dk for FA)
                           ne11, ne01);
 
@@ -3713,6 +3742,17 @@ int ggml_metal_op_flash_attn_ext(ggml_metal_op_t ctx, int idx) {
             }
         }
 #undef FATTN_SMEM
+    }
+
+    if (is_turbo_v) {
+        int64_t n_el = ggml_nelements(op);
+        auto pipeline_inv = ggml_metal_library_get_pipeline_turbo_fwht_inverse(lib, op->type);
+        ggml_metal_encoder_set_pipeline(enc, pipeline_inv);
+        ggml_metal_encoder_set_bytes   (enc, &n_el, sizeof(n_el), 0);
+        ggml_metal_encoder_set_buffer  (enc, bid_dst,             1);
+        ggml_metal_encoder_set_buffer  (enc, bid_dst,             2);
+        ggml_metal_encoder_set_threadgroup_memory_size(enc, 128 * sizeof(float), 0);
+        ggml_metal_encoder_dispatch_threadgroups(enc, (n_el + 127)/128, 1, 1, 128, 1, 1);
     }
 
     return 1;

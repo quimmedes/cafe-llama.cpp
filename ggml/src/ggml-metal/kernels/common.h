@@ -124,3 +124,118 @@ template<> inline float4 elu_approx<float4>(float4 x) {
 
     return res;
 }
+
+constexpr constant static float d_turbo_centroids_4bit_fattn[16] = {
+    -0.241556f, -0.182907f, -0.143047f, -0.111065f,
+    -0.083317f, -0.058069f, -0.034311f, -0.011353f,
+     0.011353f,  0.034311f,  0.058069f,  0.083317f,
+     0.111065f,  0.143047f,  0.182907f,  0.241556f
+};
+
+constexpr constant static float d_turbo_centroids_2bit_fattn[4] = {
+    -0.133462f, -0.039994f, 0.039994f, 0.133462f
+};
+
+constexpr constant static float d_turbo_centroids_3bit_fattn[8] = {
+    -0.190685f, -0.117832f, -0.065717f, -0.021460f,
+     0.021460f,  0.065717f,  0.117832f,  0.190685f
+};
+
+constexpr constant static float d_turbo_wht_signs1_fattn[128] = {
+    -1.0f,  1.0f,  1.0f, -1.0f, -1.0f,  1.0f, -1.0f,  1.0f,
+    -1.0f, -1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f,  1.0f,
+     1.0f, -1.0f,  1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f,
+     1.0f,  1.0f, -1.0f,  1.0f,  1.0f, -1.0f, -1.0f, -1.0f,
+    -1.0f,  1.0f,  1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f,
+    -1.0f,  1.0f,  1.0f, -1.0f, -1.0f,  1.0f, -1.0f,  1.0f,
+     1.0f,  1.0f,  1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f,
+     1.0f, -1.0f,  1.0f,  1.0f,  1.0f,  1.0f, -1.0f,  1.0f,
+    -1.0f, -1.0f,  1.0f, -1.0f, -1.0f, -1.0f,  1.0f, -1.0f,
+    -1.0f, -1.0f,  1.0f, -1.0f, -1.0f, -1.0f,  1.0f,  1.0f,
+     1.0f, -1.0f, -1.0f,  1.0f,  1.0f,  1.0f, -1.0f, -1.0f,
+     1.0f,  1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f, -1.0f,
+    -1.0f,  1.0f,  1.0f, -1.0f,  1.0f, -1.0f,  1.0f, -1.0f,
+     1.0f,  1.0f,  1.0f,  1.0f, -1.0f,  1.0f, -1.0f,  1.0f,
+     1.0f, -1.0f,  1.0f,  1.0f, -1.0f, -1.0f, -1.0f, -1.0f,
+    -1.0f,  1.0f,  1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f
+};
+
+constexpr constant static float d_turbo_wht_signs2_fattn[128] = {
+     1.0f,  1.0f,  1.0f,  1.0f, -1.0f,  1.0f,  1.0f, -1.0f,
+     1.0f, -1.0f, -1.0f, -1.0f,  1.0f, -1.0f, -1.0f, -1.0f,
+     1.0f,  1.0f, -1.0f, -1.0f,  1.0f, -1.0f,  1.0f, -1.0f,
+     1.0f, -1.0f, -1.0f,  1.0f, -1.0f,  1.0f,  1.0f,  1.0f,
+     1.0f,  1.0f, -1.0f, -1.0f, -1.0f,  1.0f, -1.0f, -1.0f,
+    -1.0f, -1.0f, -1.0f, -1.0f,  1.0f,  1.0f,  1.0f, -1.0f,
+     1.0f, -1.0f,  1.0f,  1.0f,  1.0f, -1.0f, -1.0f,  1.0f,
+    -1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f,  1.0f,  1.0f,
+     1.0f, -1.0f,  1.0f, -1.0f, -1.0f, -1.0f, -1.0f,  1.0f,
+    -1.0f,  1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f,  1.0f,
+    -1.0f,  1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f, -1.0f,
+    -1.0f, -1.0f, -1.0f,  1.0f, -1.0f, -1.0f,  1.0f, -1.0f,
+     1.0f, -1.0f,  1.0f,  1.0f,  1.0f, -1.0f, -1.0f,  1.0f,
+    -1.0f,  1.0f, -1.0f,  1.0f,  1.0f, -1.0f, -1.0f,  1.0f,
+    -1.0f,  1.0f, -1.0f,  1.0f,  1.0f, -1.0f,  1.0f, -1.0f,
+     1.0f, -1.0f, -1.0f, -1.0f, -1.0f, -1.0f,  1.0f, -1.0f
+};
+
+static inline void turbo_fwht_128(thread float * x) {
+    for (short h = 1; h < 128; h *= 2) {
+        for (short i = 0; i < 128; i += h * 2) {
+            for (short j = i; j < i + h; ++j) {
+                float a = x[j];
+                float b = x[j + h];
+                x[j] = a + b;
+                x[j + h] = a - b;
+            }
+        }
+    }
+    const float inv_sqrt_128 = 0.08838834764831845f;
+    for (short i = 0; i < 128; ++i) {
+        x[i] *= inv_sqrt_128;
+    }
+}
+
+static inline void turbo_rotate_forward(thread float * x, constant float * s1, constant float * s2) {
+    for (short i = 0; i < 128; ++i) x[i] *= s1[i];
+    turbo_fwht_128(x);
+    for (short i = 0; i < 128; ++i) x[i] *= s2[i];
+}
+
+static inline uchar turbo_find_nearest_2bit(float val) {
+    if (val < -0.086728f) return 0;
+    if (val <  0.000000f) return 1;
+    if (val <  0.086728f) return 2;
+    return 3;
+}
+
+static inline uchar turbo_find_nearest_3bit(float val) {
+    if (val < -0.154259f) return 0;
+    if (val < -0.091775f) return 1;
+    if (val < -0.043589f) return 2;
+    if (val <  0.000000f) return 3;
+    if (val <  0.043589f) return 4;
+    if (val <  0.091775f) return 5;
+    if (val <  0.154259f) return 6;
+    return 7;
+}
+
+static inline uchar turbo_find_nearest_4bit(float val) {
+    if (val < 0.000000f) {
+        if (val < -0.097191f) {
+            if (val < -0.162977f) return val < -0.212232f ? 0 : 1;
+            else                  return val < -0.127056f ? 2 : 3;
+        } else {
+            if (val < -0.046190f) return val < -0.070693f ? 4 : 5;
+            else                  return val < -0.022832f ? 6 : 7;
+        }
+    } else {
+        if (val < 0.097191f) {
+            if (val < 0.046190f)  return val < 0.022832f ? 8 : 9;
+            else                  return val < 0.070693f ? 10 : 11;
+        } else {
+            if (val < 0.162977f)  return val < 0.127056f ? 12 : 13;
+            else                  return val < 0.212232f ? 14 : 15;
+        }
+    }
+}

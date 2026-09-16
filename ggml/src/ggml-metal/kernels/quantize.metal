@@ -51,6 +51,9 @@ template [[host_name("kernel_cpy_f16_f16")]]   kernel kernel_cpy_t kernel_cpy_t_
 template [[host_name("kernel_cpy_bf16_f32")]]  kernel kernel_cpy_t kernel_cpy_t_t<bfloat,  float>;
 template [[host_name("kernel_cpy_bf16_bf16")]] kernel kernel_cpy_t kernel_cpy_t_t<bfloat,  bfloat>;
 #endif
+template [[host_name("kernel_cpy_turbo4_turbo4")]] kernel kernel_cpy_t kernel_cpy_t_t<block_turbo4_0, block_turbo4_0>;
+template [[host_name("kernel_cpy_turbo2_turbo2")]] kernel kernel_cpy_t kernel_cpy_t_t<block_turbo2_0, block_turbo2_0>;
+template [[host_name("kernel_cpy_turbo3_turbo3")]] kernel kernel_cpy_t kernel_cpy_t_t<block_turbo3_0, block_turbo3_0>;
 
 template<short QK,
          typename block_q,
@@ -158,6 +161,13 @@ template [[host_name("kernel_cpy_q5_1_f16")]] kernel cpy_q_f_t kernel_cpy_q_f32<
 template [[host_name("kernel_cpy_q8_0_f16")]] kernel cpy_q_f_t kernel_cpy_q_f32<half4x4, block_q8_0, 2, dequantize_q8_0>;
 
 template [[host_name("kernel_cpy_tq2_0_f16")]] kernel cpy_q_f_t kernel_cpy_q_f32<half4x4, block_tq2_0, QK_NL, dequantize_tq2_0>;
+template [[host_name("kernel_cpy_turbo4_f32")]] kernel cpy_q_f_t kernel_cpy_q_f32<float4x4, block_turbo4_0, 8, dequantize_turbo4_0>;
+template [[host_name("kernel_cpy_turbo2_f32")]] kernel cpy_q_f_t kernel_cpy_q_f32<float4x4, block_turbo2_0, 2, dequantize_turbo2_0>;
+template [[host_name("kernel_cpy_turbo3_f32")]] kernel cpy_q_f_t kernel_cpy_q_f32<float4x4, block_turbo3_0, 2, dequantize_turbo3_0>;
+
+template [[host_name("kernel_cpy_turbo4_f16")]] kernel cpy_q_f_t kernel_cpy_q_f32<half4x4, block_turbo4_0, 8, dequantize_turbo4_0>;
+template [[host_name("kernel_cpy_turbo2_f16")]] kernel cpy_q_f_t kernel_cpy_q_f32<half4x4, block_turbo2_0, 2, dequantize_turbo2_0>;
+template [[host_name("kernel_cpy_turbo3_f16")]] kernel cpy_q_f_t kernel_cpy_q_f32<half4x4, block_turbo3_0, 2, dequantize_turbo3_0>;
 
 template<typename T>
 kernel void kernel_concat(
@@ -346,6 +356,9 @@ template [[host_name("kernel_get_rows_iq1_m")]]   kernel get_rows_q_t kernel_get
 template [[host_name("kernel_get_rows_iq4_nl")]]  kernel get_rows_q_t kernel_get_rows_q<block_iq4_nl,  2,     dequantize_iq4_nl>;
 template [[host_name("kernel_get_rows_iq4_xs")]]  kernel get_rows_q_t kernel_get_rows_q<block_iq4_xs,  QK_NL, dequantize_iq4_xs>;
 template [[host_name("kernel_get_rows_tq2_0")]]   kernel get_rows_q_t kernel_get_rows_q<block_tq2_0,   QK_NL, dequantize_tq2_0>;
+template [[host_name("kernel_get_rows_turbo4")]] kernel get_rows_q_t kernel_get_rows_q<block_turbo4_0, 8, dequantize_turbo4_0>;
+template [[host_name("kernel_get_rows_turbo2")]] kernel get_rows_q_t kernel_get_rows_q<block_turbo2_0, 2, dequantize_turbo2_0>;
+template [[host_name("kernel_get_rows_turbo3")]] kernel get_rows_q_t kernel_get_rows_q<block_turbo3_0, 2, dequantize_turbo3_0>;
 
 template<typename TS, typename TI, short QK, typename block_q, void (*quantize_func)(device const float *, device block_q &)>
 kernel void kernel_set_rows_q(
@@ -477,4 +490,217 @@ typedef decltype(kernel_set_rows_q<float, int64_t, QK_K, block_tq2_0, quantize_t
 
 template [[host_name("kernel_set_rows_f32_i64_tq2_0")]]  kernel set_rows_qK_t kernel_set_rows_q<float, int64_t, QK_K, block_tq2_0, quantize_tq2_0>;
 template [[host_name("kernel_set_rows_f32_i32_tq2_0")]]  kernel set_rows_qK_t kernel_set_rows_q<float, int32_t, QK_K, block_tq2_0, quantize_tq2_0>;
+
+template<typename TS, typename TI>
+kernel void kernel_set_rows_turbo4(
+        constant ggml_metal_kargs_set_rows & args,
+        device const void * src0,
+        device const void * src1,
+        device       void * dst,
+        uint3                tgpig[[threadgroup_position_in_grid]],
+        uint                 tiitg[[thread_index_in_threadgroup]],
+        uint3                tptg [[threads_per_threadgroup]]) {
+    const int32_t i03 = tgpig.z;
+    const int32_t i02 = tgpig.y;
+
+    const int32_t i12 = i03%args.ne12;
+    const int32_t i11 = i02%args.ne11;
+
+    const int32_t i01 = tgpig.x*tptg.y + tiitg/tptg.x;
+    if (i01 >= args.ne01) {
+        return;
+    }
+
+    const int32_t i10 = i01;
+    const TI      i1  = ((const device TI *) ((const device char *) src1 + i10*args.nb10 + i11*args.nb11 + i12*args.nb12))[0];
+
+          device block_turbo4_0 * dst_row = (      device block_turbo4_0 *) ((      device char *) dst  +  i1*args.nb1  + i02*args.nb2  + i03*args.nb3);
+    const device TS             * src_row = (const device TS             *) ((const device char *) src0 + i01*args.nb01 + i02*args.nb02 + i03*args.nb03);
+
+    for (int ind = tiitg%tptg.x; ind < args.nk0; ind += tptg.x) {
+        device block_turbo4_0 & blk = dst_row[ind];
+        float x[128];
+        float norm_sq = 0.0f;
+        for (short j = 0; j < 128; ++j) {
+            float v = (float) src_row[128*ind + j];
+            x[j] = v;
+            norm_sq += v * v;
+        }
+        float norm = sqrt(norm_sq);
+        float inv_norm = norm > 1e-10f ? 1.0f / norm : 0.0f;
+        for (short j = 0; j < 128; ++j) {
+            x[j] *= inv_norm;
+        }
+        turbo_rotate_forward(x, d_turbo_wht_signs1_fattn, d_turbo_wht_signs2_fattn);
+
+        float recon_sq = 0.0f;
+        for (short j = 0; j < 128; j += 2) {
+            uchar idx0 = turbo_find_nearest_4bit(x[j]);
+            uchar idx1 = turbo_find_nearest_4bit(x[j + 1]);
+            blk.qs[j / 2] = (idx1 << 4) | idx0;
+            float r0 = d_turbo_centroids_4bit_fattn[idx0];
+            float r1 = d_turbo_centroids_4bit_fattn[idx1];
+            recon_sq += r0 * r0 + r1 * r1;
+        }
+        float recon_norm = sqrt(recon_sq);
+        float corrected = (recon_norm > 1e-10f) ? norm / recon_norm : norm;
+        blk.norm = (half) corrected;
+    }
+}
+
+template<typename TS, typename TI>
+kernel void kernel_set_rows_turbo2(
+        constant ggml_metal_kargs_set_rows & args,
+        device const void * src0,
+        device const void * src1,
+        device       void * dst,
+        uint3                tgpig[[threadgroup_position_in_grid]],
+        uint                 tiitg[[thread_index_in_threadgroup]],
+        uint3                tptg [[threads_per_threadgroup]]) {
+    const int32_t i03 = tgpig.z;
+    const int32_t i02 = tgpig.y;
+
+    const int32_t i12 = i03%args.ne12;
+    const int32_t i11 = i02%args.ne11;
+
+    const int32_t i01 = tgpig.x*tptg.y + tiitg/tptg.x;
+    if (i01 >= args.ne01) {
+        return;
+    }
+
+    const int32_t i10 = i01;
+    const TI      i1  = ((const device TI *) ((const device char *) src1 + i10*args.nb10 + i11*args.nb11 + i12*args.nb12))[0];
+
+          device block_turbo2_0 * dst_row = (      device block_turbo2_0 *) ((      device char *) dst  +  i1*args.nb1  + i02*args.nb2  + i03*args.nb3);
+    const device TS             * src_row = (const device TS             *) ((const device char *) src0 + i01*args.nb01 + i02*args.nb02 + i03*args.nb03);
+
+    const int n_groups = args.nk0 / 4;
+    for (int grp = tiitg%tptg.x; grp < n_groups; grp += tptg.x) {
+        float x[128];
+        float norm_sq = 0.0f;
+        for (short j = 0; j < 128; ++j) {
+            float v = (float) src_row[128*grp + j];
+            x[j] = v;
+            norm_sq += v * v;
+        }
+        float grp_norm = sqrt(norm_sq);
+        float inv_norm = grp_norm > 1e-10f ? 1.0f / grp_norm : 0.0f;
+        for (short j = 0; j < 128; ++j) {
+            x[j] *= inv_norm;
+        }
+        turbo_rotate_forward(x, d_turbo_wht_signs1_fattn, d_turbo_wht_signs2_fattn);
+
+        float recon_norm_sq = 0.0f;
+        for (short b = 0; b < 4; ++b) {
+            device block_turbo2_0 & blk = dst_row[4*grp + b];
+            const short off = b * 32;
+            for (short j = 0; j < 8; ++j) blk.qs[j] = 0;
+            for (short j = 0; j < 32; ++j) {
+                uchar idx = turbo_find_nearest_2bit(x[off + j]);
+                blk.qs[j / 4] |= (idx & 0x3) << ((j % 4) * 2);
+                float c = d_turbo_centroids_2bit_fattn[idx];
+                recon_norm_sq += c * c;
+            }
+        }
+        float recon_norm = sqrt(recon_norm_sq);
+        float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+        for (short b = 0; b < 4; ++b) {
+            dst_row[4*grp + b].norm = (half) corrected_norm;
+        }
+    }
+}
+
+template<typename TS, typename TI>
+kernel void kernel_set_rows_turbo3(
+        constant ggml_metal_kargs_set_rows & args,
+        device const void * src0,
+        device const void * src1,
+        device       void * dst,
+        uint3                tgpig[[threadgroup_position_in_grid]],
+        uint                 tiitg[[thread_index_in_threadgroup]],
+        uint3                tptg [[threads_per_threadgroup]]) {
+    const int32_t i03 = tgpig.z;
+    const int32_t i02 = tgpig.y;
+
+    const int32_t i12 = i03%args.ne12;
+    const int32_t i11 = i02%args.ne11;
+
+    const int32_t i01 = tgpig.x*tptg.y + tiitg/tptg.x;
+    if (i01 >= args.ne01) {
+        return;
+    }
+
+    const int32_t i10 = i01;
+    const TI      i1  = ((const device TI *) ((const device char *) src1 + i10*args.nb10 + i11*args.nb11 + i12*args.nb12))[0];
+
+          device block_turbo3_0 * dst_row = (      device block_turbo3_0 *) ((      device char *) dst  +  i1*args.nb1  + i02*args.nb2  + i03*args.nb3);
+    const device TS             * src_row = (const device TS             *) ((const device char *) src0 + i01*args.nb01 + i02*args.nb02 + i03*args.nb03);
+
+    const int n_groups = args.nk0 / 4;
+    for (int grp = tiitg%tptg.x; grp < n_groups; grp += tptg.x) {
+        float x[128];
+        float norm_sq = 0.0f;
+        for (short j = 0; j < 128; ++j) {
+            float v = (float) src_row[128*grp + j];
+            x[j] = v;
+            norm_sq += v * v;
+        }
+        float grp_norm = sqrt(norm_sq);
+        float inv_norm = grp_norm > 1e-10f ? 1.0f / grp_norm : 0.0f;
+        for (short j = 0; j < 128; ++j) {
+            x[j] *= inv_norm;
+        }
+        turbo_rotate_forward(x, d_turbo_wht_signs1_fattn, d_turbo_wht_signs2_fattn);
+
+        float recon_norm_sq = 0.0f;
+        for (short b = 0; b < 4; ++b) {
+            device block_turbo3_0 & blk = dst_row[4*grp + b];
+            const short off = b * 32;
+            for (short j = 0; j < 8; ++j) blk.qs[j] = 0;
+            for (short j = 0; j < 4; ++j) blk.signs[j] = 0;
+            for (short j = 0; j < 32; ++j) {
+                uchar idx = turbo_find_nearest_3bit(x[off + j]);
+                blk.qs[j / 4] |= (idx & 0x3) << ((j % 4) * 2);
+                blk.signs[j / 8] |= ((idx >> 2) & 0x1) << (j % 8);
+                float c = d_turbo_centroids_3bit_fattn[idx];
+                recon_norm_sq += c * c;
+            }
+        }
+        float recon_norm = sqrt(recon_norm_sq);
+        float corrected_norm = (recon_norm > 1e-10f) ? grp_norm / recon_norm : grp_norm;
+        for (short b = 0; b < 4; ++b) {
+            dst_row[4*grp + b].norm = (half) corrected_norm;
+        }
+    }
+}
+
+typedef decltype(kernel_set_rows_turbo4<float, int64_t>) set_rows_t4_f32_i64_t;
+typedef decltype(kernel_set_rows_turbo4<float, int32_t>) set_rows_t4_f32_i32_t;
+typedef decltype(kernel_set_rows_turbo4<half,  int64_t>) set_rows_t4_f16_i64_t;
+typedef decltype(kernel_set_rows_turbo4<half,  int32_t>) set_rows_t4_f16_i32_t;
+
+template [[host_name("kernel_set_rows_f32_i64_turbo4")]] kernel set_rows_t4_f32_i64_t kernel_set_rows_turbo4<float, int64_t>;
+template [[host_name("kernel_set_rows_f32_i32_turbo4")]] kernel set_rows_t4_f32_i32_t kernel_set_rows_turbo4<float, int32_t>;
+template [[host_name("kernel_set_rows_f16_i64_turbo4")]] kernel set_rows_t4_f16_i64_t kernel_set_rows_turbo4<half,  int64_t>;
+template [[host_name("kernel_set_rows_f16_i32_turbo4")]] kernel set_rows_t4_f16_i32_t kernel_set_rows_turbo4<half,  int32_t>;
+
+typedef decltype(kernel_set_rows_turbo2<float, int64_t>) set_rows_t2_f32_i64_t;
+typedef decltype(kernel_set_rows_turbo2<float, int32_t>) set_rows_t2_f32_i32_t;
+typedef decltype(kernel_set_rows_turbo2<half,  int64_t>) set_rows_t2_f16_i64_t;
+typedef decltype(kernel_set_rows_turbo2<half,  int32_t>) set_rows_t2_f16_i32_t;
+
+template [[host_name("kernel_set_rows_f32_i64_turbo2")]] kernel set_rows_t2_f32_i64_t kernel_set_rows_turbo2<float, int64_t>;
+template [[host_name("kernel_set_rows_f32_i32_turbo2")]] kernel set_rows_t2_f32_i32_t kernel_set_rows_turbo2<float, int32_t>;
+template [[host_name("kernel_set_rows_f16_i64_turbo2")]] kernel set_rows_t2_f16_i64_t kernel_set_rows_turbo2<half,  int64_t>;
+template [[host_name("kernel_set_rows_f16_i32_turbo2")]] kernel set_rows_t2_f16_i32_t kernel_set_rows_turbo2<half,  int32_t>;
+
+typedef decltype(kernel_set_rows_turbo3<float, int64_t>) set_rows_t3_f32_i64_t;
+typedef decltype(kernel_set_rows_turbo3<float, int32_t>) set_rows_t3_f32_i32_t;
+typedef decltype(kernel_set_rows_turbo3<half,  int64_t>) set_rows_t3_f16_i64_t;
+typedef decltype(kernel_set_rows_turbo3<half,  int32_t>) set_rows_t3_f16_i32_t;
+
+template [[host_name("kernel_set_rows_f32_i64_turbo3")]] kernel set_rows_t3_f32_i64_t kernel_set_rows_turbo3<float, int64_t>;
+template [[host_name("kernel_set_rows_f32_i32_turbo3")]] kernel set_rows_t3_f32_i32_t kernel_set_rows_turbo3<float, int32_t>;
+template [[host_name("kernel_set_rows_f16_i64_turbo3")]] kernel set_rows_t3_f16_i64_t kernel_set_rows_turbo3<half,  int64_t>;
+template [[host_name("kernel_set_rows_f16_i32_turbo3")]] kernel set_rows_t3_f16_i32_t kernel_set_rows_turbo3<half,  int32_t>;
 

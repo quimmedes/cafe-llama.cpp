@@ -733,3 +733,98 @@ void dequantize_tq2_0(device const block_tq2_0 * xb, short il, thread type4x4 & 
 
     reg = (type4x4) reg_f;
 }
+
+template <typename type4x4>
+void dequantize_turbo4_0(device const block_turbo4_0 * xb, short il, thread type4x4 & reg) {
+    const float norm = (float) xb->norm;
+    float4x4 reg_f;
+    const short b_start = il * 8;
+    for (short k = 0; k < 4; ++k) {
+        const uchar byte0 = xb->qs[b_start + 2*k + 0];
+        const uchar byte1 = xb->qs[b_start + 2*k + 1];
+        reg_f[k] = float4(
+            d_turbo_centroids_4bit_fattn[byte0 & 0x0F] * norm,
+            d_turbo_centroids_4bit_fattn[byte0 >> 4]   * norm,
+            d_turbo_centroids_4bit_fattn[byte1 & 0x0F] * norm,
+            d_turbo_centroids_4bit_fattn[byte1 >> 4]   * norm
+        );
+    }
+    reg = (type4x4) reg_f;
+}
+
+template <typename type4>
+void dequantize_turbo4_0_t4(device const block_turbo4_0 * xb, short il, thread type4 & reg) {
+    const float norm = (float) xb->norm;
+    const short b_start = il * 2;
+    const uchar byte0 = xb->qs[b_start + 0];
+    const uchar byte1 = xb->qs[b_start + 1];
+    reg = (type4) float4(
+        d_turbo_centroids_4bit_fattn[byte0 & 0x0F] * norm,
+        d_turbo_centroids_4bit_fattn[byte0 >> 4]   * norm,
+        d_turbo_centroids_4bit_fattn[byte1 & 0x0F] * norm,
+        d_turbo_centroids_4bit_fattn[byte1 >> 4]   * norm
+    );
+}
+
+template <typename type4x4>
+void dequantize_turbo2_0(device const block_turbo2_0 * xb, short il, thread type4x4 & reg) {
+    const float norm = (float) xb->norm;
+    float4x4 reg_f;
+    const short b_start = il * 4;
+    for (short k = 0; k < 4; ++k) {
+        const uchar byte = xb->qs[b_start + k];
+        reg_f[k] = float4(
+            d_turbo_centroids_2bit_fattn[(byte     ) & 0x3] * norm,
+            d_turbo_centroids_2bit_fattn[(byte >> 2) & 0x3] * norm,
+            d_turbo_centroids_2bit_fattn[(byte >> 4) & 0x3] * norm,
+            d_turbo_centroids_2bit_fattn[(byte >> 6) & 0x3] * norm
+        );
+    }
+    reg = (type4x4) reg_f;
+}
+
+template <typename type4>
+void dequantize_turbo2_0_t4(device const block_turbo2_0 * xb, short il, thread type4 & reg) {
+    const float norm = (float) xb->norm;
+    const uchar byte = xb->qs[il];
+    reg = (type4) float4(
+        d_turbo_centroids_2bit_fattn[(byte     ) & 0x3] * norm,
+        d_turbo_centroids_2bit_fattn[(byte >> 2) & 0x3] * norm,
+        d_turbo_centroids_2bit_fattn[(byte >> 4) & 0x3] * norm,
+        d_turbo_centroids_2bit_fattn[(byte >> 6) & 0x3] * norm
+    );
+}
+
+template <typename type4x4>
+void dequantize_turbo3_0(device const block_turbo3_0 * xb, short il, thread type4x4 & reg) {
+    const float norm = (float) xb->norm;
+    float4x4 reg_f;
+    const short qs_start   = il * 4;
+    const short sign_start = il * 2;
+    for (short k = 0; k < 4; ++k) {
+        const uchar byte_q = xb->qs[qs_start + k];
+        const uchar byte_s = xb->signs[sign_start + (k >> 1)];
+        const short s_shift = (k & 1) * 4;
+        reg_f[k] = float4(
+            d_turbo_centroids_3bit_fattn[((byte_q     ) & 0x3) | (((byte_s >> (s_shift + 0)) & 0x1) << 2)] * norm,
+            d_turbo_centroids_3bit_fattn[((byte_q >> 2) & 0x3) | (((byte_s >> (s_shift + 1)) & 0x1) << 2)] * norm,
+            d_turbo_centroids_3bit_fattn[((byte_q >> 4) & 0x3) | (((byte_s >> (s_shift + 2)) & 0x1) << 2)] * norm,
+            d_turbo_centroids_3bit_fattn[((byte_q >> 6) & 0x3) | (((byte_s >> (s_shift + 3)) & 0x1) << 2)] * norm
+        );
+    }
+    reg = (type4x4) reg_f;
+}
+
+template <typename type4>
+void dequantize_turbo3_0_t4(device const block_turbo3_0 * xb, short il, thread type4 & reg) {
+    const float norm = (float) xb->norm;
+    const uchar byte_q = xb->qs[il];
+    const uchar byte_s = xb->signs[il >> 1];
+    const short s_shift = (il & 1) * 4;
+    reg = (type4) float4(
+        d_turbo_centroids_3bit_fattn[((byte_q     ) & 0x3) | (((byte_s >> (s_shift + 0)) & 0x1) << 2)] * norm,
+        d_turbo_centroids_3bit_fattn[((byte_q >> 2) & 0x3) | (((byte_s >> (s_shift + 1)) & 0x1) << 2)] * norm,
+        d_turbo_centroids_3bit_fattn[((byte_q >> 4) & 0x3) | (((byte_s >> (s_shift + 2)) & 0x1) << 2)] * norm,
+        d_turbo_centroids_3bit_fattn[((byte_q >> 6) & 0x3) | (((byte_s >> (s_shift + 3)) & 0x1) << 2)] * norm
+    );
+}
