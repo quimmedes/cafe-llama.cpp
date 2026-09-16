@@ -5713,7 +5713,13 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q5_0], "dequant_q5_0", dequant_q5_0_len, dequant_q5_0_data, "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q5_1], "dequant_q5_1", dequant_q5_1_len, dequant_q5_1_data, "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q8_0], "dequant_q8_0", dequant_q8_0_len, dequant_q8_0_data, "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_TURBO4_0], "dequant_turbo4", dequant_turbo4_len, dequant_turbo4_data, "main", 2, 5 * sizeof(uint32_t), {256 * 8, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_TURBO2_0], "dequant_turbo2", dequant_turbo2_len, dequant_turbo2_data, "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_TURBO3_0], "dequant_turbo3", dequant_turbo3_len, dequant_turbo3_data, "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant_transpose[GGML_TYPE_Q8_0], "dequant_q8_0_transpose", dequant_q8_0_transpose_len, dequant_q8_0_transpose_data, "main", 2, 5 * sizeof(uint32_t), {256 * 16, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_dequant_transpose[GGML_TYPE_TURBO2_0], "dequant_turbo2_transpose", dequant_turbo2_transpose_len, dequant_turbo2_transpose_data, "main", 2, 5 * sizeof(uint32_t), {128, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_dequant_transpose[GGML_TYPE_TURBO3_0], "dequant_turbo3_transpose", dequant_turbo3_transpose_len, dequant_turbo3_transpose_data, "main", 2, 5 * sizeof(uint32_t), {128, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_dequant_transpose[GGML_TYPE_TURBO4_0], "dequant_turbo4_transpose", dequant_turbo4_transpose_len, dequant_turbo4_transpose_data, "main", 2, 5 * sizeof(uint32_t), {128, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q2_K], "dequant_q2_k", dequant_q2_k_len, dequant_q2_k_data, "main", 2, 5 * sizeof(uint32_t), {256 * 64, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q3_K], "dequant_q3_k", dequant_q3_k_len, dequant_q3_k_data, "main", 2, 5 * sizeof(uint32_t), {256 * 64, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_dequant[GGML_TYPE_Q4_K], "dequant_q4_k", dequant_q4_k_len, dequant_q4_k_data, "main", 2, 5 * sizeof(uint32_t), {256 * 32, 1, 1}, {}, 1);
@@ -5907,6 +5913,19 @@ static void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     SET_ROWS(1, f16, _i32)
     SET_ROWS(1, f16, _i64)
 #undef SET_ROWS
+
+    // TurboQuant KV write: dedicated 128-wide group shaders (one workgroup per group).
+#define SET_ROWS_TURBO(src_idx, src, tname, ttype) \
+        ggml_vk_create_pipeline(device, device->pipeline_set_rows_i32[src_idx][ttype], "set_rows_" #src "_" #tname "_i32", set_rows_ ## src ## _ ## tname ## _i32 ## _len, set_rows_ ## src ## _ ## tname ## _i32 ## _data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true); \
+        ggml_vk_create_pipeline(device, device->pipeline_set_rows_i64[src_idx][ttype], "set_rows_" #src "_" #tname "_i64", set_rows_ ## src ## _ ## tname ## _i64 ## _len, set_rows_ ## src ## _ ## tname ## _i64 ## _data, "main", 3, sizeof(vk_op_binary_push_constants), {1, 1, 1}, {1}, 1, true);
+
+    SET_ROWS_TURBO(0, f32, turbo2, GGML_TYPE_TURBO2_0)
+    SET_ROWS_TURBO(0, f32, turbo3, GGML_TYPE_TURBO3_0)
+    SET_ROWS_TURBO(0, f32, turbo4, GGML_TYPE_TURBO4_0)
+    SET_ROWS_TURBO(1, f16, turbo2, GGML_TYPE_TURBO2_0)
+    SET_ROWS_TURBO(1, f16, turbo3, GGML_TYPE_TURBO3_0)
+    SET_ROWS_TURBO(1, f16, turbo4, GGML_TYPE_TURBO4_0)
+#undef SET_ROWS_TURBO
 
 
     ggml_vk_create_pipeline(device, device->pipeline_cpy_quant_f32[GGML_TYPE_Q1_0], "cpy_q1_0_f32", cpy_q1_0_f32_len, cpy_q1_0_f32_data, "main", 2, sizeof(vk_op_unary_push_constants), {(uint32_t)ggml_blck_size(GGML_TYPE_Q1_0), 1, 1}, {}, 1);
@@ -8072,6 +8091,9 @@ static vk_pipeline ggml_vk_get_to_fp16(ggml_backend_vk_context * ctx, ggml_type 
         case GGML_TYPE_NVFP4:
         case GGML_TYPE_TQ1_0:
         case GGML_TYPE_TQ2_0:
+        case GGML_TYPE_TURBO2_0:
+        case GGML_TYPE_TURBO3_0:
+        case GGML_TYPE_TURBO4_0:
             break;
         default:
             return nullptr;
@@ -11285,17 +11307,23 @@ static void ggml_vk_flash_attn(ggml_backend_vk_context * ctx, vk_context& subctx
     };
     const bool k_quant = k->type != GGML_TYPE_F16 && k->type != GGML_TYPE_BF16 && k->type != GGML_TYPE_F32;
     const bool v_quant = v->type != GGML_TYPE_F16 && v->type != GGML_TYPE_BF16 && v->type != GGML_TYPE_F32;
-    const bool use_dequant_kv = k_quant && v_quant && neq1 >= 64 &&
+    const bool k_turbo = k->type == GGML_TYPE_TURBO2_0 || k->type == GGML_TYPE_TURBO3_0 || k->type == GGML_TYPE_TURBO4_0;
+    const bool v_turbo = v->type == GGML_TYPE_TURBO2_0 || v->type == GGML_TYPE_TURBO3_0 || v->type == GGML_TYPE_TURBO4_0;
+    // turbo K/V always go through the f16 scratch: the scratch dequant undoes the FWHT,
+    // so the fused path sees plain f16 and no Q rotation is needed.
+    const bool turbo_kv = k_turbo || v_turbo;
+    const bool use_dequant_kv = (turbo_kv || (k_quant && v_quant && neq1 >= 64)) &&
                                 is_dense_kv_cache(k) && is_dense_kv_cache(v) &&
                                 (uint64_t)ggml_nelements(k) * sizeof(ggml_fp16_t) <= ctx->device->properties.limits.maxStorageBufferRange &&
                                 (uint64_t)ggml_nelements(v) * sizeof(ggml_fp16_t) <= ctx->device->properties.limits.maxStorageBufferRange &&
                                 ctx->device->pipeline_dequant_transpose[k->type] != nullptr &&
                                 ctx->device->pipeline_dequant_transpose[v->type] != nullptr &&
-                                // coopmat2 path does not benefit from the f16 scratch
-                                !ctx->device->coopmat2 &&
-                                // Intel Xe1 regresses, see PR 25494
-                                (ctx->device->vendor_id != VK_VENDOR_ID_INTEL ||
-                                 (ctx->device->coopmat_support && ctx->device->architecture != vk_device_architecture::INTEL_XE1));
+                                // coopmat2 cannot read turbo directly and gains nothing from the scratch
+                                (turbo_kv ||
+                                 (!ctx->device->coopmat2 &&
+                                  // Intel Xe1 regresses, see PR 25494
+                                  (ctx->device->vendor_id != VK_VENDOR_ID_INTEL ||
+                                   (ctx->device->coopmat_support && ctx->device->architecture != vk_device_architecture::INTEL_XE1))));
     const ggml_type k_type_eff = use_dequant_kv ? GGML_TYPE_F16 : k->type;
     const ggml_type v_type_eff = use_dequant_kv ? GGML_TYPE_F16 : v->type;
 
@@ -12849,8 +12877,13 @@ static void ggml_vk_op_f32(ggml_backend_vk_context * ctx, vk_context& subctx, co
         {
             uint32_t ne = ggml_nelements(src0);
             if (ggml_is_quantized(dst->type)) {
-                // quants run 32 threads each doing QUANT_K elements
-                ne = CEIL_DIV(ne, 32 * ggml_blck_size(dst->type));
+                if (dst->type == GGML_TYPE_TURBO2_0 || dst->type == GGML_TYPE_TURBO3_0 || dst->type == GGML_TYPE_TURBO4_0) {
+                    // turbo runs one 128-wide rotation group per workgroup
+                    ne = CEIL_DIV(ne, 128);
+                } else {
+                    // quants run 32 threads each doing QUANT_K elements
+                    ne = CEIL_DIV(ne, 32 * ggml_blck_size(dst->type));
+                }
             } else {
                 // scalar types do one element per thread, running 512 threads
                 ne = CEIL_DIV(ne, 512);
@@ -19418,6 +19451,9 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     case GGML_TYPE_Q4_1:
                     case GGML_TYPE_Q4_0:
                     case GGML_TYPE_IQ4_NL:
+                    case GGML_TYPE_TURBO2_0:
+                    case GGML_TYPE_TURBO3_0:
+                    case GGML_TYPE_TURBO4_0:
                         return true;
                     default:
                         return false;
@@ -19492,6 +19528,9 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                     case GGML_TYPE_Q5_1:
                     case GGML_TYPE_Q8_0:
                     case GGML_TYPE_IQ4_NL:
+                    case GGML_TYPE_TURBO2_0:
+                    case GGML_TYPE_TURBO3_0:
+                    case GGML_TYPE_TURBO4_0:
                         return true;
                     default:
                         return false;

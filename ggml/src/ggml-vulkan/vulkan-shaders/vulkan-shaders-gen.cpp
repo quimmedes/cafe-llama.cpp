@@ -774,6 +774,28 @@ void process_shaders() {
 
     std::map<std::string, std::string> base_dict = {{"FLOAT_TYPE", "float"}, {"FLOAT_TYPEV2", "vec2"}};
 
+    // TurboQuant KV-cache types are not in type_names: only dequant, KV write and the
+    // fused attention path need them, so they get their own dedicated shaders.
+    for (const auto& t : std::vector<std::pair<std::string, std::string>>{{"turbo2", "DATA_A_TURBO2_0"}, {"turbo3", "DATA_A_TURBO3_0"}, {"turbo4", "DATA_A_TURBO4_0"}}) {
+        string_to_spv("dequant_" + t.first, "dequant_" + t.first + ".comp",
+            merge_maps(base_dict, {{t.second, "1"}, {"D_TYPE", "float16_t"}}));
+        string_to_spv("dequant_" + t.first + "_transpose", "dequant_turbo_transpose.comp",
+            merge_maps(base_dict, {{t.second, "1"}, {"D_TYPE", "float16_t"}}));
+    }
+
+    // TurboQuant KV write: dedicated 128-wide group shaders, see set_rows_turbo.comp.
+    for (const auto& src : std::vector<std::pair<std::string, std::string>>{{"f32", "float"}, {"f16", "float16_t"}}) {
+        for (const auto& t : std::vector<std::tuple<std::string, std::string, std::string>>{
+                 {"turbo2", "DATA_A_TURBO2_0", "TURBO2"},
+                 {"turbo3", "DATA_A_TURBO3_0", "TURBO3"},
+                 {"turbo4", "DATA_A_TURBO4_0", "TURBO4"}}) {
+            string_to_spv("set_rows_" + src.first + "_" + std::get<0>(t) + "_i32", "set_rows_turbo.comp",
+                merge_maps(base_dict, {{"SET_ROWS", "1"}, {std::get<1>(t), "1"}, {std::get<2>(t), "1"}, {"B_TYPE", "uint"}, {"B_SIZE", "32"}, {"S_TYPE", src.second}}));
+            string_to_spv("set_rows_" + src.first + "_" + std::get<0>(t) + "_i64", "set_rows_turbo.comp",
+                merge_maps(base_dict, {{"SET_ROWS", "1"}, {std::get<1>(t), "1"}, {std::get<2>(t), "1"}, {"B_TYPE", "uvec2"}, {"B_SIZE", "64"}, {"S_TYPE", src.second}}));
+        }
+    }
+
     for (const auto& tname : type_names) {
         // mul mat vec
         std::string data_a_key = "DATA_A_" + to_uppercase(tname);

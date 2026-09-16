@@ -378,6 +378,64 @@ struct block_tq2_0_packed16
 #define DATA_A_QUANT_K
 #endif
 
+// TurboQuant KV-cache types. Rows live in the WHT-rotated domain; the fused flash
+// attention reconstructs them, see the turbo handling in flash_attn_*.comp.
+#define QUANT_K_TURBO4 128
+#define QUANT_R_TURBO4 1
+
+struct block_turbo4_0
+{
+    float16_t norm;
+    uint8_t qs[QUANT_K_TURBO4 / 2]; // 4-bit indices, 2 per byte, low nibble first
+};
+
+struct block_turbo4_0_packed16
+{
+    float16_t norm;
+    uint16_t qs[QUANT_K_TURBO4 / 4];
+};
+
+#if defined(DATA_A_TURBO4_0)
+#define QUANT_K QUANT_K_TURBO4
+#define QUANT_R QUANT_R_TURBO4
+#define A_TYPE block_turbo4_0
+#define A_TYPE_PACKED16 block_turbo4_0_packed16
+#define DATA_A_QUANT_LEGACY
+#endif
+
+#define QUANT_K_TURBO3 32
+#define QUANT_R_TURBO3 1
+
+struct block_turbo3_0
+{
+    float16_t norm;
+    uint8_t qs[QUANT_K_TURBO3 / 4];    // lower 2 bits of the 3-bit index
+    uint8_t signs[QUANT_K_TURBO3 / 8]; // upper bit of the 3-bit index
+};
+
+#if defined(DATA_A_TURBO3_0)
+#define QUANT_K QUANT_K_TURBO3
+#define QUANT_R QUANT_R_TURBO3
+#define A_TYPE block_turbo3_0
+#define DATA_A_QUANT_LEGACY
+#endif
+
+#define QUANT_K_TURBO2 32
+#define QUANT_R_TURBO2 1
+
+struct block_turbo2_0
+{
+    float16_t norm;
+    uint8_t qs[QUANT_K_TURBO2 / 4];
+};
+
+#if defined(DATA_A_TURBO2_0)
+#define QUANT_K QUANT_K_TURBO2
+#define QUANT_R QUANT_R_TURBO2
+#define A_TYPE block_turbo2_0
+#define DATA_A_QUANT_LEGACY
+#endif
+
 #define QUANT_K_Q3_K 256
 
 struct block_q3_K

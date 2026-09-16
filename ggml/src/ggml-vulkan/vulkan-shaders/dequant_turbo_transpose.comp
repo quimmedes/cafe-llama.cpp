@@ -1,0 +1,77 @@
+#version 450
+
+// TurboQuant K/V dequant for the FA f16 scratch: reconstruct the original-domain
+// value (codebook * block norm, then inverse FWHT over the 128-wide group) and
+// write it to the per-head-contiguous [HS, KV, NH, batch] layout the FA shader
+// consumes. One 128-wide rotation group per workgroup.
+
+#include "dequant_head.glsl"
+#include "turbo.glsl"
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly buffer A {A_TYPE data_a[];};
+layout (binding = 1) writeonly buffer D {D_TYPE data_b[];};
+
+shared float sh_x[128];
+
+void main() {
+    const uint lid = gl_LocalInvocationID.x;
+    const uint base = gl_WorkGroupID.x * 128u;
+    if (base >= p.nel) {
+        return;
+    }
+    const uint e0 = base + lid;
+
+    // codebook value in the rotated domain
+#if defined(DATA_A_TURBO4_0)
+    const uint blk = e0 / 128u;
+    const uint e   = e0 % 128u;
+    const uint byte = uint(data_a[blk].qs[e / 2u]);
+    const uint idx = ((e & 1u) != 0u) ? (byte >> 4u) : (byte & 0xFu);
+    sh_x[lid] = float(data_a[blk].norm) * k_turbo_centroids_4bit[idx];
+#elif defined(DATA_A_TURBO3_0)
+    const uint blk = e0 / 32u;
+    const uint e   = e0 % 32u;
+    const uint low2 = (uint(data_a[blk].qs[e / 4u]) >> (2u * (e % 4u))) & 0x3u;
+    const uint hi1  = (uint(data_a[blk].signs[e / 8u]) >> (e % 8u)) & 0x1u;
+    sh_x[lid] = float(data_a[blk].norm) * k_turbo_centroids_3bit[low2 | (hi1 << 2u)];
+#else
+    const uint blk = e0 / 32u;
+    const uint e   = e0 % 32u;
+    const uint idx = (uint(data_a[blk].qs[e / 4u]) >> (2u * (e % 4u))) & 0x3u;
+    sh_x[lid] = float(data_a[blk].norm) * k_turbo_centroids_2bit[idx];
+#endif
+    barrier();
+
+    // inverse FWHT: signs2 -> FWHT -> signs1
+    sh_x[lid] *= k_turbo_wht_signs2[lid];
+    barrier();
+
+    for (uint h = 1u; h < 128u; h <<= 1u) {
+        const uint blk = lid / (2u*h);
+        const uint j   = lid % (2u*h);
+        if (j < h) {
+            const uint a = blk*2u*h + j;
+            const float va = sh_x[a];
+            const float vb = sh_x[a + h];
+            sh_x[a]     = va + vb;
+            sh_x[a + h] = va - vb;
+        }
+        barrier();
+    }
+
+    const float v = sh_x[lid] * TURBO_FWHT_INV_SQRT_128 * k_turbo_wht_signs1[lid];
+
+    // transposed write: input [HS, NH, KV, batch] -> output [HS, KV, NH, batch]
+    const uint HS = p.M;
+    const uint NH = p.K;
+    const uint KVn = p.stride_a;
+    const uint i0 = e0 % HS;
+    const uint i1 = (e0 / HS) % NH;
+    const uint i2 = (e0 / (HS * NH)) % KVn;
+    const uint i3 =  e0 / (HS * NH * KVn);
+    const uint b_idx = i0 + i2*HS + i1*HS*KVn + i3*HS*KVn*NH;
+
+    data_b[b_idx] = D_TYPE(v);
+}

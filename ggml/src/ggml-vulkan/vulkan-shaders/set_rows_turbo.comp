@@ -1,0 +1,177 @@
+#version 450
+
+// TurboQuant KV-cache write: one 128-wide rotation group per workgroup.
+// Mirrors k_set_rows_turbo2/3 and quantize_f32_turbo4_0_block in
+// ggml-cuda/turbo-quant-cuda.cuh: normalize the group, FWHT-rotate it, quantize
+// each sub-block against the Lloyd-Max codebook and store the norm correction.
+
+#extension GL_EXT_control_flow_attributes : require
+
+#include "types.glsl"
+#include "utils.glsl"
+#include "turbo.glsl"
+
+layout (push_constant) uniform parameter
+{
+    uint ne;
+    uint ne00; uint ne01; uint ne02; uint ne03; uint nb00; uint nb01; uint nb02; uint nb03;
+    uint ne10; uint ne11; uint ne12; uint ne13; uint nb10; uint nb11; uint nb12; uint nb13;
+    uint ne20; uint ne21; uint ne22; uint ne23; uint nb20; uint nb21; uint nb22; uint nb23;
+    uint misalign_offsets;
+    float param1; float param2; int param3;
+} p;
+
+layout(constant_id = 0) const bool norepeat = false;
+
+#if B_SIZE == 64
+#define DATA_I_SWIZZLE .x
+#else
+#define DATA_I_SWIZZLE
+#endif
+
+layout (binding = 0) readonly buffer S { S_TYPE data_s[]; };
+layout (binding = 1) readonly buffer I { B_TYPE data_i[]; };
+layout (binding = 2) writeonly buffer Q { A_TYPE data_q[]; };
+
+layout(local_size_x = 128, local_size_y = 1, local_size_z = 1) in;
+
+shared float sh_x[128];
+shared uint  sh_idx[128];
+
+uint get_aoffset() { return p.misalign_offsets >> 16; }
+uint get_boffset() { return (p.misalign_offsets >> 8) & 0xFF; }
+uint get_doffset() { return p.misalign_offsets & 0xFF; }
+
+uint src0_idx(uint i00, uint i01, uint i02, uint i03) {
+    return i03*p.nb03 + i02*p.nb02 + i01*p.nb01 + i00*p.nb00;
+}
+
+uint src1_idx(uint i00, uint i01, uint i02, uint i03) {
+    if (norepeat) {
+        return i03*p.nb13 + i02*p.nb12 + i01*p.nb11 + i00*p.nb10;
+    }
+    return fastmod(i03, p.ne13)*p.nb13 + fastmod(i02, p.ne12)*p.nb12 + fastmod(i01, p.ne11)*p.nb11 + fastmod(i00, p.ne10)*p.nb10;
+}
+
+uint dst_idx(uint i00, uint i01, uint i02, uint i03) {
+    return i03*p.nb23 + i02*p.nb22 + i01*p.nb21 + i00*p.nb20;
+}
+
+void main() {
+    const uint lid = gl_LocalInvocationID.x;
+    // SET_ROWS splits large problems over a 512x512xZ grid, so flatten like get_idx()
+    const uint grp = gl_WorkGroupID.z * 262144u + gl_WorkGroupID.y * 512u + gl_WorkGroupID.x;
+    const uint base = grp * 128u;
+    if (base >= p.ne) {
+        return;
+    }
+
+    uint g00, i01, i02, i03;
+    get_indices(base, g00, i01, i02, i03, p.ne00, p.ne01, p.ne02, p.ne03);
+
+    // group L2 norm
+    const float x = float(data_s[src0_idx(g00 + lid, i01, i02, i03) + get_aoffset()]);
+    sh_x[lid] = x * x;
+    barrier();
+
+    float norm_sq = 0.0;
+    for (uint off = 64u; off > 0u; off >>= 1u) {
+        if (lid < off) {
+            sh_x[lid] += sh_x[lid + off];
+        }
+        barrier();
+    }
+    const float grp_norm = sqrt(sh_x[0]);
+    const float inv_norm = grp_norm > 1e-10 ? 1.0 / grp_norm : 0.0;
+    barrier();
+
+    // normalize then forward FWHT
+    sh_x[lid] = x * inv_norm * k_turbo_wht_signs1[lid];
+    barrier();
+
+    for (uint h = 1u; h < 128u; h <<= 1u) {
+        const uint blk = lid / (2u*h);
+        const uint j   = lid % (2u*h);
+        if (j < h) {
+            const uint a = blk*2u*h + j;
+            const float va = sh_x[a];
+            const float vb = sh_x[a + h];
+            sh_x[a]     = va + vb;
+            sh_x[a + h] = va - vb;
+        }
+        barrier();
+    }
+
+    sh_x[lid] = sh_x[lid] * TURBO_FWHT_INV_SQRT_128 * k_turbo_wht_signs2[lid];
+    barrier();
+
+    // nearest codebook entry
+#if defined(TURBO4)
+    sh_idx[lid] = turbo_find_nearest_4bit(sh_x[lid]);
+#elif defined(TURBO3)
+    sh_idx[lid] = turbo_find_nearest_3bit(sh_x[lid]);
+#else
+    sh_idx[lid] = turbo_find_nearest_2bit(sh_x[lid]);
+#endif
+    barrier();
+
+    // reconstruction norm over the whole group
+#if defined(TURBO4)
+    const float c = k_turbo_centroids_4bit[sh_idx[lid]];
+#elif defined(TURBO3)
+    const float c = k_turbo_centroids_3bit[sh_idx[lid]];
+#else
+    const float c = k_turbo_centroids_2bit[sh_idx[lid]];
+#endif
+    sh_x[lid] = c * c;
+    barrier();
+    for (uint off = 64u; off > 0u; off >>= 1u) {
+        if (lid < off) {
+            sh_x[lid] += sh_x[lid + off];
+        }
+        barrier();
+    }
+    const float recon_norm = sqrt(sh_x[0]);
+    const float corrected = recon_norm > 1e-10 ? grp_norm / recon_norm : grp_norm;
+    barrier();
+
+    const uint i12 = fastmod(i03, p.ne12);
+    const uint i11 = fastmod(i02, p.ne11);
+    const uint row = data_i[src1_idx(i01, i11, i12, 0) + get_boffset()] DATA_I_SWIZZLE;
+
+#if defined(TURBO4)
+    const uint dst_base = dst_idx(g00 / 128u, row, i02, i03) + get_doffset();
+    if (lid < 64u) {
+        data_q[dst_base].qs[lid] = uint8_t(sh_idx[2u*lid] | (sh_idx[2u*lid + 1u] << 4u));
+    }
+    if (lid == 0u) {
+        data_q[dst_base].norm = float16_t(corrected);
+    }
+#else
+    // four 32-wide sub-blocks per group
+    const uint sub = lid / 32u;
+    const uint e   = lid % 32u;
+    const uint dst_base = dst_idx(g00 / 32u, row, i02, i03) + get_doffset() + sub;
+  #if defined(TURBO3)
+    if ((e % 4u) == 0u) {
+        data_q[dst_base].qs[e / 4u] = uint8_t((sh_idx[lid] & 0x3u) | ((sh_idx[lid + 1u] & 0x3u) << 2u) |
+                                              ((sh_idx[lid + 2u] & 0x3u) << 4u) | ((sh_idx[lid + 3u] & 0x3u) << 6u));
+    }
+    if ((e % 8u) == 0u) {
+        uint s = 0u;
+        for (uint k = 0u; k < 8u; k++) {
+            s |= ((sh_idx[lid + k] >> 2u) & 0x1u) << k;
+        }
+        data_q[dst_base].signs[e / 8u] = uint8_t(s);
+    }
+  #else
+    if ((e % 4u) == 0u) {
+        data_q[dst_base].qs[e / 4u] = uint8_t(sh_idx[lid] | (sh_idx[lid + 1u] << 2u) |
+                                              (sh_idx[lid + 2u] << 4u) | (sh_idx[lid + 3u] << 6u));
+    }
+  #endif
+    if (e == 0u) {
+        data_q[dst_base].norm = float16_t(corrected);
+    }
+#endif
+}

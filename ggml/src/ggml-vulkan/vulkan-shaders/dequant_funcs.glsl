@@ -665,6 +665,61 @@ vec2 get_dm(uint ib, uint a_offset) {
 }
 #endif
 
+#if defined(DATA_A_TURBO4_0)
+#include "turbo.glsl"
+float turbo4_val(uint ib, uint e, uint a_offset) {
+    const uint byte = uint(data_a[a_offset + ib].qs[e / 2u]);
+    return k_turbo_centroids_4bit[((e & 1u) != 0u) ? (byte >> 4u) : (byte & 0xFu)];
+}
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    return vec2(turbo4_val(ib, iqs, a_offset), turbo4_val(ib, iqs + 1u, a_offset));
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    return vec4(turbo4_val(ib, iqs + 0u, a_offset), turbo4_val(ib, iqs + 1u, a_offset),
+                turbo4_val(ib, iqs + 2u, a_offset), turbo4_val(ib, iqs + 3u, a_offset));
+}
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(float(data_a[a_offset + ib].norm), 0);
+}
+#endif
+
+#if defined(DATA_A_TURBO2_0)
+#include "turbo.glsl"
+float turbo2_val(uint ib, uint e, uint a_offset) {
+    const uint idx = (uint(data_a[a_offset + ib].qs[e / 4u]) >> (2u * (e % 4u))) & 0x3u;
+    return k_turbo_centroids_2bit[idx];
+}
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    return vec2(turbo2_val(ib, iqs, a_offset), turbo2_val(ib, iqs + 1u, a_offset));
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    return vec4(turbo2_val(ib, iqs + 0u, a_offset), turbo2_val(ib, iqs + 1u, a_offset),
+                turbo2_val(ib, iqs + 2u, a_offset), turbo2_val(ib, iqs + 3u, a_offset));
+}
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(float(data_a[a_offset + ib].norm), 0);
+}
+#endif
+
+#if defined(DATA_A_TURBO3_0)
+#include "turbo.glsl"
+float turbo3_val(uint ib, uint e, uint a_offset) {
+    const uint low2 = (uint(data_a[a_offset + ib].qs[e / 4u]) >> (2u * (e % 4u))) & 0x3u;
+    const uint hi1  = (uint(data_a[a_offset + ib].signs[e / 8u]) >> (e % 8u)) & 0x1u;
+    return k_turbo_centroids_3bit[low2 | (hi1 << 2u)];
+}
+vec2 dequantize(uint ib, uint iqs, uint a_offset) {
+    return vec2(turbo3_val(ib, iqs, a_offset), turbo3_val(ib, iqs + 1u, a_offset));
+}
+vec4 dequantize4(uint ib, uint iqs, uint a_offset) {
+    return vec4(turbo3_val(ib, iqs + 0u, a_offset), turbo3_val(ib, iqs + 1u, a_offset),
+                turbo3_val(ib, iqs + 2u, a_offset), turbo3_val(ib, iqs + 3u, a_offset));
+}
+vec2 get_dm(uint ib, uint a_offset) {
+    return vec2(float(data_a[a_offset + ib].norm), 0);
+}
+#endif
+
 #if defined(DATA_A_Q3_K)
 vec2 dequantize(uint ib, uint iqs, uint a_offset) {
     iqs /= 2;
