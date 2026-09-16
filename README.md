@@ -87,7 +87,7 @@ llama-server -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
 MTP with offload
 llama-server \
   -m Qwen3.8-Flash-Next-UD-IQ3_XXS-00001-of-00003.gguf \
-  -md mtp-Qwen3.8-Flash-Next-Q4_K_M.gguf \
+  -md mtp.gguf \
   --spec-type draft-mtp \
   --spec-draft-n-max 2 \
   -ngl 99 \
@@ -95,7 +95,8 @@ llama-server \
   -fa on \
   -ctk q8_0 -ctv q8_0 -kvu \
   -ctkd q4_0 -ctvd q4_0 -ngld 99 \
-  -c 64000 --pipeline-parallel --no-ngram 
+  -c 64000 -b 1024 -ub 128 -np 1 \
+  --pipeline-parallel --no-ngram 
   
   
   //Faster above 30% context load
