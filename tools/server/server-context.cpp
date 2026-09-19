@@ -974,6 +974,7 @@ private:
         std::string stage;
         std::vector<std::string> stages;
         int64_t t_last_load_progress_ms = 0;
+        int last_logged_pct = -1;
         load_progress_data(server_context_impl * ctx, const std::string & stage) : ctx(ctx), stage(stage) {}
     };
     static bool load_progress_callback(float progress, void * user_data) {
@@ -990,6 +991,11 @@ private:
                 return true;
             }
             t_last = t_now;
+        }
+        const int pct = (int) (progress * 100.0f);
+        if (pct != d->last_logged_pct && (pct % 10 == 0 || pct == 100)) {
+            d->last_logged_pct = pct;
+            SRV_INF("loading model '%s': %3d%%\n", d->stage.c_str(), pct);
         }
         if (d->ctx->callback_state) {
             d->ctx->callback_state(SERVER_STATE_LOADING, {

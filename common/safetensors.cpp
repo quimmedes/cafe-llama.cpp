@@ -20,6 +20,7 @@
 #include <filesystem>
 #include <fstream>
 #include <memory>
+#include <mutex>
 #include <string>
 #include <system_error>
 #include <thread>
@@ -1252,6 +1253,18 @@ static float st_exl3_codebook(uint32_t w) {
     return fmaf(v, k_inv, k_bias);
 }
 
+static const float * st_exl3_codebook_table() {
+    static std::vector<float> lut;
+    static std::once_flag flag;
+    std::call_once(flag, []() {
+        lut.resize(65536);
+        for (uint32_t i = 0; i < 65536; ++i) {
+            lut[i] = st_exl3_codebook(i);
+        }
+    });
+    return lut.data();
+}
+
 static void st_exl3_fwht(float * x, int64_t n) {
     // natural order Sylvester Hadamard, the same matrix the reference builds
     for (int64_t h = 1; h < n; h *= 2) {
@@ -1302,6 +1315,25 @@ static void st_emit_exl3(const st_loader & L, const st_plan & p, uint8_t * out) 
     p.src.shard->read(p.src.offs, trellis.data(), trellis.size() * sizeof(uint32_t));
 
     std::vector<float> w((size_t) n_in * n_out);
+    struct bit_extr {
+        uint16_t i0;
+        uint16_t i1;
+        uint8_t  s0;
+        uint8_t  e_div16;
+        uint8_t  e_mod16;
+    };
+    bit_extr extr[256];
+    for (int idx = 0; idx < 256; ++idx) {
+        const int64_t b0 = idx * bits + bits - 16 + 256 * bits;
+        const int64_t b1 = b0 + 16;
+        const int64_t i0 = b0 / 32, i1 = (b1 - 1) / 32;
+        const int64_t s0 = (i1 + 1) * 32 - b1;
+        const int e = perm[idx];
+        extr[idx] = { (uint16_t) (i0 % nw), (uint16_t) (i1 % nw), (uint8_t) s0, (uint8_t) (e / 16), (uint8_t) (e % 16) };
+    }
+
+    const float * codebook = st_exl3_codebook_table();
+
     auto decode_rows = [&](int64_t tk0, int64_t tk1) {
     for (int64_t tk = tk0; tk < tk1; ++tk) {
         for (int64_t tn = 0; tn < tiles_n; ++tn) {
@@ -1309,14 +1341,10 @@ static void st_emit_exl3(const st_loader & L, const st_plan & p, uint8_t * out) 
             const int64_t tj = swapped ? tk : tn;
             const uint32_t * tile = trellis.data() + ((size_t) ti * (swapped ? tiles_k : tiles_n) + tj) * nw;
             for (int64_t idx = 0; idx < 256; ++idx) {
-                const int64_t b0 = idx * bits + bits - 16 + 256 * bits;
-                const int64_t b1 = b0 + 16;
-                const int64_t i0 = b0 / 32, i1 = (b1 - 1) / 32;
-                const int64_t s0 = (i1 + 1) * 32 - b1;
-                const uint32_t a = tile[i0 % nw], b = tile[i1 % nw];
-                const uint32_t w0 = (uint32_t) ((((uint64_t) a << 32) | b) >> s0) & 0xFFFFu;
-                const int64_t e = perm[idx];
-                w[(size_t) (tk * 16 + e / 16) * n_out + (tn * 16 + e % 16)] = st_exl3_codebook(w0);
+                const auto & ex = extr[idx];
+                const uint32_t a = tile[ex.i0], b = tile[ex.i1];
+                const uint32_t w0 = (uint32_t) ((((uint64_t) a << 32) | b) >> ex.s0) & 0xFFFFu;
+                w[(size_t) (tk * 16 + ex.e_div16) * n_out + (tn * 16 + ex.e_mod16)] = codebook[w0];
             }
         }
     }
@@ -1354,26 +1382,64 @@ static void st_emit_exl3(const st_loader & L, const st_plan & p, uint8_t * out) 
 
     // the kernels compute y = svh * Had_n(inner * Had_k(suh * x)), so the weight is
     // W = svh * (H inner H) * suh: both transforms first, then the two factors
-    std::vector<float> scratch(128);
-    for (int64_t kin = 0; kin < n_in; kin += 128) {
-        for (int64_t o = 0; o < n_out; ++o) {
-            for (int64_t i = 0; i < 128; ++i) {
-                scratch[i] = w[(size_t) (kin + i) * n_out + o];
+    auto fwht_cols = [&](int64_t o0, int64_t o1) {
+        std::vector<float> scratch(128);
+        for (int64_t kin = 0; kin < n_in; kin += 128) {
+            for (int64_t o = o0; o < o1; ++o) {
+                for (int64_t i = 0; i < 128; ++i) {
+                    scratch[i] = w[(size_t) (kin + i) * n_out + o];
+                }
+                st_exl3_fwht(scratch.data(), 128);
+                for (int64_t i = 0; i < 128; ++i) {
+                    w[(size_t) (kin + i) * n_out + o] = scratch[i];
+                }
             }
-            st_exl3_fwht(scratch.data(), 128);
-            for (int64_t i = 0; i < 128; ++i) {
-                w[(size_t) (kin + i) * n_out + o] = scratch[i];
+        }
+    };
+    {
+        const int64_t n_threads = (int64_t) std::min<unsigned>(st_threads(), (unsigned) n_out);
+        if (n_threads <= 1) {
+            fwht_cols(0, n_out);
+        } else {
+            std::vector<std::thread> workers;
+            workers.reserve(n_threads - 1);
+            const int64_t per_thread = (n_out + n_threads - 1) / n_threads;
+            for (int64_t t = 1; t < n_threads; ++t) {
+                workers.emplace_back(fwht_cols, t * per_thread, std::min(n_out, (t + 1) * per_thread));
+            }
+            fwht_cols(0, std::min(n_out, per_thread));
+            for (auto & wkr : workers) {
+                wkr.join();
             }
         }
     }
-    for (int64_t kin = 0; kin < n_in; ++kin) {
-        float * row = w.data() + (size_t) kin * n_out;
-        for (int64_t nout = 0; nout < n_out; nout += 128) {
-            st_exl3_fwht(row + nout, 128);
+    auto fwht_rows = [&](int64_t kin0, int64_t kin1) {
+        for (int64_t kin = kin0; kin < kin1; ++kin) {
+            float * row = w.data() + (size_t) kin * n_out;
+            for (int64_t nout = 0; nout < n_out; nout += 128) {
+                st_exl3_fwht(row + nout, 128);
+            }
+            const float su = suh[kin];
+            for (int64_t o = 0; o < n_out; ++o) {
+                row[o] *= su * svh[o];
+            }
         }
-        const float su = suh[kin];
-        for (int64_t o = 0; o < n_out; ++o) {
-            row[o] *= su * svh[o];
+    };
+    {
+        const int64_t n_threads = (int64_t) std::min<unsigned>(st_threads(), (unsigned) n_in);
+        if (n_threads <= 1) {
+            fwht_rows(0, n_in);
+        } else {
+            std::vector<std::thread> workers;
+            workers.reserve(n_threads - 1);
+            const int64_t per_thread = (n_in + n_threads - 1) / n_threads;
+            for (int64_t t = 1; t < n_threads; ++t) {
+                workers.emplace_back(fwht_rows, t * per_thread, std::min(n_in, (t + 1) * per_thread));
+            }
+            fwht_rows(0, std::min(n_in, per_thread));
+            for (auto & wkr : workers) {
+                wkr.join();
+            }
         }
     }
 
