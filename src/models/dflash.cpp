@@ -862,7 +862,7 @@ llama_model_dflash::graph<false>::graph(const llama_model & model, const llm_gra
     if (ubatch.embd) {
         // DFly ships one fused context per draft layer, so the incoming row is n_layer wide
         const bool    is_dfly      = model.dfly_layer_fusion != nullptr;
-        const int64_t n_embd_batch = is_dfly ? (int64_t) hparams.n_embd_out() : n_embd;
+        const int64_t n_embd_batch = is_dfly ? (int64_t) hparams.n_embd_out() : n_embd_inp;
 
         auto inp = std::make_unique<llm_graph_input_embd>(n_embd_batch);
 
