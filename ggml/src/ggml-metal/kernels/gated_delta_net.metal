@@ -21,6 +21,7 @@ kernel void kernel_gated_delta_net_impl(
         device const char * write_rows,
         device       char * state_dst,
         device       char * dst,
+        device       char * dst_fuse,
         device const char * raw_dt_bias,
         device const char * raw_a,
         uint3 tgpig[[threadgroup_position_in_grid]],
@@ -153,10 +154,9 @@ kernel void kernel_gated_delta_net_impl(
         if (K > 1) {
             const int target_slot = (int)args.ne22 - 1 - (int)t;
             if (target_slot >= 0 && target_slot < (int)K) {
-                // always populate the op's own snapshot output: the fold must
-                // not leave the documented output region uninitialized for
-                // other consumers (or output/eval callbacks)
-                device float * dst_state = (device float *) (dst) + attn_size + (uint)target_slot * state_size_per_snap + state_out_base;
+                // fused: write the slot straight into the cache; else fill the op's
+                // own snapshot tail, which the trailing cpy reads
+                device float * dst_state = (device float *)state_out + (uint)target_slot * slot_stride + state_out_base;
                 FOR_UNROLL (short j = 0; j < NSG; j++) {
                     const short is = tx*NSG + j;
                     dst_state[is] = ls[j];
