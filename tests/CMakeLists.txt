@@ -254,7 +254,26 @@ if (NOT WIN32 OR NOT BUILD_SHARED_LIBS)
     set_tests_properties(test-recurrent-state-rollback-dsv4 PROPERTIES
         FIXTURES_REQUIRED generate-models
     )
- @both
+    llama_test(
+        test-recurrent-state-rollback
+        NAME test-recurrent-state-rollback-kimi-k3
+        LABEL main
+        ARGS -m "${MODEL_DIR}/kimi-k3-moe.gguf"
+    )
+    set_tests_properties(test-recurrent-state-rollback-kimi-k3 PROPERTIES
+        FIXTURES_REQUIRED generate-models
+    )
+
+    # Test state save/load functionality across all architectures, using the generated dummy models
+    llama_test(
+        test-save-load-state
+        LABEL main
+        ARGS --models "${MODEL_DIR}"
+    )
+    set_tests_properties(test-save-load-state PROPERTIES FIXTURES_REQUIRED generate-models)
+
+    llama_build(test-fusion.cpp)
+    llama_build_and_test(test-kv-mean-center.cpp)
 endif()
 
 llama_build_and_test(test-chat-peg-parser.cpp peg-parser/simple-tokenize.cpp)
