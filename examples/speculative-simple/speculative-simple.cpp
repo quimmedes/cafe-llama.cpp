@@ -66,8 +66,12 @@ int main(int argc, char ** argv) {
     llama_context * ctx_dft = params.speculative.draft.ctx_dft;
 
     // check if the context supports partial sequence removal
-    const bool use_ckpt_tgt = common_context_can_seq_rm(ctx_tgt) == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
-    const bool use_ckpt_dft = common_context_can_seq_rm(ctx_dft) == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
+    const common_context_seq_rm_type seq_rm_tgt = common_context_can_seq_rm(ctx_tgt);
+    const common_context_seq_rm_type seq_rm_dft = ctx_dft ? common_context_can_seq_rm(ctx_dft) : COMMON_CONTEXT_SEQ_RM_TYPE_NO;
+
+    // a bounded rollback window (RS) can only undo up to llama_n_rs_seq() tokens, so longer drafts still take a checkpoint (same rule as the server)
+    bool use_ckpt_tgt = seq_rm_tgt == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
+    bool use_ckpt_dft = seq_rm_dft == COMMON_CONTEXT_SEQ_RM_TYPE_FULL;
 
     if (use_ckpt_tgt) {
         LOG_INF("speculative decoding will use checkpoints (context does not support partial sequence removal)\n");
@@ -173,7 +177,7 @@ int main(int argc, char ** argv) {
                     llama_memory_seq_pos_min(llama_get_memory(ctx_tgt), seq_id),
                     llama_memory_seq_pos_max(llama_get_memory(ctx_tgt), seq_id));
 
-            if (use_ckpt_dft) {
+            if (seq_rm_dft == COMMON_CONTEXT_SEQ_RM_TYPE_FULL) {
                 ckpt.update_dft(ctx_dft, seq_id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
             }
 
@@ -195,21 +199,32 @@ int main(int argc, char ** argv) {
             };
             common_speculative_draft(spec);
 
-            // save a checkpoint of the target context before evaluating the draft
-            // this allows us to restore the state if partial draft acceptance occurs
-            if (!draft.empty()) {
-                if (use_ckpt_tgt) {
-                    ckpt.update_tgt(ctx_tgt, seq_id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
-                }
-            }
-
             // reset the draft context to the checkpoint before verification
             if (ctx_dft) {
-                if (use_ckpt_dft) {
+                // only a FULL context was checkpointed above; an RS context is handled after the draft is sized
+                if (seq_rm_dft == COMMON_CONTEXT_SEQ_RM_TYPE_FULL) {
                     ckpt.load_dft(ctx_dft, seq_id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
                 }
 
                 llama_memory_seq_rm(llama_get_memory(ctx_dft), seq_id, ckpt.pos_max + 1, -1);
+            }
+
+            // save a checkpoint of the target context before evaluating the draft
+            // this allows us to restore the state if partial draft acceptance occurs
+            if (!draft.empty()) {
+                use_ckpt_tgt = seq_rm_tgt == COMMON_CONTEXT_SEQ_RM_TYPE_FULL ||
+                              (seq_rm_tgt == COMMON_CONTEXT_SEQ_RM_TYPE_RS && draft.size() > llama_n_rs_seq(ctx_tgt));
+                const bool ckpt_dft_rs = seq_rm_dft == COMMON_CONTEXT_SEQ_RM_TYPE_RS && draft.size() > llama_n_rs_seq(ctx_dft);
+                use_ckpt_dft = seq_rm_dft == COMMON_CONTEXT_SEQ_RM_TYPE_FULL || ckpt_dft_rs;
+
+                if (use_ckpt_tgt) {
+                    ckpt.update_tgt(ctx_tgt, seq_id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                }
+
+                // a FULL draft context was already checkpointed before drafting; only the RS overflow case needs one here
+                if (ckpt_dft_rs) {
+                    ckpt.update_dft(ctx_dft, seq_id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                }
             }
         } else {
             // we have a previous (partial) draft to reuse from checkpoint restoration
@@ -276,7 +291,9 @@ int main(int argc, char ** argv) {
             }
 
             if (ctx_dft) {
-                ckpt.load_dft(ctx_dft, seq_id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                if (use_ckpt_dft) {
+                    ckpt.load_dft(ctx_dft, seq_id, LLAMA_STATE_SEQ_FLAGS_PARTIAL_ONLY);
+                }
 
                 llama_memory_seq_rm(llama_get_memory(ctx_dft), seq_id, ckpt.pos_max + 1, -1);
             }

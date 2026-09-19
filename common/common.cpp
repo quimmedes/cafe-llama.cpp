@@ -1316,8 +1316,6 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         if (spec_mtp) {
             cparams_dft.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
         }
-        cparams_dft.n_rs_seq = 0;
-
         const common_fit_extra_model extra = {
             /*.path_model   =*/ params_dft.model.path.c_str(),
             /*.mparams      =*/ &mparams_dft,
@@ -1742,6 +1740,18 @@ struct llama_context_params common_context_params_to_llama(const common_params &
     cparams.n_ctx             = params.n_ctx;
     cparams.n_seq_max         = params.n_parallel;
     cparams.n_rs_seq          = params.speculative.need_n_rs_seq();
+    // recurrent/hybrid memory keeps the last n_rs_seq + 1 tokens of a sequence inside one micro-batch, so the window has to fit or we keep the checkpoint path
+    // llama_context clamps the micro-batch to min(n_batch, n_ubatch), and n_batch to n_ctx, so the check uses the effective size and not the requested one
+    {
+        const uint32_t n_batch_eff  = (uint32_t) (params.n_ctx > 0 ? std::min(params.n_batch, params.n_ctx) : params.n_batch);
+        const uint32_t n_ubatch_eff = params.n_ubatch == 0 ? n_batch_eff : std::min(n_batch_eff, (uint32_t) params.n_ubatch);
+
+        if (cparams.n_rs_seq > 0 && n_ubatch_eff <= cparams.n_rs_seq + 1) {
+            COM_WRN("%s: speculative rollback window (%u + 1) does not fit micro-batch size %u, using KV checkpoints instead (raise -ub and -b to at least %u to enable rollback)\n",
+                    __func__, cparams.n_rs_seq, n_ubatch_eff, cparams.n_rs_seq + 2);
+            cparams.n_rs_seq = 0;
+        }
+    }
     cparams.n_outputs_max     = std::max(params.n_outputs_max, 0);
     cparams.n_outputs_max_per_seq = std::max(params.n_outputs_max_per_seq, 0);
     cparams.n_batch           = params.n_batch;
@@ -1772,6 +1782,10 @@ struct llama_context_params common_context_params_to_llama(const common_params &
 
     cparams.type_k = params.cache_type_k;
     cparams.type_v = params.cache_type_v;
+
+    // note: params (and therefore params.kv_mean_center_path) is kept alive by the caller for
+    // at least as long as it takes to call llama_init_from_model() with the returned cparams
+    cparams.path_kv_mean_center = params.kv_mean_center_path.empty() ? nullptr : params.kv_mean_center_path.c_str();
 
     return cparams;
 }

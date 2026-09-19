@@ -443,7 +443,12 @@ extern "C" {
         GGML_TYPE_TURBO1_CQ = 51, // RESERVED
         GGML_TYPE_TURBO1_TCQ = 52, // turbo1 Trellis-Coded: FWHT + k=1/L=8 trellis, separate K/V 256-state codebooks (1.25 bpw)
         GGML_TYPE_F8_E4M3 = 53, // FP8 E4M3 weights, one fp32 scale per block of 128 values
-        GGML_TYPE_COUNT   = 54,
+
+        // Prism-private Q2_0 at group size 128 (upstream Q2_0 is group 64). High id so it
+        // slots above upstream types; type_traits is sized to COUNT (143) with 43..141 unused.
+        GGML_TYPE_PQ2_0 = 142,
+        GGML_TYPE_PTQ1_0 = 143, // Prism-private ternary, group 128
+        GGML_TYPE_COUNT   = 144,
     };
 
     // [TAG_GGML_PREC]
@@ -499,6 +504,8 @@ extern "C" {
         GGML_FTYPE_MOSTLY_NVFP4   = 26, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q1_0    = 27, // except 1d tensors
         GGML_FTYPE_MOSTLY_Q2_0    = 28, // except 1d tensors
+        GGML_FTYPE_MOSTLY_PQ2_0 = 128, // except 1d tensors (Prism-private group-128 Q2_0)
+        GGML_FTYPE_MOSTLY_PTQ1_0 = 129, // except 1d tensors (Prism-private group-128 ternary)
     };
 
     // available tensor operations:
@@ -2671,6 +2678,31 @@ extern "C" {
             struct ggml_tensor  * beta,
             struct ggml_tensor  * state,
             int64_t               K);
+
+    // rows-indexed state read: instead of a gathered [S_v, S_v, H_v, n_seqs]
+    // scratch, the op reads each sequence's live state directly from `states`
+    // (2D cache view, D = S_v*S_v*H_v wide rows) at row `rows[seq]` (I32,
+    // n_seqs entries). Removes the per-layer get_rows gather from recurrent
+    // decode graphs. Output layout is identical to ggml_gated_delta_net with
+    // K = n_snap_slots.
+    GGML_API struct ggml_tensor * ggml_gated_delta_net_rows(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * v,
+            struct ggml_tensor  * g,
+            struct ggml_tensor  * beta,
+            struct ggml_tensor  * states,
+            struct ggml_tensor  * rows,
+            int                   n_snap_slots);
+
+    // fold the per-head gate activations into a gated_delta_net op (scalar gate only):
+    //   beta -> sigmoid(beta),  g -> a[h] * softplus(g + dt_bias[h])
+    // dt_bias and a are F32 with H_v elements; removes four elementwise ops per layer
+    GGML_API void ggml_gated_delta_net_set_raw_gates(
+            struct ggml_tensor  * gdn,
+            struct ggml_tensor  * dt_bias,
+            struct ggml_tensor  * a);
 
     // DSA lightning indexer
     //

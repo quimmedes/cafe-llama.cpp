@@ -46,6 +46,7 @@ enum llm_arch {
     LLM_ARCH_QWEN35,
     LLM_ARCH_QWEN35MOE,
     LLM_ARCH_QWEN4EXP,
+    LLM_ARCH_DSPARK,
     LLM_ARCH_PHI2,
     LLM_ARCH_PHI3,
     LLM_ARCH_PHIMOE,
@@ -229,6 +230,20 @@ enum llm_kv {
     LLM_KV_MOE_LATENT_SIZE,
     LLM_KV_NEXTN_PREDICT_LAYERS,
     LLM_KV_NEXTN_SHARED_TARGET_TENSORS,
+    // dspark drafter hyperparameters (block-diffusion EAGLE-style drafter)
+    LLM_KV_DSPARK_BLOCK_SIZE,
+    LLM_KV_DSPARK_MASK_TOKEN_ID,
+    LLM_KV_DSPARK_TARGET_LAYERS,
+    LLM_KV_DSPARK_MARKOV_RANK,
+    LLM_KV_DSPARK_CONFIDENCE_HEAD,
+    LLM_KV_DSPARK_CONFIDENCE_WITH_MARKOV,
+    // Optional noise-level conditioning.
+    LLM_KV_DSPARK_LOG_SNR_CONDITIONING,
+    LLM_KV_DSPARK_MIN_LOG_SNR,
+    LLM_KV_DSPARK_MAX_LOG_SNR,
+    LLM_KV_DSPARK_HIDDEN_CORRECTION,
+    LLM_KV_DSPARK_MARKOV_DEPLOY_EXPOSURE,
+    LLM_KV_DSPARK_CORRECTION_SIZE,
     LLM_KV_NUM_DEEPSTACK_LAYERS,
     LLM_KV_DEEPSTACK_MAPPING,
     LLM_KV_HIDDEN_ACT,
@@ -419,6 +434,10 @@ enum llm_kv {
     LLM_KV_CLASSIFIER_OUTPUT_LABELS,
 
     LLM_KV_TARGET_LAYERS,
+    LLM_KV_CONFIDENCE_HEAD,
+    LLM_KV_LOG_SNR_CONDITIONING,
+    LLM_KV_MIN_LOG_SNR,
+    LLM_KV_MAX_LOG_SNR,
     LLM_KV_TARGET_HIDDEN_SIZE,
     LLM_KV_DFLASH_BLOCK_SIZE,
     LLM_KV_DFLASH_CONV_KERNEL_SIZE,
@@ -456,7 +475,7 @@ enum llm_tensor {
     LLM_TENSOR_DENSE_3_OUT,
     LLM_TENSOR_OUTPUT,
     LLM_TENSOR_OUTPUT_NORM,
-    LLM_TENSOR_OUTPUT_NORM_LFM2, // fix for wrong tensor name
+    LLM_TENSOR_OUTPUT_NORM_LFM2,  // fix for wrong tensor name
     LLM_TENSOR_ROPE_FREQS,
     LLM_TENSOR_ROPE_FACTORS_LONG,
     LLM_TENSOR_ROPE_FACTORS_SHORT,
@@ -490,7 +509,7 @@ enum llm_tensor {
     LLM_TENSOR_FFN_GATE_EXP,
     LLM_TENSOR_FFN_UP_EXP,
     LLM_TENSOR_FFN_NORM_EXPS,
-    LLM_TENSOR_FFN_DOWN_EXPS, // merged experts
+    LLM_TENSOR_FFN_DOWN_EXPS,  // merged experts
     LLM_TENSOR_FFN_GATE_EXPS,
     LLM_TENSOR_FFN_UP_EXPS,
     LLM_TENSOR_FFN_GATE_UP_EXPS,
@@ -510,52 +529,52 @@ enum llm_tensor {
     LLM_TENSOR_LAYER_OUT_SCALE,
     LLM_TENSOR_POST_ATTN_NORM,
     LLM_TENSOR_POST_MLP_NORM,
-    LLM_TENSOR_PER_LAYER_TOKEN_EMBD, // gemma3n
-    LLM_TENSOR_PER_LAYER_MODEL_PROJ, // gemma3n
-    LLM_TENSOR_PER_LAYER_INP_GATE,   // gemma3n
-    LLM_TENSOR_PER_LAYER_PROJ,       // gemma3n
-    LLM_TENSOR_PER_LAYER_PROJ_NORM,  // gemma3n
-    LLM_TENSOR_PER_LAYER_POST_NORM,  // gemma3n
-    LLM_TENSOR_ALTUP_PROJ,           // gemma3n
-    LLM_TENSOR_ALTUP_UNEMBD_PROJ,    // gemma3n
-    LLM_TENSOR_ALTUP_CORRECT_COEF,   // gemma3n
-    LLM_TENSOR_ALTUP_CORRECT_SCALE,  // gemma3n
-    LLM_TENSOR_ALTUP_PREDICT_COEF,   // gemma3n
-    LLM_TENSOR_ALTUP_ROUTER,         // gemma3n
-    LLM_TENSOR_ALTUP_ROUTER_NORM,    // gemma3n
-    LLM_TENSOR_LAUREL_L,             // gemma3n
-    LLM_TENSOR_LAUREL_R,             // gemma3n
-    LLM_TENSOR_LAUREL_POST_NORM,     // gemma3n
+    LLM_TENSOR_PER_LAYER_TOKEN_EMBD,  // gemma3n
+    LLM_TENSOR_PER_LAYER_MODEL_PROJ,  // gemma3n
+    LLM_TENSOR_PER_LAYER_INP_GATE,    // gemma3n
+    LLM_TENSOR_PER_LAYER_PROJ,        // gemma3n
+    LLM_TENSOR_PER_LAYER_PROJ_NORM,   // gemma3n
+    LLM_TENSOR_PER_LAYER_POST_NORM,   // gemma3n
+    LLM_TENSOR_ALTUP_PROJ,            // gemma3n
+    LLM_TENSOR_ALTUP_UNEMBD_PROJ,     // gemma3n
+    LLM_TENSOR_ALTUP_CORRECT_COEF,    // gemma3n
+    LLM_TENSOR_ALTUP_CORRECT_SCALE,   // gemma3n
+    LLM_TENSOR_ALTUP_PREDICT_COEF,    // gemma3n
+    LLM_TENSOR_ALTUP_ROUTER,          // gemma3n
+    LLM_TENSOR_ALTUP_ROUTER_NORM,     // gemma3n
+    LLM_TENSOR_LAUREL_L,              // gemma3n
+    LLM_TENSOR_LAUREL_R,              // gemma3n
+    LLM_TENSOR_LAUREL_POST_NORM,      // gemma3n
     LLM_TENSOR_SSM_IN,
     LLM_TENSOR_SSM_CONV1D,
     LLM_TENSOR_SSM_X,
     LLM_TENSOR_SSM_DT,
     LLM_TENSOR_SSM_DT_NORM,
     LLM_TENSOR_SSM_A,
-    LLM_TENSOR_SSM_A_NOSCAN,        // qwen3next special case with MUL instead of SSM_SCAN
+    LLM_TENSOR_SSM_A_NOSCAN,  // qwen3next special case with MUL instead of SSM_SCAN
     LLM_TENSOR_SSM_B_NORM,
     LLM_TENSOR_SSM_C_NORM,
     LLM_TENSOR_SSM_D,
     LLM_TENSOR_SSM_NORM,
     LLM_TENSOR_SSM_OUT,
-    LLM_TENSOR_SSM_BETA_ALPHA,      // qwen3next
-    LLM_TENSOR_SSM_ALPHA,           // qwen3.5
+    LLM_TENSOR_SSM_BETA_ALPHA,  // qwen3next
+    LLM_TENSOR_SSM_ALPHA,       // qwen3.5
     // Kimi Linear KDA (using SSM_ prefix for consistency)
-    LLM_TENSOR_SSM_CONV1D_Q,        // kimi: Q conv1d weight
-    LLM_TENSOR_SSM_CONV1D_K,        // kimi: K conv1d weight
-    LLM_TENSOR_SSM_CONV1D_V,        // kimi: V conv1d weight
-    LLM_TENSOR_SSM_F_A,             // kimi: forget gate projection A
-    LLM_TENSOR_SSM_F_B,             // kimi: forget gate projection B
-    LLM_TENSOR_SSM_BETA,            // kimi: beta mixing coefficient and qwen3.5
-    LLM_TENSOR_SSM_G_A,             // kimi: output gate projection A
-    LLM_TENSOR_SSM_G_B,             // kimi: output gate projection B
-    LLM_TENSOR_SSM_G,               // kimi-k3: full-rank KDA gate
-    LLM_TENSOR_ATTN_RES_SCORE,      // kimi-k3: fused res_norm*res_proj (pre-attn)
-    LLM_TENSOR_FFN_RES_SCORE,       // kimi-k3: fused res_norm*res_proj (pre-ffn)
-    LLM_TENSOR_OUTPUT_RES_SCORE,    // kimi-k3: fused res_norm*res_proj (final)
-    LLM_TENSOR_FFN_ROUTED_DOWN,     // kimi-k3: latent MoE down
-    LLM_TENSOR_FFN_ROUTED_UP,       // kimi-k3: latent MoE up
-    LLM_TENSOR_FFN_ROUTED_NORM,     // kimi-k3: latent MoE norm
+    LLM_TENSOR_SSM_CONV1D_Q,      // kimi: Q conv1d weight
+    LLM_TENSOR_SSM_CONV1D_K,      // kimi: K conv1d weight
+    LLM_TENSOR_SSM_CONV1D_V,      // kimi: V conv1d weight
+    LLM_TENSOR_SSM_F_A,           // kimi: forget gate projection A
+    LLM_TENSOR_SSM_F_B,           // kimi: forget gate projection B
+    LLM_TENSOR_SSM_BETA,          // kimi: beta mixing coefficient and qwen3.5
+    LLM_TENSOR_SSM_G_A,           // kimi: output gate projection A
+    LLM_TENSOR_SSM_G_B,           // kimi: output gate projection B
+    LLM_TENSOR_SSM_G,             // kimi-k3: full-rank KDA gate
+    LLM_TENSOR_ATTN_RES_SCORE,    // kimi-k3: fused res_norm*res_proj (pre-attn)
+    LLM_TENSOR_FFN_RES_SCORE,     // kimi-k3: fused res_norm*res_proj (pre-ffn)
+    LLM_TENSOR_OUTPUT_RES_SCORE,  // kimi-k3: fused res_norm*res_proj (final)
+    LLM_TENSOR_FFN_ROUTED_DOWN,   // kimi-k3: latent MoE down
+    LLM_TENSOR_FFN_ROUTED_UP,     // kimi-k3: latent MoE up
+    LLM_TENSOR_FFN_ROUTED_NORM,   // kimi-k3: latent MoE norm
     LLM_TENSOR_TIME_MIX_W0,
     LLM_TENSOR_TIME_MIX_W1,
     LLM_TENSOR_TIME_MIX_W2,
@@ -725,6 +744,23 @@ enum llm_tensor {
     LLM_TENSOR_HRM_Z_L_INIT,
     LLM_TENSOR_FC,
     LLM_TENSOR_D2T,
+    // dspark drafter tensors. The decoder blocks reuse the standard
+    // LLM_TENSOR_ATTN_* / LLM_TENSOR_FFN_* / LLM_TENSOR_OUTPUT_NORM /
+    // LLM_TENSOR_OUTPUT / LLM_TENSOR_TOKEN_EMBD names; these are the
+    // dspark-specific extras.
+    LLM_TENSOR_DSPARK_FC,                // [n_capture * target_hidden, hidden] feature projection
+    LLM_TENSOR_DSPARK_HIDDEN_NORM,       // RMSNorm after fc
+    LLM_TENSOR_DSPARK_MARKOV_HEAD_A,     // low-rank logit-bias factor A
+    LLM_TENSOR_DSPARK_MARKOV_HEAD_B,     // low-rank logit-bias factor B
+    LLM_TENSOR_DSPARK_CONFIDENCE_HEAD,   // accept-rate predictor
+    LLM_TENSOR_DSPARK_PROD_LOG_SNR_FC1,  // GIDD log-SNR embed: [128 -> hidden]
+    LLM_TENSOR_DSPARK_MODE_EMBEDDING,
+    LLM_TENSOR_DSPARK_PROD_LOG_SNR_FC2,  // GIDD log-SNR embed: [hidden -> hidden]
+    LLM_TENSOR_DSPARK_CORR_HNORM,
+    LLM_TENSOR_DSPARK_CORR_ENORM,
+    LLM_TENSOR_DSPARK_CORR_GATE,
+    LLM_TENSOR_DSPARK_CORR_UP,
+    LLM_TENSOR_DSPARK_CORR_DOWN,
     LLM_TENSOR_DSPARK_MARKOV_W1,
     LLM_TENSOR_DSPARK_MARKOV_W2,
     LLM_TENSOR_DSPARK_CONF_PROJ,
@@ -735,8 +771,16 @@ enum llm_tensor {
     LLM_TENSOR_DFLASH_SELECTOR_PREV,
     LLM_TENSOR_DFLASH_SELECTOR_NEXT,
     LLM_TENSOR_DFLASH_SELECTOR_HIDDEN,
+    LLM_TENSOR_DSPARK_LOG_SNR_FC1,
+    LLM_TENSOR_DSPARK_LOG_SNR_FC2,
+    LLM_TENSOR_DFLY_LAYER_FUSION,
+    LLM_TENSOR_DFLY_CTX_NORM,
+    LLM_TENSOR_DFLY_HC_HIDDEN_NORM,
+    LLM_TENSOR_DFLY_HC_EMBED_NORM,
+    LLM_TENSOR_DFLY_HC_GATE,
+    LLM_TENSOR_DFLY_HC_UP,
+    LLM_TENSOR_DFLY_HC_DOWN,
 };
-
 
 enum llm_tensor_layer {
     LLM_TENSOR_LAYER_INPUT,

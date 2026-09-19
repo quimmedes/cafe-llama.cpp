@@ -665,42 +665,7 @@ class ModelBase:
             raise ValueError(f"Can not map tensor {name!r}")
         return new_name
 
-    def prepare_qkv_fusion(self) -> None:
-        self._fusable_qkv_weight_layers.clear()
-        self._fusable_qkv_bias_layers.clear()
-        if not self.fuse_qkv or gguf.MODEL_TENSOR.ATTN_QKV not in gguf.MODEL_TENSORS[self.model_arch]:
-            return
-
-        qkv_types = {
-            gguf.MODEL_TENSOR.ATTN_Q,
-            gguf.MODEL_TENSOR.ATTN_K,
-            gguf.MODEL_TENSOR.ATTN_V,
-        }
-        weights: dict[int, set[gguf.MODEL_TENSOR]] = {}
-        biases: dict[int, set[gguf.MODEL_TENSOR]] = {}
-
-        for name in self.model_tensors:
-            mapped = self.tensor_map.get_type_and_name(name, try_suffixes=(".weight", ".bias"))
-            if mapped is None:
-                continue
-            tensor_type, new_name = mapped
-            if tensor_type not in qkv_types:
-                continue
-
-            bid = next((int(part) for part in new_name.split(".") if part.isdecimal()), None)
-            if bid is None:
-                continue
-            if new_name.endswith(".weight"):
-                weights.setdefault(bid, set()).add(tensor_type)
-            elif new_name.endswith(".bias"):
-                biases.setdefault(bid, set()).add(tensor_type)
-
-        for bid, weight_types in weights.items():
-            bias_types = biases.get(bid, set())
-            if weight_types == qkv_types and (not bias_types or bias_types == qkv_types):
-                self._fusable_qkv_weight_layers.add(bid)
-                if bias_types:
-                    self._fusable_qkv_bias_layers.add(bid)
+ @both
 
     def set_gguf_parameters(self):
         raise NotImplementedError("set_gguf_parameters() must be implemented in subclasses")
@@ -1201,6 +1166,8 @@ class ModelBase:
 
         logger.info("Set model quantization version")
         self.gguf_writer.add_quantization_version(gguf.GGML_QUANT_VERSION)
+
+        self.add_hadamard_metadata()
 
     def write_vocab(self):
         raise NotImplementedError("write_vocab() must be implemented in subclasses")

@@ -666,6 +666,8 @@ void ggml_compute_forward_add(
             } break;
         case GGML_TYPE_Q1_0:
         case GGML_TYPE_Q2_0:
+        case GGML_TYPE_PQ2_0:
+        case GGML_TYPE_PTQ1_0:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
         case GGML_TYPE_Q5_0:
@@ -1117,6 +1119,8 @@ void ggml_compute_forward_add1(
             } break;
         case GGML_TYPE_Q1_0:
         case GGML_TYPE_Q2_0:
+        case GGML_TYPE_PQ2_0:
+        case GGML_TYPE_PTQ1_0:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
         case GGML_TYPE_Q5_0:
@@ -1248,6 +1252,8 @@ void ggml_compute_forward_acc(
         case GGML_TYPE_BF16:
         case GGML_TYPE_Q1_0:
         case GGML_TYPE_Q2_0:
+        case GGML_TYPE_PQ2_0:
+        case GGML_TYPE_PTQ1_0:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
         case GGML_TYPE_Q5_0:
@@ -4651,6 +4657,8 @@ void ggml_compute_forward_out_prod(
     switch (src0->type) {
         case GGML_TYPE_Q1_0:
         case GGML_TYPE_Q2_0:
+        case GGML_TYPE_PQ2_0:
+        case GGML_TYPE_PTQ1_0:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
         case GGML_TYPE_Q5_0:
@@ -4927,6 +4935,8 @@ void ggml_compute_forward_set(
         case GGML_TYPE_BF16:
         case GGML_TYPE_Q1_0:
         case GGML_TYPE_Q2_0:
+        case GGML_TYPE_PQ2_0:
+        case GGML_TYPE_PTQ1_0:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
         case GGML_TYPE_Q5_0:
@@ -5152,6 +5162,8 @@ void ggml_compute_forward_get_rows(
     switch (src0->type) {
         case GGML_TYPE_Q1_0:
         case GGML_TYPE_Q2_0:
+        case GGML_TYPE_PQ2_0:
+        case GGML_TYPE_PTQ1_0:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
         case GGML_TYPE_Q5_0:
@@ -5909,6 +5921,8 @@ void ggml_compute_forward_clamp(
         case GGML_TYPE_BF16:
         case GGML_TYPE_Q1_0:
         case GGML_TYPE_Q2_0:
+        case GGML_TYPE_PQ2_0:
+        case GGML_TYPE_PTQ1_0:
         case GGML_TYPE_Q4_0:
         case GGML_TYPE_Q4_1:
         case GGML_TYPE_Q5_0:
@@ -10905,6 +10919,11 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
     ggml_tensor * src_beta  = dst->src[4];
     ggml_tensor * src_state = dst->src[5];
 
+    // raw gates: beta and g arrive pre-activation (see ggml_gated_delta_net_set_raw_gates)
+    const bool    raw_gates   = ggml_get_op_params_i32(dst, 1) != 0;
+    const float * raw_dt_bias = raw_gates ? (const float *) dst->src[7]->data : nullptr;
+    const float * raw_a       = raw_gates ? (const float *) dst->src[8]->data : nullptr;
+
     const int64_t S_v      = src_v->ne[0];
     const int64_t H        = src_v->ne[1];
     const int64_t n_tokens = src_v->ne[2];
@@ -10935,8 +10954,13 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
     // K (snapshot slot count) is an op param; state holds s0 only [S_v, S_v, H, n_seqs].
     const int64_t K = ggml_get_op_params_i32(dst, 0);
     GGML_ASSERT(K >= 1);
-    // per-seq stride in floats (seq s starts at state + s * seq_stride)
-    const int64_t state_seq_stride = src_state->nb[3] / sizeof(float);
+    // rows mode (src[6] set): state is a 2D cache view (D, n_rows) and each
+    // sequence's live state is read at row rows[seq] -- no gathered scratch.
+    const ggml_tensor * src_rows = dst->src[6];
+    const int32_t * state_rows_idx = src_rows ? (const int32_t *) src_rows->data : nullptr;
+    // scratch mode: per-seq stride in floats (seq s starts at state + s * seq_stride)
+    const int64_t state_seq_stride = src_rows ? 0 : (int64_t) (src_state->nb[3] / sizeof(float));
+    const int64_t state_row_size   = src_rows ? (int64_t) (src_state->nb[1] / sizeof(float)) : 0;
 
     const int64_t per_thread = S_v + (K > 1 ? S_v * S_v : 0);
     const int ith = params->ith;
@@ -10980,9 +11004,12 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
             ? state_work
             : state_out_base + (iv3 * H + iv1) * S_v * S_v;
 
-        // copy input state into the working buffer and operate in-place
-        // state layout [S_v, S_v, H, n_seqs]: seq iv3 starts at iv3 * state_seq_stride.
-        const float * s_in = state_in_base + iv3 * state_seq_stride + iv1 * S_v * S_v;
+        // copy input state into the working buffer and operate in-place.
+        // scratch mode: state layout [S_v, S_v, H, n_seqs], seq iv3 starts at
+        // iv3 * state_seq_stride. rows mode: cache row state_rows_idx[iv3].
+        const float * s_in = state_rows_idx
+            ? state_in_base + (int64_t) state_rows_idx[iv3] * state_row_size + iv1 * S_v * S_v
+            : state_in_base + iv3 * state_seq_stride + iv1 * S_v * S_v;
         memcpy(s_out, s_in, S_v * S_v * sizeof(float));
 
         // attn output pointer for first token of this (head, seq)
@@ -10993,8 +11020,15 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
             const float * k_d = (const float *)((const char *)src_k->data + ik3 * nbk3 + t * nbk2 + ik1 * nbk1);
             const float * v_d = (const float *)((const char *)src_v->data + iv3 * nbv3 + t * nbv2 + iv1 * nbv1);
 
-            const float beta_val = *(const float *)((const char *)src_beta->data + iv3 * nbb3 + t * nbb2 + iv1 * nbb1);
-            const float * g_d    =  (const float *)((const char *)src_g->data    + iv3 * nbg3 + t * nbg2 + iv1 * nbg1);
+            float beta_val    = *(const float *)((const char *)src_beta->data + iv3 * nbb3 + t * nbb2 + iv1 * nbb1);
+            const float * g_d =  (const float *)((const char *)src_g->data    + iv3 * nbg3 + t * nbg2 + iv1 * nbg1);
+
+            float g0 = g_d[0];
+            if (raw_gates) {
+                beta_val = 1.0f / (1.0f + expf(-beta_val));
+                const float x = g0 + raw_dt_bias[iv1];
+                g0 = raw_a[iv1] * ((x > 20.0f) ? x : logf(1.0f + expf(x)));
+            }
 
             // state is stored transposed: s_out[j*S_v + i] = S[i][j]
             // so row j of s_out = column j of S (contiguous access)
@@ -11009,7 +11043,7 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
                     ggml_vec_mul_f32(S_v, &s_out[j * S_v], &s_out[j * S_v], delta);
                 }
             } else {
-                ggml_vec_scale_f32(S_v * S_v, s_out, expf(g_d[0]));
+                ggml_vec_scale_f32(S_v * S_v, s_out, expf(g0));
             }
 
             // delta[j] = sum_i S[i][j] * k[i] = dot(row j of M, k)
@@ -12015,11 +12049,20 @@ void ggml_compute_forward_opt_step_sgd(const ggml_compute_params * params, ggml_
     }
 }
 
-static void ggml_compute_forward_fwht_f32(const ggml_compute_params * params, ggml_tensor * dst) {
+static inline float ggml_fwht_load(const float value) {
+    return value;
+}
+
+static inline float ggml_fwht_load(const ggml_fp16_t value) {
+    return ggml_fp16_to_fp32(value);
+}
+
+template<typename src_t>
+static void ggml_compute_forward_fwht_impl(const ggml_compute_params * params, ggml_tensor * dst) {
     const ggml_tensor * src0 = dst->src[0];
     const ggml_tensor * src1 = dst->src[1];
 
-    GGML_ASSERT(src1->type == GGML_TYPE_F32);
+    GGML_ASSERT(src1->type == (std::is_same_v<src_t, float> ? GGML_TYPE_F32 : GGML_TYPE_F16));
     GGML_ASSERT(dst->type == GGML_TYPE_F32);
 
     GGML_TENSOR_BINARY_OP_LOCALS
@@ -12046,11 +12089,11 @@ static void ggml_compute_forward_fwht_f32(const ggml_compute_params * params, gg
         const int64_t i12 = (r - i13 * ne11 * ne12) / ne11;
         const int64_t i11 = r - i13 * ne11 * ne12 - i12 * ne11;
 
-        const float * src_row = (const float *) ((const char *) src1->data + i11 * nb11 + i12 * nb12 + i13 * nb13);
+        const src_t * src_row = (const src_t *) ((const char *) src1->data + i11 * nb11 + i12 * nb12 + i13 * nb13);
         float * dst_row = (float *) ((char *) dst->data + i11 * nb1 + i12 * nb2 + i13 * nb3);
 
         for (int64_t j = 0; j < n; j++) {
-            dst_row[j] = src_row[j] * scale;
+            dst_row[j] = ggml_fwht_load(src_row[j]) * scale;
         }
 
         // Scalar passes
@@ -12097,12 +12140,17 @@ void ggml_compute_forward_fwht(const ggml_compute_params * params, ggml_tensor *
     switch (src1->type) {
         case GGML_TYPE_F32:
             {
-                ggml_compute_forward_fwht_f32(params, dst);
+                ggml_compute_forward_fwht_impl<float>(params, dst);
+            }
+            break;
+        case GGML_TYPE_F16:
+            {
+                ggml_compute_forward_fwht_impl<ggml_fp16_t>(params, dst);
             }
             break;
         default:
             {
-                GGML_ABORT("fatal error - fwht is F32 only");
+                GGML_ABORT("fatal error - fwht supports F32 and F16 input");
             }
     }
 }

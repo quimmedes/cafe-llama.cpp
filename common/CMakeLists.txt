@@ -88,6 +88,8 @@ add_library(${TARGET}
     json-schema.h
     json.cpp
     json.h
+    kv-mean-center.cpp
+    kv-mean-center.h
     llguidance.cpp
     log.cpp
     log.h
@@ -182,6 +184,58 @@ if (LLAMA_LLGUIDANCE)
     if (WIN32)
         target_link_libraries(${TARGET} PRIVATE ws2_32 userenv ntdll bcrypt)
     endif()
+endif()
+
+if (LLAMA_DSPARK_MARKOV_BLAS)
+    find_package(BLAS REQUIRED)
+
+    if ("${BLAS_INCLUDE_DIRS}" STREQUAL "")
+        find_path(LLAMA_DSPARK_MARKOV_CBLAS_INCLUDE_DIR
+            NAMES cblas.h
+            HINTS
+                /usr/include
+                /usr/local/include
+                /usr/include/openblas
+                /opt/homebrew/opt/openblas/include
+                /usr/local/opt/openblas/include
+                /usr/include/x86_64-linux-gnu/openblas/include
+        )
+        set(BLAS_INCLUDE_DIRS ${LLAMA_DSPARK_MARKOV_CBLAS_INCLUDE_DIR})
+    endif()
+
+    if ("${BLAS_INCLUDE_DIRS}" STREQUAL "")
+        message(FATAL_ERROR "LLAMA_DSPARK_MARKOV_BLAS was enabled but cblas.h could not be found")
+    endif()
+
+    target_compile_definitions(${TARGET} PRIVATE LLAMA_DSPARK_MARKOV_BLAS)
+    target_include_directories(${TARGET} SYSTEM PRIVATE ${BLAS_INCLUDE_DIRS})
+    target_link_libraries(${TARGET} PUBLIC ${BLAS_LIBRARIES})
+endif()
+
+if (LLAMA_DSPARK_MARKOV_CUDA)
+    if (NOT GGML_CUDA)
+        message(FATAL_ERROR "LLAMA_DSPARK_MARKOV_CUDA requires GGML_CUDA")
+    endif()
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
+    if (TARGET ggml-cuda)
+        # CUDA architecture defaults are scoped to the ggml-cuda directory.
+        get_target_property(LLAMA_CUDA_ARCHITECTURES ggml-cuda CUDA_ARCHITECTURES)
+        set_property(TARGET ${TARGET} PROPERTY CUDA_ARCHITECTURES "${LLAMA_CUDA_ARCHITECTURES}")
+    endif()
+    target_sources(${TARGET} PRIVATE dspark-markov.cu)
+    target_compile_definitions(${TARGET} PUBLIC LLAMA_DSPARK_MARKOV_CUDA)
+    target_link_libraries(${TARGET} PRIVATE CUDA::cudart)
+endif()
+
+if (LLAMA_DSPARK_MARKOV_METAL)
+    if (NOT APPLE OR NOT GGML_METAL)
+        message(FATAL_ERROR "LLAMA_DSPARK_MARKOV_METAL requires Apple Metal")
+    endif()
+    target_sources(${TARGET} PRIVATE dspark-markov-metal.mm)
+    set_source_files_properties(dspark-markov-metal.mm PROPERTIES LANGUAGE CXX COMPILE_OPTIONS "-x;objective-c++;-fobjc-arc")
+    target_compile_definitions(${TARGET} PUBLIC LLAMA_DSPARK_MARKOV_METAL)
+    target_link_libraries(${TARGET} PRIVATE "-framework Metal" "-framework Foundation")
 endif()
 
 target_link_libraries(${TARGET} PUBLIC llama Threads::Threads)

@@ -144,6 +144,9 @@ option(LLAMA_TESTS_INSTALL "llama: install tests" ON)
 option(LLAMA_OPENSSL    "llama: use openssl to support HTTPS" ON)
 option(LLAMA_SUBPROCESS "llama-common: use subprocess, required by server tools and server router mode" ${LLAMA_SUBPROCESS_DEFAULT})
 option(LLAMA_LLGUIDANCE "llama-common: include LLGuidance library for structured output in common utils" OFF)
+option(LLAMA_DSPARK_MARKOV_BLAS "llama-common: use BLAS for dspark Markov resample" OFF)
+option(LLAMA_DSPARK_MARKOV_CUDA "llama-common: build CUDA dspark Markov resample" ${GGML_CUDA})
+option(LLAMA_DSPARK_MARKOV_METAL "llama-common: build Metal dspark Markov resample" OFF)
 
 
 # Required for relocatable CMake package

@@ -120,6 +120,20 @@ struct llm_build_delta_net_base : public llm_graph_context {
 
     // run delta-net attention and write the new recurrent state(s) back to ssm_states_all
     // s: (head_v_dim, head_v_dim, num_v_heads, n_seqs); returns output: (head_v_dim, num_v_heads, n_seq_tokens, n_seqs)
+    //
+    // state_rows (optional, ring path only): when set, `s` is instead the 2D
+    // cache view from build_rs_cache_view and the fused op reads each seq's
+    // live state directly at cache row state_rows[seq] (inp->s_copy_main) --
+    // no gathered scratch; the snapshot write becomes a SET_ROWS the Metal
+    // backend can fold into the fused op's epilogue.
+    // set per layer before build_recurrent_attn: the fused GDN op then receives the
+    // pre-activation beta / alpha and folds sigmoid / softplus into its prologue
+    // (ggml_gated_delta_net_set_raw_gates); the non-fused paths keep the activated g / b
+    ggml_tensor * gdn_raw_beta    = nullptr;
+    ggml_tensor * gdn_raw_alpha   = nullptr;
+    ggml_tensor * gdn_raw_dt_bias = nullptr;
+    ggml_tensor * gdn_raw_a       = nullptr;
+
     ggml_tensor * build_recurrent_attn(
             llm_graph_input_rs * inp,
             ggml_tensor *        ssm_states_all,
@@ -129,7 +143,8 @@ struct llm_build_delta_net_base : public llm_graph_context {
             ggml_tensor *        g,
             ggml_tensor *        b,
             ggml_tensor *        s,
-            int                  il);
+            int                  il,
+            ggml_tensor *        state_rows = nullptr);
 };
 
 struct llm_build_rwkv6_base : public llm_graph_context {
@@ -614,6 +629,23 @@ struct llama_model_qwen3 : public llama_model_base {
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
 
+// dspark: EAGLE-style block-diffusion speculative-decoding drafter. Trunk is a
+// small dense Qwen3-style stack (standard llama_layer attn_*/ffn_* tensors);
+// the graph is genuinely novel per-layer (target-tap context re-projected fresh
+// through each layer's own k_proj/v_proj, concatenated with the draft block's
+// own K/V) -- see src/models/dspark.cpp.
+struct llama_model_dspark : public llama_model_base {
+    llama_model_dspark(const struct llama_model_params & params) : llama_model_base(params) {}
+
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+
+    struct graph : public llm_graph_context {
+        graph(const llama_model & model, const llm_graph_params & params);
+    };
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};
 
 struct llama_model_qwen3moe : public llama_model_base {
     llama_model_qwen3moe(const struct llama_model_params & params) : llama_model_base(params) {}
@@ -2452,6 +2484,10 @@ struct llama_model_qwen35 : public llama_model_base {
 
     struct graph : public llm_build_delta_net_base {
         graph(const llama_model & model, const llm_graph_params & params);
+
+        // device-dependent path choices, scanned once per graph build (not per layer)
+        bool gdn_state_rows_dev_ok = true; // every GPU device is Metal: fused GDN may read state rows in place
+        bool gdn_raw_gates_dev_ok  = true; // every device is CPU/Metal/CUDA/ROCm/MUSA: fused GDN takes raw gates
     private:
         ggml_tensor * build_layer_attn(
         llm_graph_input_attn_kv * inp_attn,

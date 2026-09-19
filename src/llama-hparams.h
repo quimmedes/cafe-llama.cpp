@@ -295,6 +295,11 @@ struct llama_hparams {
     uint32_t dsv4_o_group_count        = 0;
     uint32_t dsv4_o_lora_rank          = 0;
     uint32_t dsv4_hc_mult              = 0;
+
+    // dspark GIDD log-SNR conditioning; GGUF sets <arch>.log_snr_conditioning
+    bool  dspark_log_snr_conditioning = false;
+    float dspark_min_log_snr = 0.0f;
+    float dspark_max_log_snr = 0.0f;
     uint32_t dsv4_hc_sinkhorn_iters    = 0;
     uint32_t dsv4_hash_layer_count     = 0;
     float    dsv4_compress_rope_base   = 0.0f;
@@ -367,6 +372,35 @@ struct llama_hparams {
     // ref: https://github.com/ggml-org/llama.cpp/pull/8141
     llama_token dec_start_token_id = LLAMA_TOKEN_NULL;
     uint32_t    dec_n_layer        = 0;
+
+    // dspark drafter (EAGLE-style block-diffusion speculative decoder). the
+    // trunk itself is a plain dense Qwen3-style stack (n_layer/n_head/n_ff etc.
+    // above already cover it); these are the extra fields the block-draft head
+    // needs. target_layer_ids indexes into the TARGET model's layers, not this
+    // drafter's own (tiny) layer count.
+    uint32_t dspark_block_size                  = 0;  // number of masked positions predicted per block
+    uint32_t dspark_mask_token_id               = 0;  // vocab id used to seed un-drafted block positions
+    uint32_t dspark_markov_rank                 = 0;  // low-rank factor width for the markov logit-bias head
+    bool     dspark_confidence_head             = false;
+    bool     dspark_hidden_correction           = false;
+    bool     dspark_markov_deploy_exposure      = false;
+    uint32_t dspark_correction_size             = 0;
+    bool     dspark_confidence_head_with_markov = false;
+
+    // GIDD log-SNR / noise-level conditioning (LogSnrEmbed): sinusoidal
+    // featurization of a per-position log-SNR value, run through a 2-layer
+    // SiLU MLP (dspark.log_snr_fc1/fc2), added to the draft noise embedding
+    // before the backbone. Absent on non-GIDD drafters -- dspark_log_snr_conditioning
+    // gates whether load_arch_tensors()/graph::graph() touch it at all.
+
+    // ordered set of target-model layer indices this drafter taps; n_dspark_target_layers
+    // is also the concatenation width multiplier (n_capture) for dspark.fc's input.
+    uint32_t                               n_dspark_target_layers = 0;
+    // uint32_t (not int32_t): matches an existing explicit template
+    // instantiation of llama_model_loader::get_key_or_arr for
+    // std::array<uint32_t, LLAMA_MAX_LAYERS>; layer indices are non-negative
+    // so the signed/unsigned choice loses nothing.
+    std::array<uint32_t, LLAMA_MAX_LAYERS> dspark_target_layers   = {};
 
     enum llama_pooling_type      pooling_type            = LLAMA_POOLING_TYPE_NONE;
     enum llama_rope_type         rope_type               = LLAMA_ROPE_TYPE_NONE;

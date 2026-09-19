@@ -1,0 +1,927 @@
+name: Release (Prism)
+
+on:
+  workflow_dispatch:
+    inputs:
+      create_release:
+        description: 'Create new release'
+        required: true
+        type: boolean
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
+  cancel-in-progress: true
+
+env:
+  BRANCH_NAME: ${{ github.head_ref || github.ref_name }}
+  CMAKE_ARGS: "-DLLAMA_BUILD_EXAMPLES=ON -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_TOOLS=ON -DLLAMA_BUILD_SERVER=ON -DGGML_RPC=ON"
+
+jobs:
+  macOS-cpu:
+    strategy:
+      matrix:
+        include:
+          - build: 'arm64'
+            arch: 'arm64'
+            os: macos-26
+            defines: "-DGGML_METAL_USE_BF16=ON -DGGML_METAL_EMBED_LIBRARY=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0"
+          - build: 'arm64-kleidiai'
+            arch: 'arm64'
+            os: macos-26
+            defines: "-DGGML_METAL_USE_BF16=ON -DGGML_METAL_EMBED_LIBRARY=ON -DGGML_CPU_KLEIDIAI=ON -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0"
+          - build: 'x64'
+            arch: 'x64'
+            os: macos-15-intel
+            defines: "-DGGML_METAL=OFF -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3"
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: macOS-latest-${{ matrix.arch }}
+          evict-old-files: 1d
+
+      - name: Build
+        run: |
+          sysctl -a
+          cmake -B build \
+            ${{ matrix.defines }} \
+            -DCMAKE_INSTALL_RPATH='@loader_path' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DLLAMA_FATAL_WARNINGS=ON \
+            -DLLAMA_BUILD_BORINGSSL=ON \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(sysctl -n hw.logicalcpu)
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Pack artifacts
+        run: |
+          cp LICENSE ./build/bin/
+          tar -czvf llama-${{ steps.tag.outputs.name }}-bin-macos-${{ matrix.build }}.tar.gz -s ",./,llama-${{ steps.tag.outputs.name }}/," -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-bin-macos-${{ matrix.build }}.tar.gz
+          name: llama-bin-macos-${{ matrix.build }}.tar.gz
+
+  ubuntu-cpu:
+    strategy:
+      matrix:
+        include:
+          - build: 'x64'
+            os: ubuntu-22.04
+          - build: 'arm64'
+            os: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: ubuntu-cpu-${{ matrix.build }}
+          evict-old-files: 1d
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install build-essential libssl-dev
+
+      - name: Toolchain workaround (GCC 14)
+        if: ${{ contains(matrix.os, 'ubuntu-24.04') }}
+        run: |
+          sudo apt-get install -y gcc-14 g++-14
+          echo "CC=gcc-14" >> "$GITHUB_ENV"
+          echo "CXX=g++-14" >> "$GITHUB_ENV"
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DLLAMA_FATAL_WARNINGS=ON \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Pack artifacts
+        run: |
+          cp LICENSE ./build/bin/
+          tar -czvf llama-${{ steps.tag.outputs.name }}-bin-ubuntu-${{ matrix.build }}.tar.gz --transform "s,./,llama-${{ steps.tag.outputs.name }}/," -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-bin-ubuntu-${{ matrix.build }}.tar.gz
+          name: llama-bin-ubuntu-${{ matrix.build }}.tar.gz
+
+  linux-cuda:
+    runs-on: ubuntu-22.04
+
+    strategy:
+      matrix:
+        include:
+          - cuda: '12.4'
+            cuda_pkg: '12-4'
+          - cuda: '12.8'
+            cuda_pkg: '12-8'
+          - cuda: '13.3'
+            cuda_pkg: '13-3'
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: ubuntu-22-cmake-cuda-${{ matrix.cuda }}
+          evict-old-files: 1d
+
+      - name: Install CUDA toolkit
+        run: |
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get -y install cuda-toolkit-${{ matrix.cuda_pkg }}
+          echo "/usr/local/cuda-${{ matrix.cuda }}/bin" >> $GITHUB_PATH
+          echo "CUDA_PATH=/usr/local/cuda-${{ matrix.cuda }}" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/usr/local/cuda-${{ matrix.cuda }}/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CUDA=ON \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(nproc) 2>&1 | grep -v "^nvcc warning"
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Pack artifacts
+        run: |
+          cp LICENSE ./build/bin/
+          tar -czvf llama-${{ steps.tag.outputs.name }}-bin-linux-cuda-${{ matrix.cuda }}-x64.tar.gz --transform "s,./,llama-${{ steps.tag.outputs.name }}/," -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-bin-linux-cuda-${{ matrix.cuda }}-x64.tar.gz
+          name: llama-bin-linux-cuda-${{ matrix.cuda }}-x64.tar.gz
+
+  windows-cpu:
+    runs-on: windows-2025
+
+    strategy:
+      matrix:
+        include:
+          - arch: 'x64'
+          - arch: 'arm64'
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: windows-latest-cpu-${{ matrix.arch }}
+          variant: ccache
+          evict-old-files: 1d
+
+      - name: Install Ninja
+        run: choco install ninja
+
+      - name: Build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.arch == 'x64' && 'x64' || 'amd64_arm64' }}
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -D CMAKE_TOOLCHAIN_FILE=cmake/${{ matrix.arch }}-windows-llvm.cmake ^
+            -DLLAMA_BUILD_BORINGSSL=ON ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_BACKEND_DL=ON ^
+            -DGGML_CPU_ALL_VARIANTS=${{ matrix.arch == 'x64' && 'ON' || 'OFF' }} ^
+            -DGGML_OPENMP=ON ^
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Pack artifacts
+        run: |
+          # Resolve the LLVM OpenMP runtime DLL by glob: the MSVC redist version
+          # directory (and VS product dir) changes with runner-image updates, so a
+          # hardcoded path rots (upstream pins it and bumps it by hand each time).
+          $OmpDll = Get-ChildItem "C:\Program Files\Microsoft Visual Studio\*\Enterprise\VC\Redist\MSVC\*\debug_nonredist\${{ matrix.arch }}\Microsoft.VC14*.OpenMP.LLVM\libomp140.${{ matrix.arch == 'x64' && 'x86_64' || 'aarch64' }}.dll" -ErrorAction SilentlyContinue | Sort-Object FullName | Select-Object -Last 1
+          if (-not $OmpDll) { throw "libomp140 DLL not found under any MSVC redist version" }
+          Write-Host "Using OpenMP runtime: $($OmpDll.FullName)"
+          Copy-Item $OmpDll.FullName .\build\bin\Release\
+          7z a -snl llama-${{ steps.tag.outputs.name }}-bin-win-cpu-${{ matrix.arch }}.zip .\build\bin\Release\*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-bin-win-cpu-${{ matrix.arch }}.zip
+          name: llama-bin-win-cpu-${{ matrix.arch }}.zip
+
+  windows-cuda:
+    runs-on: windows-2022
+
+    strategy:
+      matrix:
+        include:
+          - cuda: '12.4'
+            arch: x64
+            defines: ''
+          - cuda: '13.3'
+            arch: x64
+            defines: ''
+          - cuda: '13.4'
+            arch: arm64
+            defines: '-DCMAKE_TOOLCHAIN_FILE=cmake/arm64-windows-msvc-cuda.cmake'
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: windows-cuda-${{ matrix.cuda }}-${{ matrix.arch }}
+          variant: ccache
+          evict-old-files: 1d
+
+      - name: Install Cuda Toolkit
+        uses: ./.github/actions/windows-setup-cuda
+        with:
+          cuda_version: ${{ matrix.cuda }}
+          cuda_arch: ${{ matrix.arch }}
+
+      - name: Install Ninja
+        run: choco install ninja
+
+      - name: Build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" ${{ matrix.arch == 'x64' && 'x64' || 'amd64_arm64' }}
+          rem arm64: ggml-cpu refuses MSVC for ARM (needs clang), so that leg builds only the
+          rem ggml-cuda.dll companion for the BACKEND_DL cpu-arm64 zip, like upstream does.
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_CUDA=ON ^
+            ${{ matrix.arch == 'arm64' && '-DGGML_BACKEND_DL=ON -DGGML_CPU=OFF' || '' }} ^
+            -DLLAMA_BUILD_BORINGSSL=ON ^
+            -DCMAKE_CUDA_FLAGS="-diag-suppress=221" ^
+            ${{ matrix.defines }} ${{ env.CMAKE_ARGS }}
+          set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
+          cmake --build build --config Release -j %NINJA_JOBS% ${{ matrix.arch == 'arm64' && '--target ggml-cuda' || '' }}
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Pack artifacts
+        run: |
+          7z a -snl llama-${{ steps.tag.outputs.name }}-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip .\build\bin\Release\${{ matrix.arch == 'arm64' && 'ggml-cuda.dll' || '*' }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip
+          name: llama-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip
+
+      - name: Copy and pack Cuda runtime (x64)
+        if: ${{ matrix.arch == 'x64' }}
+        run: |
+          echo "Cuda install location: ${{ env.CUDA_PATH }}"
+          $dst='.\build\bin\cudart\'
+          robocopy "${{env.CUDA_PATH}}\bin" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+          robocopy "${{env.CUDA_PATH}}\lib" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+          robocopy "${{env.CUDA_PATH}}\bin\x64" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+          7z a cudart-llama-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip $dst\*
+          exit 0
+
+      - name: Copy and pack Cuda runtime (arm64)
+        if: ${{ matrix.arch == 'arm64' }}
+        run: |
+          echo "Cuda install location: ${{ env.CUDA_PATH }}"
+          $dst='.\build\bin\cudart\'
+          robocopy "${{env.CUDA_PATH}}\bin\arm64" $dst cudart64_*.dll cublas64_*.dll cublasLt64_*.dll
+          7z a cudart-llama-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip $dst\*
+          exit 0
+
+      - name: Upload Cuda runtime
+        uses: actions/upload-artifact@v6
+        with:
+          path: cudart-llama-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip
+          name: cudart-llama-bin-win-cuda-${{ matrix.cuda }}-${{ matrix.arch }}.zip
+
+  ubuntu-vulkan:
+    strategy:
+      matrix:
+        include:
+          - build: 'x64'
+            os: ubuntu-22.04
+          - build: 'arm64'
+            os: ubuntu-24.04-arm
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: ubuntu-vulkan-${{ matrix.build }}
+          evict-old-files: 1d
+
+      - name: Dependencies
+        run: |
+          if [[ "${{ matrix.os }}" =~ "ubuntu-22.04" ]]; then
+            wget -qO - https://packages.lunarg.com/lunarg-signing-key-pub.asc | sudo apt-key add -
+            sudo wget -qO /etc/apt/sources.list.d/lunarg-vulkan-jammy.list https://packages.lunarg.com/vulkan/lunarg-vulkan-jammy.list
+            sudo apt-get update -y
+            sudo apt-get install -y build-essential mesa-vulkan-drivers vulkan-sdk libssl-dev
+          else
+            sudo apt-get update -y
+            sudo apt-get install -y gcc-14 g++-14 build-essential glslc libvulkan-dev spirv-headers libssl-dev ninja-build
+            echo "CC=gcc-14" >> "$GITHUB_ENV"
+            echo "CXX=g++-14" >> "$GITHUB_ENV"
+          fi
+
+      - name: Build
+        run: |
+          cmake -B build \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_VULKAN=ON \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Pack artifacts
+        run: |
+          cp LICENSE ./build/bin/
+          tar -czvf llama-${{ steps.tag.outputs.name }}-bin-ubuntu-vulkan-${{ matrix.build }}.tar.gz --transform "s,./,llama-${{ steps.tag.outputs.name }}/," -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-bin-ubuntu-vulkan-${{ matrix.build }}.tar.gz
+          name: llama-bin-ubuntu-vulkan-${{ matrix.build }}.tar.gz
+
+  windows-vulkan:
+    runs-on: windows-2025
+
+    env:
+      VULKAN_VERSION: 1.4.313.2
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: windows-latest-vulkan-x64
+          variant: ccache
+          evict-old-files: 1d
+
+      - name: Install Vulkan SDK
+        run: |
+          curl.exe -o $env:RUNNER_TEMP/VulkanSDK-Installer.exe -L "https://sdk.lunarg.com/sdk/download/${env:VULKAN_VERSION}/windows/vulkansdk-windows-X64-${env:VULKAN_VERSION}.exe"
+          & "$env:RUNNER_TEMP\VulkanSDK-Installer.exe" --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\${env:VULKAN_VERSION}"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\${env:VULKAN_VERSION}\bin"
+
+      - name: Install Ninja
+        run: choco install ninja
+
+      - name: Build
+        run: |
+          # Full self-contained bundle (CPU backends + Vulkan), not just the ggml-vulkan.dll
+          # add-on, so users can download this one zip and run without merging with the CPU zip.
+          cmake -S . -B build -DGGML_VULKAN=ON -DGGML_NATIVE=OFF -DGGML_BACKEND_DL=ON -DGGML_CPU_ALL_VARIANTS=ON -DGGML_OPENMP=OFF -DLLAMA_BUILD_BORINGSSL=ON ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Pack artifacts
+        run: |
+          7z a -snl llama-${{ steps.tag.outputs.name }}-bin-win-vulkan-x64.zip .\build\bin\Release\*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-bin-win-vulkan-x64.zip
+          name: llama-bin-win-vulkan-x64.zip
+
+  ubuntu-22-rocm:
+    runs-on: ubuntu-22.04
+
+    strategy:
+      matrix:
+        include:
+          - ROCM_VERSION: "7.2.1"
+            gpu_targets: "gfx908;gfx90a;gfx942;gfx1030;gfx1100;gfx1101;gfx1102;gfx1151;gfx1150;gfx1200;gfx1201"
+            build: 'x64'
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: ubuntu-rocm-${{ matrix.ROCM_VERSION }}-${{ matrix.build }}
+          evict-old-files: 1d
+
+      - name: Dependencies
+        run: |
+          sudo apt install -y build-essential git cmake wget
+
+      - name: Setup Legacy ROCm
+        if: matrix.ROCM_VERSION == '7.2.1'
+        run: |
+          sudo mkdir --parents --mode=0755 /etc/apt/keyrings
+          wget https://repo.radeon.com/rocm/rocm.gpg.key -O - | \
+            gpg --dearmor | sudo tee /etc/apt/keyrings/rocm.gpg > /dev/null
+
+          sudo tee /etc/apt/sources.list.d/rocm.list << EOF
+          deb [arch=amd64 signed-by=/etc/apt/keyrings/rocm.gpg] https://repo.radeon.com/rocm/apt/${{ matrix.ROCM_VERSION }} jammy main
+          EOF
+
+          sudo tee /etc/apt/preferences.d/rocm-pin-600 << EOF
+          Package: *
+          Pin: release o=repo.radeon.com
+          Pin-Priority: 600
+          EOF
+
+          sudo apt update
+          sudo apt-get install -y libssl-dev rocm-hip-sdk
+
+      - name: Build with native CMake HIP support
+        run: |
+          cmake -B build -S . \
+            -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGPU_TARGETS="${{ matrix.gpu_targets }}" \
+            -DGGML_HIP=ON \
+            -DHIP_PLATFORM=amd \
+            -DGGML_HIP_ROCWMMA_FATTN=ON \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Get ROCm short version
+        run: echo "ROCM_VERSION_SHORT=$(echo '${{ matrix.ROCM_VERSION }}' | cut -d '.' -f 1,2)" >> $GITHUB_ENV
+
+      - name: Pack artifacts
+        run: |
+          cp LICENSE ./build/bin/
+          tar -czvf llama-${{ steps.tag.outputs.name }}-bin-ubuntu-rocm-${{ env.ROCM_VERSION_SHORT }}-${{ matrix.build }}.tar.gz --transform "s,./,llama-${{ steps.tag.outputs.name }}/," -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-bin-ubuntu-rocm-${{ env.ROCM_VERSION_SHORT }}-${{ matrix.build }}.tar.gz
+          name: llama-bin-ubuntu-rocm-${{ env.ROCM_VERSION_SHORT }}-${{ matrix.build }}.tar.gz
+
+  windows-hip:
+    runs-on: windows-2022
+
+    env:
+      HIPSDK_INSTALLER_VERSION: "26.Q1"
+
+    strategy:
+      matrix:
+        include:
+          - name: "radeon"
+            gpu_targets: "gfx1150;gfx1151;gfx1200;gfx1201;gfx1100;gfx1101;gfx1102;gfx1030;gfx1031;gfx1032"
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Grab rocWMMA package
+        run: |
+          curl -o rocwmma.deb "https://repo.radeon.com/rocm/apt/7.2.1/pool/main/r/rocwmma-dev/rocwmma-dev_2.2.0.70201-81~24.04_amd64.deb"
+          7z x rocwmma.deb
+          7z x data.tar
+
+      - name: Cache ROCm Installation
+        id: cache-rocm
+        uses: actions/cache@v5
+        with:
+          path: C:\Program Files\AMD\ROCm
+          key: rocm-${{ env.HIPSDK_INSTALLER_VERSION }}-${{ runner.os }}
+
+      - name: ccache
+        uses: ggml-org/ccache-action@v1.2.21
+        with:
+          key: windows-latest-hip-${{ env.HIPSDK_INSTALLER_VERSION }}-${{ matrix.name }}-x64
+          evict-old-files: 1d
+
+      - name: Install ROCm
+        if: steps.cache-rocm.outputs.cache-hit != 'true'
+        run: |
+          $ErrorActionPreference = "Stop"
+          write-host "Downloading AMD HIP SDK Installer"
+          Invoke-WebRequest -Uri "https://download.amd.com/developer/eula/rocm-hub/AMD-Software-PRO-Edition-${{ env.HIPSDK_INSTALLER_VERSION }}-Win11-For-HIP.exe" -OutFile "${env:RUNNER_TEMP}\rocm-install.exe"
+          write-host "Installing AMD HIP SDK"
+          $proc = Start-Process "${env:RUNNER_TEMP}\rocm-install.exe" -ArgumentList '-install' -NoNewWindow -PassThru
+          $completed = $proc.WaitForExit(600000)
+          if (-not $completed) {
+              Write-Error "ROCm installation timed out after 10 minutes. Killing the process"
+              $proc.Kill()
+              exit 1
+          }
+          if ($proc.ExitCode -ne 0) {
+              Write-Error "ROCm installation failed with exit code $($proc.ExitCode)"
+              exit 1
+          }
+          write-host "Completed AMD HIP SDK installation"
+
+      - name: Verify ROCm
+        run: |
+          $clangPath = Get-ChildItem 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | Select-Object -First 1
+          if (-not $clangPath) {
+            Write-Error "ROCm installation not found"
+            exit 1
+          }
+          & $clangPath.FullName --version
+
+      - name: Build
+        run: |
+          $env:HIP_PATH=$(Resolve-Path 'C:\Program Files\AMD\ROCm\*\bin\clang.exe' | split-path | split-path)
+          $env:CMAKE_PREFIX_PATH="${env:HIP_PATH}"
+          cmake -G "Unix Makefiles" -B build -S . `
+            -DCMAKE_C_COMPILER="${env:HIP_PATH}\bin\clang.exe" `
+            -DCMAKE_CXX_COMPILER="${env:HIP_PATH}\bin\clang++.exe" `
+            -DCMAKE_CXX_FLAGS="-I$($PWD.Path.Replace('\', '/'))/opt/rocm-7.2.1/include/ -Wno-ignored-attributes -Wno-nested-anon-types" `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DGGML_BACKEND_DL=ON `
+            -DGGML_NATIVE=OFF `
+            -DGGML_OPENMP=OFF `
+            -DGPU_TARGETS="${{ matrix.gpu_targets }}" `
+            -DGGML_HIP_ROCWMMA_FATTN=ON `
+            -DGGML_HIP=ON `
+            -DLLAMA_BUILD_BORINGSSL=ON `
+            ${{ env.CMAKE_ARGS }}
+          # Full self-contained bundle (CPU backend + HIP), not just the ggml-hip.dll add-on.
+          cmake --build build -j ${env:NUMBER_OF_PROCESSORS}
+          md "build\bin\rocblas\library\"
+          md "build\bin\hipblaslt\library"
+          cp "${env:HIP_PATH}\bin\libhipblas.dll" "build\bin\"
+          cp "${env:HIP_PATH}\bin\libhipblaslt.dll" "build\bin\"
+          cp "${env:HIP_PATH}\bin\rocblas.dll" "build\bin\"
+          cp "${env:HIP_PATH}\bin\rocblas\library\*" "build\bin\rocblas\library\"
+          cp "${env:HIP_PATH}\bin\hipblaslt\library\*" "build\bin\hipblaslt\library\"
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Pack artifacts
+        run: |
+          7z a -snl llama-${{ steps.tag.outputs.name }}-bin-win-hip-${{ matrix.name }}-x64.zip .\build\bin\*
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-bin-win-hip-${{ matrix.name }}-x64.zip
+          name: llama-bin-win-hip-${{ matrix.name }}-x64.zip
+
+  android-arm64:
+    runs-on: ubuntu-latest
+
+    env:
+      NDK_VERSION: "29.0.14206865"
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          java-version: 17
+          distribution: temurin
+
+      - name: Setup Android SDK
+        uses: android-actions/setup-android@40fd30fb8d7440372e1316f5d1809ec01dcd3699 # v4.0.1
+        with:
+          log-accepted-android-sdk-licenses: false
+          packages: 'platform-tools'
+
+      - name: Install NDK
+        run: |
+          sdkmanager "ndk;${{ env.NDK_VERSION }}"
+          echo "ANDROID_NDK=${ANDROID_SDK_ROOT}/ndk/${{ env.NDK_VERSION }}" >> $GITHUB_ENV
+
+      - name: Build
+        id: cmake_build
+        run: |
+          cmake -B build \
+            -DCMAKE_TOOLCHAIN_FILE=${ANDROID_NDK}/build/cmake/android.toolchain.cmake \
+            -DANDROID_ABI=arm64-v8a \
+            -DANDROID_PLATFORM=android-28 \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGGML_OPENMP=OFF \
+            -DLLAMA_BUILD_BORINGSSL=ON \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Pack artifacts
+        id: pack_artifacts
+        run: |
+          cp LICENSE ./build/bin/
+          tar -czvf llama-${{ steps.tag.outputs.name }}-bin-android-arm64.tar.gz --transform "s,^\.,llama-${{ steps.tag.outputs.name }}," -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-bin-android-arm64.tar.gz
+          name: llama-bin-android-arm64.tar.gz
+
+  ios-xcode-build:
+    runs-on: macos-15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Setup Xcode
+        run: |
+          sudo xcode-select -s /Applications/Xcode_16.4.app
+
+      - name: Build
+        run: |
+          sysctl -a
+          cmake -B build -G Xcode \
+            -DGGML_METAL_USE_BF16=ON \
+            -DGGML_METAL_EMBED_LIBRARY=ON \
+            -DLLAMA_OPENSSL=OFF \
+            -DLLAMA_BUILD_APP=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_TOOLS=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=14.0 \
+            -DCMAKE_XCODE_ATTRIBUTE_DEVELOPMENT_TEAM=ggml
+          cmake --build build --config Release -j $(sysctl -n hw.logicalcpu) -- CODE_SIGNING_ALLOWED=NO
+
+      - name: xcodebuild for swift package
+        run: |
+          ./build-xcframework.sh
+
+      - name: Build Xcode project
+        run: xcodebuild -project examples/llama.swiftui/llama.swiftui.xcodeproj -scheme llama.swiftui -sdk iphoneos CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY= -destination 'generic/platform=iOS' FRAMEWORK_FOLDER_PATH=./build-ios build
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Pack artifacts
+        run: |
+          zip -r -y llama-${{ steps.tag.outputs.name }}-xcframework.zip build-apple/llama.xcframework
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-xcframework.zip
+          name: llama-${{ steps.tag.outputs.name }}-xcframework.zip
+
+  release:
+    if: ${{ github.event.inputs.create_release == 'true' }}
+
+    permissions:
+      contents: write
+
+    runs-on: ubuntu-latest
+
+    needs:
+      - macOS-cpu
+      - ubuntu-cpu
+      - ubuntu-vulkan
+      - linux-cuda
+      - ubuntu-22-rocm
+      - windows-cpu
+      - windows-vulkan
+      - windows-cuda
+      - windows-hip
+      - ios-xcode-build
+      - android-arm64
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v7
+        with:
+          path: ./artifact
+          merge-multiple: true
+
+      - name: Move artifacts
+        run: |
+          mkdir -p release
+          mv -v artifact/*.tar.gz release/ 2>/dev/null || true
+          mv -v artifact/*.zip release/ 2>/dev/null || true
+          ls -lh release/
+          expected=(
+            "cudart-llama-bin-win-cuda-12.4-x64.zip"
+            "cudart-llama-bin-win-cuda-13.3-x64.zip"
+            "cudart-llama-bin-win-cuda-13.4-arm64.zip"
+            "llama-${{ steps.tag.outputs.name }}-bin-android-arm64.tar.gz"
+            "llama-${{ steps.tag.outputs.name }}-bin-linux-cuda-12.4-x64.tar.gz"
+            "llama-${{ steps.tag.outputs.name }}-bin-linux-cuda-12.8-x64.tar.gz"
+            "llama-${{ steps.tag.outputs.name }}-bin-linux-cuda-13.3-x64.tar.gz"
+            "llama-${{ steps.tag.outputs.name }}-bin-macos-arm64-kleidiai.tar.gz"
+            "llama-${{ steps.tag.outputs.name }}-bin-macos-arm64.tar.gz"
+            "llama-${{ steps.tag.outputs.name }}-bin-macos-x64.tar.gz"
+            "llama-${{ steps.tag.outputs.name }}-bin-ubuntu-arm64.tar.gz"
+            "llama-${{ steps.tag.outputs.name }}-bin-ubuntu-rocm-7.2-x64.tar.gz"
+            "llama-${{ steps.tag.outputs.name }}-bin-ubuntu-vulkan-arm64.tar.gz"
+            "llama-${{ steps.tag.outputs.name }}-bin-ubuntu-vulkan-x64.tar.gz"
+            "llama-${{ steps.tag.outputs.name }}-bin-ubuntu-x64.tar.gz"
+            "llama-${{ steps.tag.outputs.name }}-bin-win-cpu-arm64.zip"
+            "llama-${{ steps.tag.outputs.name }}-bin-win-cpu-x64.zip"
+            "llama-${{ steps.tag.outputs.name }}-bin-win-cuda-12.4-x64.zip"
+            "llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.3-x64.zip"
+            "llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.4-arm64.zip"
+            "llama-${{ steps.tag.outputs.name }}-bin-win-hip-radeon-x64.zip"
+            "llama-${{ steps.tag.outputs.name }}-bin-win-vulkan-x64.zip"
+            "llama-${{ steps.tag.outputs.name }}-xcframework.zip"
+          )
+          for name in "${expected[@]}"; do
+            test -s "release/$name" || { echo "Missing or empty artifact: $name" >&2; exit 1; }
+          done
+          printf '%s\n' "${expected[@]}" | sort > expected-assets.txt
+          find release -maxdepth 1 -type f -printf '%f\n' | sort > downloaded-assets.txt
+          diff -u expected-assets.txt downloaded-assets.txt
+
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ steps.tag.outputs.name }}
+        run: |
+          cat > release-notes.md <<'EOF'
+          Pre-built binaries (PrismML fork with Q1_0 1-bit quantization support).
+
+          **macOS/iOS:**
+          - [macOS Apple Silicon (arm64)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-macos-arm64.tar.gz)
+          - [macOS Apple Silicon (arm64, KleidiAI enabled)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-macos-arm64-kleidiai.tar.gz)
+          - [macOS Intel (x64)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-macos-x64.tar.gz)
+          - [iOS XCFramework](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-xcframework.zip)
+
+          **Android:**
+          - [Android arm64](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-android-arm64.tar.gz)
+
+          **Linux (CPU):**
+          - [Ubuntu x64 (CPU)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-x64.tar.gz)
+          - [Ubuntu arm64 (CPU)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-arm64.tar.gz)
+
+          **Linux (CUDA):**
+          - [Linux x64 (CUDA 12.4)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-linux-cuda-12.4-x64.tar.gz)
+          - [Linux x64 (CUDA 12.8)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-linux-cuda-12.8-x64.tar.gz)
+          - [Linux x64 (CUDA 13.3)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-linux-cuda-13.3-x64.tar.gz)
+
+          **Linux (Vulkan):**
+          - [Ubuntu x64 (Vulkan)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-vulkan-x64.tar.gz)
+          - [Ubuntu arm64 (Vulkan)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-vulkan-arm64.tar.gz)
+
+          **Linux (AMD):**
+          - [Ubuntu x64 (ROCm 7.2)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-rocm-7.2-x64.tar.gz)
+
+          **Windows (CPU):**
+          - [Windows x64 (CPU)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-cpu-x64.zip)
+          - [Windows arm64 (CPU)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-cpu-arm64.zip)
+
+          **Windows (CUDA):**
+          - [Windows x64 (CUDA 12.4)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-cuda-12.4-x64.zip) - [CUDA runtime DLLs](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/cudart-llama-bin-win-cuda-12.4-x64.zip)
+          - [Windows x64 (CUDA 13.3)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.3-x64.zip) - [CUDA runtime DLLs](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/cudart-llama-bin-win-cuda-13.3-x64.zip)
+          - [Windows arm64 (CUDA 13.4)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.4-arm64.zip) - [CUDA runtime DLLs](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/cudart-llama-bin-win-cuda-13.4-arm64.zip)
+
+          **Windows (Vulkan/HIP):**
+          - [Windows x64 (Vulkan)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-vulkan-x64.zip)
+          - [Windows x64 (HIP/ROCm)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-hip-radeon-x64.zip)
+          EOF
+          if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" --notes-file release-notes.md
+          else
+            gh release create "$RELEASE_TAG" --target "$GITHUB_SHA" --title "$RELEASE_TAG" --notes-file release-notes.md
+          fi
+
+      - name: Upload release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          failed=0
+          for file in release/*; do
+            uploaded=0
+            for attempt in 1 2 3 4 5; do
+              echo "Uploading $(basename "$file") (attempt $attempt)..."
+              if gh release upload "${{ steps.tag.outputs.name }}" "$file" --clobber; then
+                uploaded=1
+                break
+              fi
+              if [ "$attempt" -lt 5 ]; then sleep $((attempt * 10)); fi
+            done
+            if [ "$uploaded" -eq 0 ]; then
+              echo "Failed to upload $file" >&2
+              failed=1
+            fi
+          done
+          test "$failed" -eq 0
+
+      - name: Verify release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          for file in release/*; do
+            printf '%s\t%s\n' "$(basename "$file")" "$(stat -c %s "$file")"
+          done | sort > expected-sizes.txt
+          gh release view "${{ steps.tag.outputs.name }}" --json assets \
+            --jq '.assets[] | [.name, .size] | @tsv' | sort > uploaded-sizes.txt
+          diff -u expected-sizes.txt uploaded-sizes.txt
