@@ -1276,10 +1276,6 @@ static void st_exl3_fwht(float * x, int64_t n) {
             }
         }
     }
-    const float norm = 1.0f / sqrtf((float) n);
-    for (int64_t i = 0; i < n; ++i) {
-        x[i] *= norm;
-    }
 }
 
 static void st_emit_exl3(const st_loader & L, const st_plan & p, uint8_t * out) {
@@ -1419,7 +1415,7 @@ static void st_emit_exl3(const st_loader & L, const st_plan & p, uint8_t * out) 
             for (int64_t nout = 0; nout < n_out; nout += 128) {
                 st_exl3_fwht(row + nout, 128);
             }
-            const float su = suh[kin];
+            const float su = suh[kin] * (1.0f / 128.0f);
             for (int64_t o = 0; o < n_out; ++o) {
                 row[o] *= su * svh[o];
             }
