@@ -263,7 +263,7 @@ struct common_speculative_impl_draft_dspark : public common_speculative_impl {
     std::vector<int32_t> i_batch_end;
 
     common_speculative_impl_draft_dspark(const common_params_speculative & params, uint32_t n_seq) :
-        common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK, n_seq),
+        common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK, n_seq, params.draft.n_max),
         params(params.draft) {
         auto * ctx_dft = this->params.ctx_dft;
         auto * ctx_tgt = this->params.ctx_tgt;
@@ -594,7 +594,7 @@ struct common_speculative_impl_draft_dspark : public common_speculative_impl {
             auto & pos  = ctx_pos[seq_id];
 
             int64_t       L       = n_cache[seq_id];
-            const int64_t start   = dp.n_past;
+            const int64_t start   = dp.pos0;
             int64_t       ctx_len = start - L;
 
             if (ctx_len <= 0) {

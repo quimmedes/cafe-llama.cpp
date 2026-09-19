@@ -212,6 +212,7 @@ void llama_model_dflash::load_arch_tensors(llama_model_loader &) {
         LLAMA_LOG_INFO("%s: DFlash2 conv kernel = %u, group = %u, selector rank = %u, top-k = %u\n", __func__,
                 hparams.dflash_conv_kernel_size, hparams.dflash_conv_group_size,
                 hparams.dflash_selector_rank, hparams.dflash_selector_top_k);
+    }
     // dspark GIDD log-SNR conditioning (LogSnrEmbed): unlike the markov head, this
     // is built into the decoder graph and changes the draft embedding every forward
     // pass, so when the GGUF says it is on the weights are REQUIRED. A missing
@@ -685,6 +686,7 @@ static void build_dflash2_selector(llm_graph_context & g, const llama_model & mo
     g.cb(packed, "dflash2_lattice", -1);
     res->t_h_nextn = packed;
     ggml_build_forward_expand(g.gf, packed);
+}
 // DFly (AngelSpec): TreeFlash predecessor correction chained across a block.
 //
 // Position i's logits come from the draft hidden state at row i corrected by the embedding
