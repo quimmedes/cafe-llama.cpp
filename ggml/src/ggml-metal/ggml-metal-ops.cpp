@@ -2012,7 +2012,7 @@ static int ggml_metal_gdn_write_rows(
 
     const ggml_tensor * gdn = ctx->node(idx);
     // honor the backend-wide fusion switch, like every other Metal fusion
-    if (!ctx->use_fusion ||
+    if (!ctx->use_fusion() ||
         gdn->op != GGML_OP_GATED_DELTA_NET || gdn->src[6] == nullptr ||
         getenv("GGML_GDN_WRITE_FOLD_DISABLE") != nullptr) {
         return 1;
@@ -2138,7 +2138,7 @@ int ggml_metal_op_gated_delta_net(ggml_metal_op_t ctx, int idx) {
     ggml_tensor * write_rows = nullptr;
     ggml_tensor * state_dst  = nullptr;
     ggml_tensor * fused_set_rows = nullptr;
-    const int n_fuse = ggml_metal_gdn_write_rows(ctx, idx, &write_rows, &state_dst, &fused_set_rows);
+    ggml_metal_gdn_write_rows(ctx, idx, &write_rows, &state_dst, &fused_set_rows);
     const bool has_write_rows = write_rows != nullptr;
 
     if (has_write_rows) {
@@ -4363,7 +4363,7 @@ int ggml_metal_op_bin(ggml_metal_op_t ctx, int idx) {
             return ggml_metal_op_moe_reduce(ctx, idx);
         }
     }
-    if (ctx->use_fusion && ggml_metal_op_can_fuse_fwht_signed(ctx, idx)) {
+    if (ctx->use_fusion() && ggml_metal_op_can_fuse_fwht_signed(ctx, idx)) {
         return ggml_metal_op_fwht_signed(ctx, idx);
     }
 
