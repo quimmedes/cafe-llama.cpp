@@ -312,6 +312,7 @@ struct st_plan {
     int64_t       exl3_bits = 0;    // width of one trellis index
     st_ref        exl3_suh;         // per input channel factor
     st_ref        exl3_svh;         // per output channel factor
+    int           mlx_pq2 = 0;      // MLX affine 2-bit weight (U32 weights + F16 scales -> PQ2_0)
 };
 
 struct st_loader {
@@ -340,6 +341,9 @@ struct st_loader {
     int64_t n_head    = 0;
     int64_t n_head_kv = 0;
     int64_t head_dim  = 0;
+
+    bool prism_hadamard = false;
+    bool hadamard_gdn_v_grouped = false;
 
     std::vector<uint8_t> scratch;
 };
@@ -392,12 +396,16 @@ static bool st_map_tensor(const std::string & name, int64_t n_layer, st_map & re
 
     std::string n = name;
 
+    if (n.rfind("language_model.", 0) == 0) {
+        n = n.substr(strlen("language_model."));
+    }
+
     // global tensors
-    if (n == "model.language_model.embed_tokens.weight") {
+    if (n == "model.language_model.embed_tokens.weight" || n == "model.embed_tokens.weight") {
         res.gguf = "token_embd.weight";
         return true;
     }
-    if (n == "model.language_model.norm.weight") {
+    if (n == "model.language_model.norm.weight" || n == "model.norm.weight") {
         res.gguf = "output_norm.weight";
         res.role = ST_ROLE_F32;
         res.add_one = 1;
@@ -431,7 +439,7 @@ static bool st_map_tensor(const std::string & name, int64_t n_layer, st_map & re
     }
 
     // the vision tower is not part of the text model
-    if (n.rfind("model.visual.", 0) == 0 || n.rfind("visual.", 0) == 0) {
+    if (n.rfind("model.visual.", 0) == 0 || n.rfind("visual.", 0) == 0 || n.rfind("vision_tower.", 0) == 0) {
         return false;
     }
 
@@ -440,8 +448,14 @@ static bool st_map_tensor(const std::string & name, int64_t n_layer, st_map & re
         n = "model.language_model.layers." + std::to_string(n_layer) + "." + n.substr(strlen("mtp.layers.0."));
     }
 
-    static const char * prefix = "model.language_model.layers.";
-    if (n.rfind(prefix, 0) != 0) {
+    static const char * prefix_lm = "model.language_model.layers.";
+    static const char * prefix_l  = "model.layers.";
+    const char * prefix = nullptr;
+    if (n.rfind(prefix_lm, 0) == 0) {
+        prefix = prefix_lm;
+    } else if (n.rfind(prefix_l, 0) == 0) {
+        prefix = prefix_l;
+    } else {
         return false;
     }
 
@@ -631,6 +645,86 @@ static void st_add_meta_arch(st_loader & L, gguf_context * meta, const json & cf
             recr[i] = (uint8_t) recurrent[i];
         }
         gguf_set_arr_data(meta, kv(LLM_KV_ATTENTION_RECURRENT_LAYERS).c_str(), GGUF_TYPE_BOOL, recr.data(), recr.size());
+    }
+}
+
+static void st_add_meta_hadamard(st_loader & L, gguf_context * meta, const fs::path & dir, int64_t n_layer) {
+    const fs::path hpath = dir / "hadamard.json";
+    if (!fs::is_regular_file(hpath)) {
+        return;
+    }
+    const json hj = st_read_json(hpath);
+
+    const uint32_t version = st_json_value(hj, "prism.hadamard.version", 1u);
+    gguf_set_val_u32(meta, "prism.hadamard.version", version);
+
+    const uint32_t block_size = st_json_value(hj, "prism.hadamard.block_size", 1024u);
+    gguf_set_val_u32(meta, "prism.hadamard.block_size", block_size);
+
+    const std::string transform = st_json_value(hj, "prism.hadamard.transform", std::string("normalized-sylvester-walsh-hadamard"));
+    gguf_set_val_str(meta, "prism.hadamard.transform", transform.c_str());
+
+    const std::string axis = st_json_value(hj, "prism.hadamard.axis", std::string("input-last-dimension"));
+    gguf_set_val_str(meta, "prism.hadamard.axis", axis.c_str());
+
+    const std::string sign_mode = st_json_value(hj, "prism.hadamard.sign_mode", std::string("explicit"));
+    gguf_set_val_str(meta, "prism.hadamard.sign_mode", sign_mode.c_str());
+
+    const bool gdn_v_grouped = st_json_value(hj, "prism.hadamard.gdn_v_grouped", false);
+    gguf_set_val_bool(meta, "prism.hadamard.gdn_v_grouped", gdn_v_grouped);
+    L.hadamard_gdn_v_grouped = gdn_v_grouped;
+
+    std::vector<std::string> weight_names;
+    if (hj.contains("prism.hadamard.weight_names")) {
+        for (const auto & item : hj.at("prism.hadamard.weight_names")) {
+            const std::string orig = item.get<std::string>();
+            st_map m;
+            int64_t expert = -1;
+            std::string expert_base;
+            if (st_map_tensor(orig, n_layer, m, expert, expert_base)) {
+                weight_names.push_back(m.gguf);
+            }
+        }
+    }
+    std::vector<const char *> wn_ptrs;
+    wn_ptrs.reserve(weight_names.size());
+    for (const auto & s : weight_names) {
+        wn_ptrs.push_back(s.c_str());
+    }
+    gguf_set_arr_str(meta, "prism.hadamard.weight_names", wn_ptrs.data(), wn_ptrs.size());
+
+    std::vector<std::string> inv_names;
+    if (hj.contains("prism.hadamard.inverse_weight_names")) {
+        for (const auto & item : hj.at("prism.hadamard.inverse_weight_names")) {
+            const std::string orig = item.get<std::string>();
+            st_map m;
+            int64_t expert = -1;
+            std::string expert_base;
+            if (st_map_tensor(orig, n_layer, m, expert, expert_base)) {
+                inv_names.push_back(m.gguf);
+            }
+        }
+    }
+    std::vector<const char *> inv_ptrs;
+    inv_ptrs.reserve(inv_names.size());
+    for (const auto & s : inv_names) {
+        inv_ptrs.push_back(s.c_str());
+    }
+    gguf_set_arr_str(meta, "prism.hadamard.inverse_weight_names", inv_ptrs.data(), inv_ptrs.size());
+
+    if (hj.contains("prism.hadamard.sign_widths")) {
+        std::vector<int32_t> widths = hj.at("prism.hadamard.sign_widths").get<std::vector<int32_t>>();
+        gguf_set_arr_data(meta, "prism.hadamard.sign_widths", GGUF_TYPE_INT32, widths.data(), widths.size());
+    }
+
+    if (hj.contains("prism.hadamard.sign_values")) {
+        std::vector<int32_t> vals;
+        const auto & jvals = hj.at("prism.hadamard.sign_values");
+        vals.reserve(jvals.size());
+        for (const auto & v : jvals) {
+            vals.push_back((int32_t) v.get<double>());
+        }
+        gguf_set_arr_data(meta, "prism.hadamard.sign_values", GGUF_TYPE_INT32, vals.data(), vals.size());
     }
 }
 
@@ -1238,6 +1332,67 @@ static void st_emit_f8_native(const st_loader & L, const st_plan & p, uint8_t * 
 
 }
 
+// MLX affine 2-bit weights: packed uint32s + fp16 group-128 scales -> PQ2_0 blocks (34 bytes: 2-byte scale + 32-byte bits)
+static void st_emit_mlx_pq2(const st_loader & L, const st_plan & p, uint8_t * dst) {
+    const int64_t qk          = ggml_blck_size(GGML_TYPE_PQ2_0);
+    const size_t  block_bytes = ggml_type_size(GGML_TYPE_PQ2_0);
+    const int64_t nrows       = p.emit_nrows > 0 ? p.emit_nrows : (p.ndim >= 2 ? p.ne[1] : 1);
+    const int64_t ncols       = p.emit_ncols > 0 ? p.emit_ncols : p.ne[0];
+
+    if (ncols % qk != 0) {
+        throw std::runtime_error(string_format("row length %lld of tensor '%s' is not a multiple of %lld",
+                (long long) ncols, p.name.c_str(), (long long) qk));
+    }
+    const int64_t n_block = ncols / qk;
+
+    const size_t row_weight_bytes = (size_t) n_block * 32;
+    const size_t row_scale_bytes  = (size_t) n_block * 2;
+    const size_t dst_row_bytes    = (size_t) n_block * block_bytes;
+
+    const size_t total_weight_bytes = (size_t) nrows * row_weight_bytes;
+    const size_t total_scale_bytes  = (size_t) nrows * row_scale_bytes;
+
+    std::vector<uint8_t> weight_buf(total_weight_bytes);
+    p.src.shard->read(p.src.offs, weight_buf.data(), weight_buf.size());
+
+    std::vector<uint8_t> scale_buf(total_scale_bytes);
+    p.scale.shard->read(p.scale.offs, scale_buf.data(), scale_buf.size());
+
+    auto emit_rows = [&](int64_t r0, int64_t r1) {
+        for (int64_t r = r0; r < r1; ++r) {
+            const int64_t sr = p.reorder.dim == 0 ? st_reorder_src(L, p.reorder, r) : r;
+            const uint8_t * srow_s = scale_buf.data() + (size_t) sr * row_scale_bytes;
+            const uint8_t * srow_w = weight_buf.data() + (size_t) sr * row_weight_bytes;
+            uint8_t       * drow   = dst + (size_t) r * dst_row_bytes;
+
+            for (int64_t b = 0; b < n_block; ++b) {
+                uint8_t * dblock = drow + (size_t) b * block_bytes;
+                memcpy(dblock, srow_s + (size_t) b * 2, 2);
+                memcpy(dblock + 2, srow_w + (size_t) b * 32, 32);
+            }
+        }
+    };
+
+    const int64_t n_threads = (int64_t) std::min<unsigned>(st_threads(), (unsigned) nrows);
+    if (n_threads <= 1) {
+        emit_rows(0, nrows);
+        return;
+    }
+
+    const int64_t rows_per_thread = (nrows + n_threads - 1) / n_threads;
+    std::vector<std::thread> workers;
+    workers.reserve(n_threads - 1);
+    for (int64_t t = 0; t < n_threads - 1; ++t) {
+        const int64_t r0 = t * rows_per_thread;
+        const int64_t r1 = std::min(nrows, r0 + rows_per_thread);
+        workers.emplace_back(emit_rows, r0, r1);
+    }
+    emit_rows((n_threads - 1) * rows_per_thread, nrows);
+    for (auto & w : workers) {
+        w.join();
+    }
+}
+
 
 // exl3 (ExLlamaV3): a quantized linear is stored as coded trellis indices plus one factor per
 // input and per output channel. Decoding follows the reference implementation: 16x16 tiles of
@@ -1601,6 +1756,11 @@ static void st_emit(const st_loader & L, const st_plan & p, uint8_t * out) {
 
     if (p.nvfp4) {
         st_emit_nvfp4(L, p, out);
+        return;
+    }
+
+    if (p.mlx_pq2) {
+        st_emit_mlx_pq2(L, p, out);
         return;
     }
     st_emit_matrix(L, p, p.src, p.scale, p.has_scale != 0, nrows, ncols, out);
@@ -2561,7 +2721,8 @@ static void st_build_plans(st_loader & L, gguf_context * meta, const fs::path & 
         // the scale and the shape of a packed weight are read together with the weight itself
         if (st_ends_with(name, ".weight_scale") || st_ends_with(name, ".weight_shape") ||
             st_ends_with(name, ".weight_zero_point") || st_ends_with(name, ".weight_scale_2") ||
-            st_ends_with(name, ".input_scale")) {
+            st_ends_with(name, ".input_scale") ||
+            st_ends_with(name, ".scales") || st_ends_with(name, ".biases") || st_ends_with(name, ".signs")) {
             continue;
         }
 
@@ -2616,6 +2777,13 @@ static void st_build_plans(st_loader & L, gguf_context * meta, const fs::path & 
         if (!mapped) {
             n_skipped++;
             continue;
+        }
+
+        if (L.prism_hadamard) {
+            m.add_one = 0;
+            if (m.reorder == ST_RE_OUT_COLS && L.hadamard_gdn_v_grouped) {
+                m.reorder = ST_RE_NONE;
+            }
         }
 
         if (m.fused != 0) {
@@ -2735,6 +2903,13 @@ static void st_build_plans(st_loader & L, gguf_context * meta, const fs::path & 
         st_ref nvfp4_iscale;
         int    nvfp4_reciprocal = 0;
 
+        std::string pfx = name;
+        if (st_ends_with(pfx, ".weight")) {
+            pfx = pfx.substr(0, pfx.size() - strlen(".weight"));
+        }
+        const auto it_mlx_scale = tensors.find(pfx + ".scales");
+        const bool is_mlx_pq2 = (ref.dtype == ST_DT_U32 && it_mlx_scale != tensors.end());
+
         if (packed && ref.dtype != ST_DT_U8) {
             // compressed-tensors int4: nibble packed with a separate shape tensor
             const auto it_scale = tensors.find(base_name + "_scale");
@@ -2782,6 +2957,14 @@ static void st_build_plans(st_loader & L, gguf_context * meta, const fs::path & 
             plan->type      = GGML_TYPE_NVFP4;
             nvfp4_scale2    = it_scale2->second;
             nvfp4_iscale    = it_iscale->second;
+        } else if (is_mlx_pq2) {
+            plan->ndim      = 2;
+            plan->ne[0]     = ref.ne[1] * 16;
+            plan->ne[1]     = ref.ne[0];
+            plan->has_scale = 1;
+            plan->scale     = it_mlx_scale->second;
+            plan->mlx_pq2   = 1;
+            plan->type      = GGML_TYPE_PQ2_0;
         } else {
             if (ref.ndim == 1) {
                 plan->ne[0] = ref.ne[0];
@@ -2846,7 +3029,7 @@ static void st_build_plans(st_loader & L, gguf_context * meta, const fs::path & 
         }
 
         // tensors that are stored as-is are read by the loader itself, with mmap like a GGUF file
-        plan->verbatim = !packed && !plan->nvfp4 && !plan->f8_native && plan->split_rows == 0 && ref.dtype != ST_DT_F8 &&
+        plan->verbatim = !packed && !plan->nvfp4 && !plan->f8_native && !plan->mlx_pq2 && plan->split_rows == 0 && ref.dtype != ST_DT_F8 &&
                          st_ggml_type(ref.dtype) == plan->type &&
                          plan->reorder.dim < 0 && !plan->add_one && !plan->neg_exp;
 
@@ -2996,8 +3179,9 @@ struct llama_model * common_safetensors_load_model(const std::string & path, con
         const json cfg = json::parse(st_read_text_file(dir / "config.json"));
 
         const std::string model_type = st_json_value(cfg, "model_type", std::string());
+        const bool prism_hadamard = (model_type == "prism_hadamard_qwen35");
         const bool moe = model_type == "qwen3_5_moe";
-        const bool native_qwen = model_type == "qwen3_5" || moe || model_type == "agnes";
+        const bool native_qwen = model_type == "qwen3_5" || moe || model_type == "agnes" || prism_hadamard;
         const bool gemma4 = !native_qwen && (model_type == "gemma4_unified" || model_type == "gemma4");
         // the nemotron-h family nests its text configuration in llm_config, its values win over the top level
         const bool nemotron = !native_qwen && !gemma4 && model_type.rfind("NemotronH", 0) == 0;
@@ -3057,6 +3241,12 @@ struct llama_model * common_safetensors_load_model(const std::string & path, con
             st_parse_quant_config(*L, cfg);
             st_add_meta_arch(*L, meta, cfg, dir.filename().string(), moe);
             st_add_meta_vocab(meta, dir, cfg, ST_VOCAB_BPE);
+            if (prism_hadamard) {
+                L->prism_hadamard = true;
+                const json & tc = cfg.at("text_config");
+                const int64_t n_layer = tc.at("num_hidden_layers").get<int64_t>();
+                st_add_meta_hadamard(*L, meta, dir, n_layer);
+            }
             st_build_plans(*L, meta, dir, cfg, mode, ST_MAP_QWEN, nullptr);
         }
 
