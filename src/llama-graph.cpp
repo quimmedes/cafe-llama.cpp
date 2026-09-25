@@ -1524,6 +1524,7 @@ llm_graph_context::llm_graph_context(const llm_graph_params & params) :
     dspark_ctx_width (params.dspark_ctx_width),
     hadamard_rotations(params.hadamard_rotations),
     hadamard_inverses(params.hadamard_inverses),
+    prec_policy      (params.prec_policy),
     samplers         (params.samplers),
     cb_func          (params.cb),
     res              (params.res),
@@ -1579,6 +1580,10 @@ ggml_tensor * llm_graph_context::build_lora_mm(
     }
 
     ggml_tensor * res = ggml_mul_mat(ctx0, w, cur_mm);
+
+    if (prec_policy) {
+        prec_policy->apply(res);
+    }
 
     if (w_s) {
         res = ggml_mul(ctx0, res, w_s);
@@ -1639,6 +1644,10 @@ ggml_tensor * llm_graph_context::build_lora_mm_id(
     }
 
     ggml_tensor * res = ggml_mul_mat_id(ctx0, w, cur_mm, ids);
+
+    if (prec_policy) {
+        prec_policy->apply(res);
+    }
 
     if (w_s) {
         const int64_t n_expert = w_s->ne[0];
@@ -2393,6 +2402,10 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
     }
 
     experts = build_lora_mm_id(down_exps, cur, selected_experts, down_exps_s); // [n_embd, n_expert_used, n_tokens]
+    if (arch == LLM_ARCH_MISTRAL4) {
+        // src1 can exceed F16 range
+        ggml_prec_set_src(experts, GGML_PREC_F32, 1);
+    }
     cb(experts, "ffn_moe_down", il);
 
     if (down_exps_s) {

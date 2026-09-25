@@ -435,9 +435,11 @@ kernel void kernel_fwht(
     }
 }
 
-// Wide blocks: one row per threadgroup instead of per simdgroup, so each thread
-// keeps N/NT values rather than N/32. Butterflies below the simdgroup width still
-// shuffle; those up to NT go through threadgroup memory; the rest stay in registers.
+// Wide blocks: one row per threadgroup instead of per simdgroup, so each thread keeps
+// N/NT values rather than N/32. Butterflies below the simdgroup width still shuffle;
+// those up to NT go through threadgroup memory; the rest stay in registers.
+// TODO: try avoiding branch https://github.com/ggml-org/llama.cpp/pull/29094#discussion_r4049563223
+// TODO: try to unroll loops
 template<int N, int NT, typename src_t>
 kernel void kernel_fwht_tg(
         constant ggml_metal_kargs_fwht & args,
@@ -521,16 +523,91 @@ template [[host_name("kernel_fwht_f32_256")]]  kernel kernel_fwht_f32_t kernel_f
 template [[host_name("kernel_fwht_f32_512")]]  kernel kernel_fwht_f32_t kernel_fwht_tg<512, GGML_METAL_FWHT_TG_NT, float>;
 template [[host_name("kernel_fwht_f32_1024")]] kernel kernel_fwht_f32_t kernel_fwht_tg<1024, GGML_METAL_FWHT_TG_NT, float>;
 template [[host_name("kernel_fwht_f32_2048")]] kernel kernel_fwht_f32_t kernel_fwht_tg<2048, GGML_METAL_FWHT_TG_NT, float>;
+template [[host_name("kernel_fwht_f32_4096")]] kernel kernel_fwht_f32_t kernel_fwht_tg<4096, GGML_METAL_FWHT_TG_NT, float>;
+template [[host_name("kernel_fwht_f32_8192")]] kernel kernel_fwht_f32_t kernel_fwht_tg<8192, GGML_METAL_FWHT_TG_NT, float>;
 template [[host_name("kernel_fwht_f16_64")]]   kernel kernel_fwht_f16_t kernel_fwht<64, half>;
 template [[host_name("kernel_fwht_f16_128")]]  kernel kernel_fwht_f16_t kernel_fwht<128, half>;
 template [[host_name("kernel_fwht_f16_256")]]  kernel kernel_fwht_f16_t kernel_fwht<256, half>;
 template [[host_name("kernel_fwht_f16_512")]]  kernel kernel_fwht_f16_t kernel_fwht_tg<512, GGML_METAL_FWHT_TG_NT, half>;
 template [[host_name("kernel_fwht_f16_1024")]] kernel kernel_fwht_f16_t kernel_fwht_tg<1024, GGML_METAL_FWHT_TG_NT, half>;
 template [[host_name("kernel_fwht_f16_2048")]] kernel kernel_fwht_f16_t kernel_fwht_tg<2048, GGML_METAL_FWHT_TG_NT, half>;
-template [[host_name("kernel_fwht_f32_4096")]] kernel kernel_fwht_f32_t kernel_fwht_tg<4096, GGML_METAL_FWHT_TG_NT, float>;
-template [[host_name("kernel_fwht_f32_8192")]] kernel kernel_fwht_f32_t kernel_fwht_tg<8192, GGML_METAL_FWHT_TG_NT, float>;
 template [[host_name("kernel_fwht_f16_4096")]] kernel kernel_fwht_f16_t kernel_fwht_tg<4096, GGML_METAL_FWHT_TG_NT, half>;
 template [[host_name("kernel_fwht_f16_8192")]] kernel kernel_fwht_f16_t kernel_fwht_tg<8192, GGML_METAL_FWHT_TG_NT, half>;
+
+template<typename T>
+kernel void kernel_turbo_fwht_forward(
+        constant int64_t & n_elements,
+        device const T * src,
+        device       T * dst,
+        threadgroup float * smem [[threadgroup(0)]],
+        uint3  tgpig [[threadgroup_position_in_grid]],
+        uint3  tpitg [[thread_position_in_threadgroup]]) {
+    const int64_t row = (int64_t) tgpig.x * 128;
+    if (row >= n_elements) return;
+
+    const ushort tiitg = (ushort) tpitg.x;
+    float val = ((float) src[row + tiitg]) * d_turbo_wht_signs1_fattn[tiitg];
+
+    for (ushort h = 1; h <= 16; h *= 2) {
+        float other = simd_shuffle_xor(val, h);
+        val = (tiitg & h) ? (other - val) : (val + other);
+    }
+
+    smem[tiitg] = val;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    val = (tiitg & 32) ? (smem[tiitg - 32] - val) : (val + smem[tiitg + 32]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    smem[tiitg] = val;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    val = (tiitg & 64) ? (smem[tiitg - 64] - val) : (val + smem[tiitg + 64]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    dst[row + tiitg] = (T)(val * 0.08838834764831845f * d_turbo_wht_signs2_fattn[tiitg]);
+}
+
+template<typename T>
+kernel void kernel_turbo_fwht_inverse(
+        constant int64_t & n_elements,
+        device const T * src,
+        device       T * dst,
+        threadgroup float * smem [[threadgroup(0)]],
+        uint3  tgpig [[threadgroup_position_in_grid]],
+        uint3  tpitg [[thread_position_in_threadgroup]]) {
+    const int64_t row = (int64_t) tgpig.x * 128;
+    if (row >= n_elements) return;
+
+    const ushort tiitg = (ushort) tpitg.x;
+    float val = ((float) src[row + tiitg]) * d_turbo_wht_signs2_fattn[tiitg];
+
+    for (ushort h = 1; h <= 16; h *= 2) {
+        float other = simd_shuffle_xor(val, h);
+        val = (tiitg & h) ? (other - val) : (val + other);
+    }
+
+    smem[tiitg] = val;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    val = (tiitg & 32) ? (smem[tiitg - 32] - val) : (val + smem[tiitg + 32]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    smem[tiitg] = val;
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+    val = (tiitg & 64) ? (smem[tiitg - 64] - val) : (val + smem[tiitg + 64]);
+    threadgroup_barrier(mem_flags::mem_threadgroup);
+
+    dst[row + tiitg] = (T)(val * 0.08838834764831845f * d_turbo_wht_signs1_fattn[tiitg]);
+}
+
+typedef decltype(kernel_turbo_fwht_forward<float>) turbo_fwht_f32_t;
+typedef decltype(kernel_turbo_fwht_forward<half>)  turbo_fwht_f16_t;
+
+typedef decltype(kernel_turbo_fwht_inverse<float>) turbo_fwht_inv_f32_t;
+typedef decltype(kernel_turbo_fwht_inverse<half>)  turbo_fwht_inv_f16_t;
+
+template [[host_name("kernel_turbo_fwht_forward_f32")]] kernel turbo_fwht_f32_t     kernel_turbo_fwht_forward<float>;
+template [[host_name("kernel_turbo_fwht_forward_f16")]] kernel turbo_fwht_f16_t     kernel_turbo_fwht_forward<half>;
+template [[host_name("kernel_turbo_fwht_inverse_f32")]] kernel turbo_fwht_inv_f32_t kernel_turbo_fwht_inverse<float>;
+template [[host_name("kernel_turbo_fwht_inverse_f16")]] kernel turbo_fwht_inv_f16_t kernel_turbo_fwht_inverse<half>;
 
 constant int FC_dsv4_hc_n_hc [[function_constant(FC_DSV4_HC + 0)]];
 

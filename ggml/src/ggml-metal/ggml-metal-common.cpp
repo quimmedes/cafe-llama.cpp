@@ -15,14 +15,20 @@ bool ggml_metal_fwht_supported_size(int64_t n) {
 // the FWHT kernels handle a Hadamard-hinted MUL_MAT only under these conditions. supports_op
 // and the dispatch must ask the same question: an F16 src1 that is admitted but then falls
 // through reaches the generic path, which has no F32 src0 by F16 src1 kernel.
-bool ggml_metal_op_mul_mat_use_fwht(const struct ggml_tensor * op) {
-    return ggml_get_op_params_i32(op, 1) == GGML_HINT_SRC0_IS_HADAMARD &&
-           op->type == GGML_TYPE_F32 &&
-           (op->src[1]->type == GGML_TYPE_F32 || op->src[1]->type == GGML_TYPE_F16) &&
-           ggml_is_contiguous(op->src[1]) &&
-           ggml_is_contiguous(op) &&
-           ggml_are_same_shape(op->src[1], op) &&
-           ggml_metal_fwht_supported_size(op->src[1]->ne[0]);
+bool ggml_metal_op_mul_mat_use_fwht(const struct ggml_tensor * op, size_t max_tg_mem) {
+    const int64_t n = op->src[1]->ne[0];
+    if (!ggml_metal_fwht_supported_size(n)) {
+        return false;
+    }
+
+    // 512+ runs the threadgroup-staged kernel, which allocates float[n] per threadgroup
+    if (n >= 512 && (size_t) n * sizeof(float) > max_tg_mem) {
+        return false;
+    }
+
+    return ggml_get_op_params_i32(op, 1) == GGML_HINT_SRC0_IS_HADAMARD && op->type == GGML_TYPE_F32 &&
+           (op->src[1]->type == GGML_TYPE_F32 || op->src[1]->type == GGML_TYPE_F16) && ggml_is_contiguous(op->src[1]) &&
+           ggml_is_contiguous(op) && ggml_are_same_shape(op->src[1], op);
 }
 
 bool ggml_metal_op_mul_mat_use_mm(const struct ggml_tensor * op, bool has_simdgroup_mm) {
