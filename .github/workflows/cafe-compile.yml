@@ -1,0 +1,130 @@
+name: Compile check
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - master
+    paths:
+      - '.github/workflows/cafe-compile.yml'
+
+concurrency:
+  group: cafe-compile-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  linux-cuda-x86_64:
+    name: Linux x86_64 CUDA
+    runs-on: ubuntu-24.04
+    container: nvidia/cuda:12.6.2-devel-ubuntu24.04
+    timeout-minutes: 240
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        env:
+          DEBIAN_FRONTEND: noninteractive
+        run: |
+          apt update
+          apt install -y cmake build-essential ninja-build git libssl-dev libgomp1
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES=89-real \
+            -DCMAKE_EXE_LINKER_FLAGS=-Wl,--allow-shlib-undefined \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CUDA=ON \
+            -DGGML_CUDA_CUB_3DOT2=ON
+
+      - name: Build
+        run: cmake --build build -j "$(nproc)"
+
+  linux-vulkan-x86_64:
+    name: Linux x86_64 Vulkan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: Install dependencies
+        run: |
+          sudo add-apt-repository -y ppa:kisak/kisak-mesa
+          sudo apt-get update -y
+          sudo apt-get install -y build-essential cmake ninja-build mesa-vulkan-drivers libxcb-xinput0 libxcb-xinerama0 libxcb-cursor-dev libssl-dev
+
+      - name: Get latest Vulkan SDK version
+        run: echo "VULKAN_SDK_VERSION=$(curl -fsSL https://vulkan.lunarg.com/sdk/latest/linux.txt)" >> "$GITHUB_ENV"
+
+      - name: Setup Vulkan SDK
+        uses: ./.github/actions/unarchive-tar
+        with:
+          url: https://sdk.lunarg.com/sdk/download/${{ env.VULKAN_SDK_VERSION }}/linux/vulkan_sdk.tar.xz
+          path: ./vulkan_sdk
+          strip: 1
+
+      - name: Configure
+        run: |
+          source ./vulkan_sdk/setup-env.sh
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGGML_NATIVE=OFF -DGGML_VULKAN=ON
+
+      - name: Build
+        run: |
+          source ./vulkan_sdk/setup-env.sh
+          cmake --build build --config Release -j "$(nproc)"
+
+  windows-cuda-x86_64:
+    name: Windows x86_64 CUDA
+    runs-on: windows-2022
+    timeout-minutes: 240
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: Install CUDA Toolkit
+        uses: ./.github/actions/windows-setup-cuda
+        with:
+          cuda_version: '12.4'
+          cuda_arch: x64
+
+      - name: Install Ninja
+        run: choco install ninja -y
+
+      - name: Configure
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          cmake -S . -B build -G "Ninja Multi-Config" ^
+            -DGGML_NATIVE=OFF ^
+            -DGGML_CUDA=ON ^
+            -DGGML_CUDA_CUB_3DOT2=ON
+
+      - name: Build
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvarsall.bat" x64
+          set /A NINJA_JOBS=%NUMBER_OF_PROCESSORS%-1
+          cmake --build build --config Release -j %NINJA_JOBS%
+
+  macos-arm64:
+    name: macOS ARM64
+    runs-on: macos-latest
+    timeout-minutes: 240
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+
+      - name: Configure
+        run: |
+          cmake -S . -B build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=13.3 \
+            -DGGML_NATIVE=OFF \
+            -DGGML_METAL=ON \
+            -DGGML_METAL_EMBED_LIBRARY=OFF
+
+      - name: Build
+        run: cmake --build build --config Release -j "$(sysctl -n hw.logicalcpu)"
