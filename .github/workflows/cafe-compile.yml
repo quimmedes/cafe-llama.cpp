@@ -16,18 +16,24 @@ jobs:
   linux-cuda-x86_64:
     name: Linux x86_64 CUDA
     runs-on: ubuntu-24.04
-    container: nvidia/cuda:12.6.2-devel-ubuntu24.04
     timeout-minutes: 240
     steps:
       - name: Clone
         uses: actions/checkout@v6
 
-      - name: Install dependencies
-        env:
-          DEBIAN_FRONTEND: noninteractive
+      - name: Install CUDA toolkit
         run: |
-          apt update
-          apt install -y cmake build-essential ninja-build git libssl-dev libgomp1
+          wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          sudo dpkg -i cuda-keyring_1.1-1_all.deb
+          sudo apt-get update
+          sudo apt-get -y install cuda-toolkit-12-6
+          echo "/usr/local/cuda-12.6/bin" >> $GITHUB_PATH
+          echo "CUDA_PATH=/usr/local/cuda-12.6" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=/usr/local/cuda-12.6/lib64:$LD_LIBRARY_PATH" >> $GITHUB_ENV
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get install -y cmake build-essential ninja-build git libssl-dev libgomp1
 
       - name: Configure
         run: |
