@@ -60,6 +60,7 @@ using common_device_memory_data_vec = std::vector<common_device_memory_data>;
 // Load a model + context with no_alloc and return the per-device memory breakdown.
 common_device_memory_data_vec common_get_device_memory_data(
                          const char * path_model,
+                         const char * safetensors_outtype,
            const llama_model_params * mparams,
          const llama_context_params * cparams,
     std::vector<ggml_backend_dev_t> & devs,

@@ -415,7 +415,7 @@ void ggml_cuda_mul_mat_q_fused_two(
             src0->ne[0], src0->ne[1], dst->ne[1], (int64_t)(src0->nb[1]/ts0), ne11, (int64_t)(dst->nb[1]/sizeof(float)),
             src0->ne[2], ne12, (int64_t)(src0->nb[2]/ts0), stride_q_channel, (int64_t)(dst->nb[2]/sizeof(float)),
             src0->ne[3], ne13, (int64_t)(src0->nb[3]/ts0), stride_q_sample, (int64_t)(dst->nb[3]/sizeof(float)),
-            dst->ne[1]};
+            dst->ne[1], dst->ne[1]};
         ggml_cuda_mul_mat_q_switch_type(ctx, args, stream, GGML_PREC_Q8);
     };
     launch_one(src0_a, dst_a);

@@ -1197,7 +1197,7 @@ static void st_emit_nvfp4(const st_loader & L, const st_plan & p, uint8_t * out)
 
     const int64_t src_rows   = p.src.ne[0];
     const int64_t scale_rows = p.scale.ne[0];
-    if (src_rows != nrows || scale_rows != nrows || scale_row_bytes * 16 != ncols || src_row_bytes * 2 != ncols) {
+    if (src_rows != nrows || scale_rows != nrows || scale_row_bytes * 16 != (size_t) ncols || src_row_bytes * 2 != (size_t) ncols) {
         throw std::runtime_error(string_format("unexpected NVFP4 layout for tensor '%s'", p.name.c_str()));
     }
 
@@ -3118,7 +3118,11 @@ static void st_build_plans(st_loader & L, gguf_context * meta, const fs::path & 
 
             // ggml applies the per expert scales next to the experts, like the converter stores them
             const std::string prefix = base.substr(0, base.size() - strlen(".weight"));
-            for (const auto & side : { std::make_pair(".scale", &scale2), std::make_pair(".input_scale", &iscale) }) {
+            const std::pair<const char *, const std::vector<st_ref> *> nvfp4_sides[2] = {
+                {".scale",       &scale2},
+                {".input_scale", &iscale},
+            };
+            for (const auto & side : nvfp4_sides) {
                 auto sc = std::make_unique<st_plan>();
                 sc->name     = prefix + side.first;
                 sc->ndim     = 1;

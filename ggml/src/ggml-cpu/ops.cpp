@@ -5952,6 +5952,17 @@ void ggml_compute_forward_clamp(
         case GGML_TYPE_I16:
         case GGML_TYPE_I32:
         case GGML_TYPE_I64:
+        case GGML_TYPE_TURBO1:
+        case GGML_TYPE_TURBO1_NSN:
+        case GGML_TYPE_TURBO1_CQ:
+        case GGML_TYPE_TURBO1_TCQ:
+        case GGML_TYPE_TURBO2_0:
+        case GGML_TYPE_TURBO2_TCQ:
+        case GGML_TYPE_TURBO3_0:
+        case GGML_TYPE_TURBO3_TCQ:
+        case GGML_TYPE_TURBO4_0:
+        case GGML_TYPE_TURBO8_0:
+        case GGML_TYPE_F8_E4M3:
         case GGML_TYPE_F64:
         case GGML_TYPE_COUNT:
             {
