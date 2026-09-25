@@ -7,6 +7,10 @@ on:
         description: 'Create new release'
         required: true
         type: boolean
+  push:
+    tags:
+      - '*'
+      - '!b*'
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.head_ref && github.ref || github.run_id }}
@@ -767,7 +771,7 @@ jobs:
           name: llama-${{ steps.tag.outputs.name }}-xcframework.zip
 
   release:
-    if: ${{ github.event.inputs.create_release == 'true' }}
+    if: ${{ github.event_name == 'push' || github.event.inputs.create_release == 'true' }}
 
     permissions:
       contents: write

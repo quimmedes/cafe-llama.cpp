@@ -12,6 +12,11 @@ runs:
       id: tag
       shell: bash
       run: |
+        # when triggered by a tag, use the tag itself as the release name
+        if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+          echo "name=${{ github.ref_name }}" >> $GITHUB_OUTPUT
+          exit 0
+        fi
         BUILD_NUMBER="$(git rev-list --count HEAD)"
         SHORT_HASH="$(git rev-parse --short=7 HEAD)"
         if [[ "${{ env.BRANCH_NAME }}" == "master" || "${{ env.BRANCH_NAME }}" == "b${BUILD_NUMBER}" ]]; then
