@@ -1506,7 +1506,8 @@ struct ggml_tensor * llama_model_loader::create_tensor(
         // stream routed experts of the first ssd_n_streaming layers from disk (-1 = all); the rest
         // and the shared experts stay resident. experts are sparse, so only selected rows page in
         const bool is_routed_expert =
-            tn.tensor == LLM_TENSOR_FFN_GATE_EXPS || tn.tensor == LLM_TENSOR_FFN_UP_EXPS || tn.tensor == LLM_TENSOR_FFN_DOWN_EXPS;
+            tn.tensor == LLM_TENSOR_FFN_GATE_EXPS || tn.tensor == LLM_TENSOR_FFN_UP_EXPS ||
+            tn.tensor == LLM_TENSOR_FFN_DOWN_EXPS || tn.tensor == LLM_TENSOR_FFN_GATE_UP_EXPS;
         const bool stream_layer = ssd_n_streaming < 0 || tn.bid < ssd_n_streaming;
         if (is_routed_expert && stream_layer) {
             is_lazy = lazy.add(tn.str(), cur, no_alloc ? nullptr : &require_weight(tn.str().c_str()), true, true);

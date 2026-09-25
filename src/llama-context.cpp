@@ -1665,11 +1665,34 @@ llm_graph_result * llama_context::process_ubatch(const llama_ubatch & ubatch, ll
         //LLAMA_LOG_INFO("graph set inputs time: %.3f ms\n", (ggml_time_us() - t_start_us)/1000.0);
     }
 
+    if (model.ssd_cache) {
+        model.ssd_cache->on_step_start(n_eval);
+    }
+
     const auto status = graph_compute(res->get_gf(), ubatch.n_tokens > 1);
     if (status != GGML_STATUS_SUCCESS) {
         LLAMA_LOG_ERROR("%s: failed to compute graph, compute status: %d\n", __func__, status);
         ret = status;
         return nullptr;
+    }
+
+    if (model.ssd_cache) {
+        auto * gf = res->get_gf();
+        const int n_nodes = ggml_graph_n_nodes(gf);
+        for (int i = 0; i < n_nodes; ++i) {
+            ggml_tensor * node = ggml_graph_node(gf, i);
+            const char * name = ggml_get_name(node);
+            if (name && strncmp(name, "ffn_moe_topk-", 13) == 0) {
+                int il = atoi(name + 13);
+                int64_t n_ids = ggml_nelements(node);
+                if (n_ids > 0) {
+                    std::vector<int32_t> ids(n_ids);
+                    ggml_backend_tensor_get(node, ids.data(), 0, n_ids * sizeof(int32_t));
+                    model.ssd_cache->on_experts_used(il, ids.data(), (size_t) n_ids);
+                }
+            }
+        }
+        model.ssd_cache->on_step_finish(n_eval);
     }
 
     ret = GGML_STATUS_SUCCESS;

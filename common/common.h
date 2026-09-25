@@ -497,6 +497,8 @@ struct common_params {
     int32_t ssd_io_threads = 0; // parallel I/O lanes for streamed expert reads (0 = serial)
     int32_t ssd_cache_mb = 0; // resident expert cache budget in MiB (0 = shared full-tensor slots)
     bool ssd_release_mmap = false; // release the model mapping for streamed expert files after binding
+    bool ssd_predict = true; // predict and hot-load active experts to keep them resident in memory
+    int32_t ssd_cache_slots = 0; // resident expert cache slots per layer (0 = auto or budget-based)
 
     bool pipeline_parallel = false; // FreeToken: enable scheduler pipeline parallelism / host weight prefetch
 

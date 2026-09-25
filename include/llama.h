@@ -370,6 +370,8 @@ extern "C" {
         int32_t ssd_io_threads; // parallel I/O lanes for streamed expert reads (0 = serial)
         int32_t ssd_cache_mb; // resident expert cache budget in MiB (0 = shared full-tensor slots)
         bool ssd_release_mmap; // release the model mapping for streamed expert files after binding
+        bool ssd_predict; // predict and hot-load active experts to keep them resident in memory (default: true)
+        int32_t ssd_cache_slots; // resident expert cache slots per layer (0 = auto or budget-based)
     };
 
     struct llama_sampler_seq_config {

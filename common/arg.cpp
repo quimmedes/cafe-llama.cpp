@@ -2749,7 +2749,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_NGRAM_SSD"));
     add_opt(common_arg(
-        {"--ssd-streaming", "-ssd"},
+        {"-ssd", "--ssd-streaming"},
         {"--no-ssd-streaming"},
         string_format("stream non-active routed experts from disk, keep a bounded resident cache (default: %s)", params.ssd_streaming ? "enabled" : "disabled"),
         [](common_params & params, bool value) {
@@ -2767,7 +2767,7 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
         }
     ).set_env("LLAMA_ARG_SSD_STREAMING_CACHE_EXPERTS"));
     add_opt(common_arg(
-        {"--ssd-n-streaming", "-nssd"}, "N",
+        {"-nssd", "--ssd-n-streaming"}, "N",
         "stream the MoE expert weights of the first N layers from disk (implies --ssd-streaming)\n"
         "(analogous to --n-cpu-moe, but the destination is SSD instead of RAM)",
         [](common_params & params, int value) {
@@ -2830,6 +2830,13 @@ common_params_context common_params_parser_init(common_params & params, llama_ex
             params.ssd_release_mmap = value;
         }
     ).set_env("LLAMA_ARG_SSD_RELEASE_MMAP"));
+    add_opt(common_arg(
+        {"--ssd-predict"}, {"--no-ssd-predict"},
+        string_format("predict and hot-load active routed experts to keep them resident in memory (default: %s)", params.ssd_predict ? "enabled" : "disabled"),
+        [](common_params & params, bool value) {
+            params.ssd_predict = value;
+        }
+    ).set_env("LLAMA_ARG_SSD_PREDICT"));
     add_opt(common_arg(
         {"--numa"}, "TYPE",
         "attempt optimizations that help on some NUMA systems\n"

@@ -14,8 +14,13 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <memory>
 #include <string>
 #include <vector>
+
+struct ggml_tensor;
+struct llama_model;
+struct llama_model_params;
 
 struct llama_ssd_reader {
     llama_ssd_reader() = default;
@@ -48,4 +53,81 @@ private:
     bool     direct_   = false;     // cache bypass actually in effect
     bool     aligned_  = false;     // direct_ and the mode rejects unaligned reads
     std::string path_;
+};
+
+// Metadata for routed MoE experts of a streamed layer
+struct llama_ssd_expert_meta {
+    int il = -1;
+    int n_expert = 0;
+    int n_expert_used = 0;
+
+    struct ggml_tensor * gate_exps    = nullptr;
+    struct ggml_tensor * up_exps      = nullptr;
+    struct ggml_tensor * down_exps    = nullptr;
+    struct ggml_tensor * gate_up_exps = nullptr;
+
+    size_t stride_gate    = 0;
+    size_t stride_up      = 0;
+    size_t stride_down    = 0;
+    size_t stride_gate_up = 0;
+    size_t expert_bytes   = 0;
+
+    void get_expert_slice(int e, void *& ptr, size_t & len, int tensor_idx) const;
+};
+
+// Predictor for active and hot MoE experts
+class llama_ssd_expert_predictor {
+public:
+    struct expert_stat {
+        float hotness = 0.0f;
+        uint64_t last_used_step = 0;
+        uint32_t hit_count = 0;
+    };
+
+    void init(int n_streamed_layers, const std::vector<int> & n_experts, const std::vector<int> & n_experts_used, int hot_capacity);
+
+    void record_usage(int il, const int32_t * ids, size_t n_ids, uint64_t step);
+
+    const std::vector<int32_t> & get_hot_set(int il) const;
+    const std::vector<int32_t> & get_predicted(int il) const;
+    bool is_hot(int il, int e) const;
+    float get_hotness(int il, int e) const;
+
+private:
+    float decay_ = 0.95f;
+    int hot_capacity_ = 4;
+    std::vector<int> n_experts_;
+    std::vector<std::vector<expert_stat>> stats_;
+    std::vector<std::vector<int32_t>> hot_sets_;
+    std::vector<std::vector<int32_t>> predicted_next_;
+};
+
+// Hot-loading expert cache for -nssd
+class llama_ssd_expert_cache {
+public:
+    llama_ssd_expert_cache();
+    ~llama_ssd_expert_cache();
+
+    llama_ssd_expert_cache(const llama_ssd_expert_cache &) = delete;
+    llama_ssd_expert_cache & operator=(const llama_ssd_expert_cache &) = delete;
+
+    bool init(const llama_model & model, const llama_model_params & params);
+
+    void on_step_start(uint64_t step);
+    void on_experts_used(int il, const int32_t * ids, size_t n_ids);
+    void on_step_finish(uint64_t step);
+
+    void hot_load_expert(int il, int e);
+    void evict_expert(int il, int e);
+    void prefetch_experts(int il, const int32_t * ids, size_t n_ids);
+
+    bool is_loaded(int il, int e) const;
+    int hot_slots_per_layer() const;
+    size_t total_budget_bytes() const;
+    size_t resident_bytes() const;
+    bool predict_enabled() const;
+
+private:
+    struct impl;
+    std::unique_ptr<impl> pimpl_;
 };

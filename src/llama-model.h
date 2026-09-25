@@ -5,6 +5,7 @@
 #include "llama-graph.h"
 #include "llama-hparams.h"
 #include "llama-memory.h"
+#include "llama-ssd.h"
 #include "llama-vocab.h"
 
 #include <map>
@@ -773,6 +774,9 @@ struct llama_model {
 
     // for keeping track of associated LoRA adapters
     std::unordered_set<llama_adapter_lora *> loras;
+    // expert cache and predictor for -nssd
+    std::unique_ptr<llama_ssd_expert_cache> ssd_cache;
+
 
     // statically allocated context for assigning
     struct llama_meta_device_get_split_state_userdata get_split_state_ud;

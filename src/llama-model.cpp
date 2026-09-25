@@ -2090,6 +2090,13 @@ bool llama_model_base::load_tensors(llama_model_loader & ml) {
         ml.warm_dense();
     }
 
+    if (ml.ssd_streaming) {
+        ssd_cache = std::make_unique<llama_ssd_expert_cache>();
+        if (!ssd_cache->init(*this, params)) {
+            ssd_cache.reset();
+        }
+    }
+
     if (use_mmap_buffer) {
         for (auto & mapping : ml.mappings) {
             pimpl->mappings.emplace_back(std::move(mapping));
@@ -3190,6 +3197,8 @@ llama_model_params llama_model_default_params() {
         /*.ssd_io_threads             =*/ 0,
         /*.ssd_cache_mb               =*/ 0,
         /*.ssd_release_mmap           =*/ false,
+        /*.ssd_predict                =*/ true,
+        /*.ssd_cache_slots            =*/ 0,
     };
 
     return result;

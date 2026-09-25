@@ -104,6 +104,8 @@ struct llama_model_loader {
     int  ssd_io_threads = 0; // parallel I/O lanes for streamed expert reads (0 = serial)
     int  ssd_cache_mb = 0; // resident expert cache budget in MiB (0 = shared full-tensor slots)
     bool ssd_release_mmap = false; // release the model mapping for streamed expert files after binding
+    bool ssd_predict = true; // predict and hot-load active experts
+    int  ssd_cache_slots = 0; // resident expert cache slots per layer
 
     // handle TENSOR_READ_LAZY
     // use case: keep PLE / engrams embd tensors on disk, read them on demand

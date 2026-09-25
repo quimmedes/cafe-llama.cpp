@@ -1707,6 +1707,25 @@ struct llama_model_params common_model_params_to_llama(common_params & params) {
     mparams.ssd_io_threads            = params.ssd_io_threads;
     mparams.ssd_cache_mb              = params.ssd_cache_mb;
     mparams.ssd_release_mmap          = params.ssd_release_mmap;
+    mparams.ssd_predict               = params.ssd_predict;
+    mparams.ssd_cache_slots           = params.ssd_cache_slots;
+    if (!params.ssd_streaming_cache_experts.empty()) {
+        std::string s = params.ssd_streaming_cache_experts;
+        for (auto & c : s) { c = (char) std::tolower(c); }
+        if (s.find("gb") != std::string::npos || s.find("g") != std::string::npos) {
+            double val = std::stod(s);
+            mparams.ssd_cache_mb = (int32_t) (val * 1024.0);
+        } else if (s.find("mb") != std::string::npos || s.find("m") != std::string::npos) {
+            double val = std::stod(s);
+            mparams.ssd_cache_mb = (int32_t) val;
+        } else {
+            try {
+                mparams.ssd_cache_slots = std::stoi(params.ssd_streaming_cache_experts);
+            } catch (...) {
+                mparams.ssd_cache_slots = 0;
+            }
+        }
+    }
     mparams.tensor_split    = params.tensor_split;
     mparams.check_tensors   = params.check_tensors;
     mparams.use_extra_bufts = !params.no_extra_bufts;
