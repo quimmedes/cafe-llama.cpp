@@ -2,6 +2,7 @@
 
 #include "ggml-impl.h"
 #include "ggml-backend-impl.h"
+#include "ggml-backend-moe-cache.h"
 
 #include "ggml-metal-device.h"
 #include "ggml-metal-fusion.h"
@@ -1047,6 +1048,8 @@ ggml_backend_reg_t ggml_backend_metal_reg(void) {
                 /* .iface       = */ ggml_backend_metal_reg_i,
                 /* .context     = */ reg_ctx.get(),
             };
+
+            ggml_moe_cache_register_generic(&reg);
         }
 
         initialized = true;

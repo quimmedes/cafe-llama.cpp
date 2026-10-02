@@ -16197,6 +16197,7 @@ ggml_backend_reg_t ggml_backend_vk_reg() {
     };
     try {
         ggml_vk_instance_init();
+        ggml_moe_cache_register_generic(&reg);
         return &reg;
     } catch (const vk::SystemError& e) {
         VK_LOG_DEBUG("ggml_backend_vk_reg() -> Error: System error: " << e.what());

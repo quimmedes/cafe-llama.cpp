@@ -112,6 +112,7 @@ typedef struct VkPhysicalDeviceCooperativeMatrixDecodeVectorFeaturesNV {
 #include "ggml-impl.h"
 
 #include "ggml-backend-impl.h"
+#include "ggml-backend-moe-cache.h"
 
 #include "ggml-vulkan-shaders.hpp"
 
