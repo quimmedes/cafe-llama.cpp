@@ -3489,6 +3489,8 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_fill_f32, "fill_f32", fill_f32_len, fill_f32_data, "main", 1, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_fill_f16, "fill_f16", fill_f16_len, fill_f16_data, "main", 1, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
 
+    ggml_vk_create_pipeline(device, device->pipeline_moe_gather, "moe_gather", moe_gather_len, moe_gather_data, "main", 4, sizeof(vk_op_moe_gather_push_constants), {256, 1, 1}, {}, 1);
+
 #define CREATE_GLU(name)  \
     ggml_vk_create_pipeline(device, device->pipeline_ ## name [0], #name "_f32", name ## _f32_len, name ## _f32_data, "main", 3, sizeof(vk_op_glu_push_constants), {512, 1, 1}, {}, 1, true);   \
     ggml_vk_create_pipeline(device, device->pipeline_ ## name [1], #name "_f16", name ## _f16_len, name ## _f16_data, "main", 3, sizeof(vk_op_glu_push_constants), {512, 1, 1}, {}, 1, true);
@@ -7939,8 +7941,104 @@ bool ggml_vk_use_mul_mat_vec_id(const struct ggml_cgraph * cgraph, int node_idx)
     return (src2->ne[1] <= 8) && (src0->type == GGML_TYPE_F32 || src0->type == GGML_TYPE_F16 || ggml_is_quantized(src0->type));
 }
 
+static bool ggml_vk_moe_direct_src(const vk_device & device, const ggml_tensor * src0);
+
+// Copy the routed experts of dst->src[0] from pinned host memory into a device buffer and point
+// dst->src[0] at that copy, so the stock MUL_MAT_ID kernels read only the experts this op uses.
+// compact: route r gets slot r and dst->src[2] is swapped for ids rewritten to r
+// dense:   expert e keeps slot e, used for large batches and when the op is fused with
+//          ADD_ID/MUL, which index per expert with the original ids
+static void ggml_vk_moe_gather(ggml_backend_vk_context * ctx, vk_context & subctx, ggml_tensor * dst) {
+    ggml_tensor * src0 = dst->src[0];
+    ggml_tensor * ids  = dst->src[2];
+    GGML_ASSERT(ids->type == GGML_TYPE_I32 && src0->nb[2] % sizeof(uint32_t) == 0);
+
+    const uint32_t n_ids    = (uint32_t) ids->ne[0];
+    const uint32_t n_tok    = (uint32_t) ids->ne[1];
+    const uint32_t n_routes = n_ids * n_tok;
+    const int64_t  n_expert = src0->ne[2];
+    const size_t   nb02     = src0->nb[2];
+    const bool     compact  = (int64_t) n_routes < n_expert && ctx->num_additional_fused_ops == 0;
+
+    const size_t align         = ctx->device->properties.limits.minStorageBufferOffsetAlignment;
+    const size_t experts_bytes = GGML_PAD((compact ? n_routes : (size_t) n_expert) * nb02, align);
+    const size_t ids_bytes     = std::max<size_t>((size_t) n_routes * sizeof(int32_t), sizeof(int32_t));
+    if (!ctx->moe_dense_buf || ggml_backend_buffer_get_size(ctx->moe_dense_buf) < experts_bytes + ids_bytes) {
+        if (ctx->moe_dense_buf) {
+            ctx->moe_dense_old.push_back(ctx->moe_dense_buf);
+        }
+        ctx->moe_dense_buf = ggml_backend_buft_alloc_buffer(ggml_backend_vk_buffer_type(ctx->device->idx), experts_bytes + ids_bytes);
+        GGML_ASSERT(ctx->moe_dense_buf && "failed to allocate the device copy of the MoE experts");
+    }
+    vk_buffer d_buf = ((ggml_backend_vk_buffer_context *) ctx->moe_dense_buf->context)->dev_buffer;
+    char * d_base = (char *) ggml_backend_buffer_get_base(ctx->moe_dense_buf);
+
+    vk_buffer s_buf = nullptr;
+    size_t s_off = 0;
+    ggml_vk_host_get(ctx->device, src0->data, s_buf, s_off);
+    GGML_ASSERT(s_buf != nullptr);
+    const size_t s_desc = s_off & ~(align - 1);
+
+    const vk_op_moe_gather_push_constants pc = {
+        (uint32_t) (nb02 / sizeof(uint32_t)),
+        n_ids,
+        n_tok,
+        (uint32_t) (ids->nb[0] / sizeof(int32_t)),
+        (uint32_t) (ids->nb[1] / sizeof(int32_t)),
+        get_misalign_bytes(ctx, ids) / (uint32_t) sizeof(int32_t),
+        (uint32_t) n_expert,
+        (uint32_t) ((s_off - s_desc) / sizeof(uint32_t)),
+        compact ? 1u : 0u,
+    };
+
+    vk_pipeline & pipeline = ctx->device->pipeline_moe_gather;
+    ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
+    // the previous op may still read the copy
+    ggml_vk_sync_buffers(ctx, subctx);
+    const uint32_t gx = std::min<uint32_t>(64, CEIL_DIV(pc.expert_words, 2048));
+    const uint32_t gy = std::min<uint32_t>(n_routes, 65535);
+    const uint32_t gz = CEIL_DIV(n_routes, gy);
+    ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, {
+            vk_subbuffer{ s_buf, s_desc, s_off - s_desc + ggml_nbytes(src0) },
+            ggml_vk_tensor_subbuffer(ctx, ids, true),
+            vk_subbuffer{ d_buf, 0, experts_bytes },
+            vk_subbuffer{ d_buf, experts_bytes, ids_bytes },
+        }, pc, { gx * 256, gy, gz });
+    ggml_vk_sync_buffers(ctx, subctx);
+
+    ggml_tensor & s = ctx->moe_dense_src0;
+    s = *src0;
+    s.buffer    = ctx->moe_dense_buf;
+    s.data      = d_base;
+    s.view_src  = nullptr;
+    s.view_offs = 0;
+    if (compact) {
+        s.ne[2] = n_routes;
+        s.nb[3] = s.nb[2] * n_routes;
+
+        ggml_tensor & r = ctx->moe_dense_ids;
+        r = *ids;
+        r.buffer    = ctx->moe_dense_buf;
+        r.data      = d_base + experts_bytes;
+        r.view_src  = nullptr;
+        r.view_offs = 0;
+        r.nb[0] = sizeof(int32_t);
+        r.nb[1] = r.nb[0] * n_ids;
+        r.nb[2] = r.nb[1] * n_tok;
+        r.nb[3] = r.nb[2];
+        dst->src[2] = &r;
+    }
+    dst->src[0] = &s;
+}
+
 void ggml_vk_mul_mat_id(ggml_backend_vk_context * ctx, vk_context& subctx, const struct ggml_cgraph * cgraph, int node_idx) {
     ggml_tensor * dst = cgraph->nodes[node_idx];
+    ggml_tensor * src0_orig = dst->src[0];
+    ggml_tensor * src2_orig = dst->src[2];
+    const bool direct = ggml_vk_moe_direct_src(ctx->device, src0_orig);
+    if (direct) {
+        ggml_vk_moe_gather(ctx, subctx, dst);
+    }
     ggml_tensor * src0 = dst->src[0];
     ggml_tensor * src1 = dst->src[1];
     ggml_tensor * src2 = dst->src[2];
@@ -7949,6 +8047,10 @@ void ggml_vk_mul_mat_id(ggml_backend_vk_context * ctx, vk_context& subctx, const
         ggml_vk_mul_mat_vec_id_q_f16(ctx, subctx, cgraph, node_idx);
     } else {
         ggml_vk_mul_mat_id_q_f16(ctx, subctx, src0, src1, src2, dst);
+    }
+    if (direct) {
+        dst->src[0] = src0_orig;
+        dst->src[2] = src2_orig;
     }
 }
 
@@ -12248,7 +12350,8 @@ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, in
         // checked against the written list. Two nodes overlap in memory if they come from the same
         // buffer and the tensor or view ranges overlap.
         auto const &overlaps_unsynced = [&](const ggml_tensor *node, const std::vector<const ggml_tensor *> &unsynced_nodes) -> bool {
-            if (unsynced_nodes.size() == 0) {
+            // experts in pinned host memory are read-only weights, the device never writes them
+            if (unsynced_nodes.size() == 0 || !ggml_backend_buffer_is_vk(node->buffer)) {
                 return false;
             }
             auto n_base = vk_tensor_offset(node) + node->view_offs;
@@ -12256,6 +12359,9 @@ bool ggml_vk_build_graph(ggml_backend_vk_context * ctx, ggml_cgraph * cgraph, in
             ggml_backend_vk_buffer_context * a_buf_ctx = (ggml_backend_vk_buffer_context *)node->buffer->context;
             vk_buffer a_buf = a_buf_ctx->dev_buffer;
             for (auto &other : unsynced_nodes) {
+                if (!ggml_backend_buffer_is_vk(other->buffer)) {
+                    continue;
+                }
                 ggml_backend_vk_buffer_context * o_buf_ctx = (ggml_backend_vk_buffer_context *)other->buffer->context;
                 vk_buffer o_buf = o_buf_ctx->dev_buffer;
                 if (a_buf == o_buf) {
@@ -12880,6 +12986,12 @@ void ggml_vk_cleanup(ggml_backend_vk_context * ctx) {
     ggml_vk_destroy_buffer(ctx->prealloc_split_k);
     ggml_vk_destroy_buffer(ctx->prealloc_add_rms_partials);
     ggml_vk_destroy_buffer(ctx->sync_staging);
+    for (ggml_backend_buffer_t buf : ctx->moe_dense_old) {
+        ggml_backend_buffer_free(buf);
+    }
+    ctx->moe_dense_old.clear();
+    ggml_backend_buffer_free(ctx->moe_dense_buf);
+    ctx->moe_dense_buf = nullptr;
 
     ctx->prealloc_y_last_pipeline_used = nullptr;
     ctx->prealloc_y_last_tensor_used = nullptr;
@@ -13163,6 +13275,48 @@ ggml_backend_buffer_type_t ggml_backend_vk_host_buffer_type() {
     ggml_vk_get_device(0);
 
     return &ggml_backend_vk_buffer_type_host;
+}
+
+// pinned host memory for MoE experts that the device reads directly, see ggml_vk_moe_gather
+static const char * ggml_backend_vk_host_moe_buffer_type_name(ggml_backend_buffer_type_t buft) {
+    return GGML_VK_NAME "_Host_MoE";
+
+    UNUSED(buft);
+}
+
+static bool ggml_backend_buft_is_vk_host_moe(ggml_backend_buffer_type_t buft) {
+    return buft && buft->iface.get_name == ggml_backend_vk_host_moe_buffer_type_name;
+}
+
+static ggml_backend_buffer_type_t ggml_backend_vk_host_moe_buffer_type() {
+    static struct ggml_backend_buffer_type ggml_backend_vk_buffer_type_host_moe = {
+        /* .iface    = */ {
+            /* .get_name         = */ ggml_backend_vk_host_moe_buffer_type_name,
+            /* .alloc_buffer     = */ ggml_backend_vk_host_buffer_type_alloc_buffer,
+            /* .get_alignment    = */ ggml_backend_vk_host_buffer_type_get_alignment,
+            /* .get_max_size     = */ ggml_backend_vk_host_buffer_type_get_max_size,
+            /* .get_alloc_size   = */ ggml_backend_cpu_buffer_type()->iface.get_alloc_size,
+            /* .is_host          = */ ggml_backend_cpu_buffer_type()->iface.is_host,
+        },
+        /* .device   = */ ggml_backend_reg_dev_get(ggml_backend_vk_reg(), 0),
+        /* .context  = */ nullptr,
+    };
+
+    ggml_vk_instance_init();
+    ggml_vk_get_device(0);
+
+    return &ggml_backend_vk_buffer_type_host_moe;
+}
+
+// the experts must really be pinned: a failed pinned allocation falls back to a plain CPU buffer
+static bool ggml_vk_moe_direct_src(const vk_device & device, const ggml_tensor * src0) {
+    if (!src0 || !src0->buffer || !ggml_backend_buft_is_vk_host_moe(src0->buffer->buft)) {
+        return false;
+    }
+    vk_buffer buf = nullptr;
+    size_t offset = 0;
+    ggml_vk_host_get(device, src0->data, buf, offset);
+    return buf != nullptr;
 }
 
 static const char * ggml_backend_vk_name(ggml_backend_t backend) {
@@ -14079,6 +14233,9 @@ bool ggml_vk_can_fuse_snake(ggml_backend_vk_context * ctx, const struct ggml_cgr
 }
 
 bool ggml_vk_tensors_overlap(const ggml_tensor * a, const ggml_tensor * b, bool elementwise) {
+    if (!ggml_backend_buffer_is_vk(a->buffer) || !ggml_backend_buffer_is_vk(b->buffer)) {
+        return false;
+    }
     ggml_backend_vk_buffer_context * a_buf_ctx = (ggml_backend_vk_buffer_context *)a->buffer->context;
     vk_buffer a_buf = a_buf_ctx->dev_buffer;
     ggml_backend_vk_buffer_context * b_buf_ctx = (ggml_backend_vk_buffer_context *)b->buffer->context;
@@ -15359,6 +15516,16 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
         }
         return true;
     };
+    // experts in Vulkan_Host_MoE memory are only read by MUL_MAT_ID, through ggml_vk_moe_gather
+    for (int i = 0; i < GGML_MAX_SRC; i++) {
+        const ggml_tensor * s = op->src[i];
+        if (s && s->buffer && ggml_backend_buft_is_vk_host_moe(s->buffer->buft)) {
+            if (op->op != GGML_OP_MUL_MAT_ID || i != 0 || !ggml_is_contiguous(s) || s->nb[2] % sizeof(uint32_t) != 0 ||
+                (s->data && !ggml_vk_moe_direct_src(device, s))) {
+                return false;
+            }
+        }
+    }
     // reject any tensors larger than the max buffer size
     for (int i = 0; i < GGML_MAX_SRC; i++) {
         if (op->src[i] && !tensor_size_supported(ggml_nbytes(op->src[i]))) {
@@ -16009,6 +16176,10 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
 }
 
 static bool ggml_backend_vk_device_supports_buft(ggml_backend_dev_t dev, ggml_backend_buffer_type_t buft) {
+    if (ggml_backend_buft_is_vk_host_moe(buft)) {
+        // the pinned allocations are registered on device 0
+        return ((ggml_backend_vk_device_context *)dev->context)->device == 0;
+    }
     if (buft->iface.get_name != ggml_backend_vk_buffer_type_name) {
         return false;
     }
@@ -16182,11 +16353,21 @@ static ggml_backend_dev_t ggml_backend_vk_reg_get_device(ggml_backend_reg_t reg,
     return devices[device];
 }
 
+static void * ggml_backend_vk_reg_get_proc_address(ggml_backend_reg_t reg, const char * name) {
+    // -hmoe places the experts in this buffer type, see common_host_moe_buffer_type
+    if (strcmp(name, "ggml_backend_moe_host_buffer_type") == 0) {
+        return (void *) ggml_backend_vk_host_moe_buffer_type;
+    }
+    return nullptr;
+
+    UNUSED(reg);
+}
+
 static const struct ggml_backend_reg_i ggml_backend_vk_reg_i = {
     /* .get_name         = */ ggml_backend_vk_reg_get_name,
     /* .get_device_count = */ ggml_backend_vk_reg_get_device_count,
     /* .get_device       = */ ggml_backend_vk_reg_get_device,
-    /* .get_proc_address = */ NULL,
+    /* .get_proc_address = */ ggml_backend_vk_reg_get_proc_address,
 };
 
 ggml_backend_reg_t ggml_backend_vk_reg() {

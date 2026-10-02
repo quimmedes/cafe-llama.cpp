@@ -223,6 +223,18 @@ struct vk_op_count_experts_push_constants {
     uint32_t ne00L;
 };
 
+struct vk_op_moe_gather_push_constants {
+    uint32_t expert_words;
+    uint32_t n_ids;
+    uint32_t n_tok;
+    uint32_t ids_nb0;
+    uint32_t ids_nb1;
+    uint32_t ids_offset;
+    uint32_t n_expert;
+    uint32_t src_offset;
+    uint32_t compact;
+};
+
 struct vk_op_glu_push_constants {
     uint32_t N;
     uint32_t ne00;

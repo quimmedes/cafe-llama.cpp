@@ -921,6 +921,7 @@ struct vk_device_struct {
 
     vk_pipeline pipeline_fill_f32;
     vk_pipeline pipeline_fill_f16;
+    vk_pipeline pipeline_moe_gather;
 
     vk_pipeline pipeline_geglu[2];
     vk_pipeline pipeline_reglu[2];
@@ -1256,6 +1257,12 @@ struct ggml_backend_vk_context {
     // write partial sums to accumulate the square of the vector components
     bool do_add_rms_partials_offset_calculation;
     bool do_add_rms_partials;
+
+    // device copy of the routed experts of a MUL_MAT_ID whose weights sit in Vulkan_Host_MoE memory
+    ggml_backend_buffer_t moe_dense_buf {};
+    std::vector<ggml_backend_buffer_t> moe_dense_old; // outgrown buffers, freed at cleanup since queued work may still read them
+    ggml_tensor moe_dense_src0 {};
+    ggml_tensor moe_dense_ids {};
 
     uint64_t last_total_flops {UINT64_MAX};
 

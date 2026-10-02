@@ -1,0 +1,47 @@
+#version 450
+
+// copy the routed experts of a MUL_MAT_ID from pinned host memory into a device buffer
+// compact: route r gets slot r and its id is rewritten to r
+// dense:   expert e stays at slot e and the ids are unchanged
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly  buffer S {uint data_s[];};
+layout (binding = 1) readonly  buffer I {int  data_i[];};
+layout (binding = 2) writeonly buffer D {uint data_d[];};
+layout (binding = 3) writeonly buffer R {int  data_r[];};
+
+layout (push_constant) uniform parameter {
+    uint expert_words;
+    uint n_ids;
+    uint n_tok;
+    uint ids_nb0;
+    uint ids_nb1;
+    uint ids_offset;
+    uint n_expert;
+    uint src_offset;
+    uint compact;
+} p;
+
+void main() {
+    const uint r = gl_WorkGroupID.y + gl_WorkGroupID.z * gl_NumWorkGroups.y;
+    if (r >= p.n_ids * p.n_tok) {
+        return;
+    }
+    const uint t = r / p.n_ids;
+    const uint k = r % p.n_ids;
+    const int e = data_i[p.ids_offset + t * p.ids_nb1 + k * p.ids_nb0];
+
+    if (p.compact != 0 && gl_GlobalInvocationID.x == 0) {
+        data_r[r] = int(r);
+    }
+    if (e < 0 || uint(e) >= p.n_expert) {
+        return;
+    }
+
+    const uint src = p.src_offset + uint(e) * p.expert_words;
+    const uint dst = (p.compact != 0 ? r : uint(e)) * p.expert_words;
+    for (uint i = gl_GlobalInvocationID.x; i < p.expert_words; i += gl_NumWorkGroups.x * gl_WorkGroupSize.x) {
+        data_d[dst + i] = data_s[src + i];
+    }
+}
