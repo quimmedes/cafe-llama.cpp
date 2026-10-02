@@ -270,7 +270,7 @@ int main(int argc, char ** argv) {
 
             batch.clear();
             for (int k = 0; k < n_tok; ++k) {
-                batch.add(tokens[start + j + k], j + k, { 0 }, false);
+                batch.add(tokens[start + j + k], j + k, 0, false);
             }
 
             if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch.get())) {

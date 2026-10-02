@@ -26,6 +26,7 @@ env:
 jobs:
   macOS-cpu:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - build: 'arm64'
@@ -80,6 +81,7 @@ jobs:
 
   ubuntu-cpu:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - build: 'x64'
@@ -145,6 +147,7 @@ jobs:
     timeout-minutes: 360
 
     strategy:
+      fail-fast: false
       matrix:
         include:
           - cuda: '12.4'
@@ -219,6 +222,7 @@ jobs:
     runs-on: windows-2025
 
     strategy:
+      fail-fast: false
       matrix:
         include:
           - arch: 'x64'
@@ -280,6 +284,7 @@ jobs:
     timeout-minutes: 360
 
     strategy:
+      fail-fast: false
       matrix:
         include:
           - cuda: '12.4'
@@ -373,6 +378,7 @@ jobs:
 
   ubuntu-vulkan:
     strategy:
+      fail-fast: false
       matrix:
         include:
           - build: 'x64'
@@ -637,7 +643,8 @@ jobs:
           name: llama-bin-win-rocm-10.0-x64.zip
 
   release:
-    if: ${{ github.event_name == 'push' || github.event.inputs.create_release == 'true' }}
+    # publish what built even if some platforms failed; missing ones are listed in the notes
+    if: ${{ !cancelled() && (github.event_name == 'push' || github.event.inputs.create_release == 'true') }}
 
     permissions:
       contents: write
@@ -700,12 +707,11 @@ jobs:
             "llama-${{ steps.tag.outputs.name }}-bin-ubuntu-rocm-10.0-x64.tar.gz"
             "llama-${{ steps.tag.outputs.name }}-bin-win-rocm-10.0-x64.zip"
           )
+          : > missing-assets.txt
           for name in "${expected[@]}"; do
-            test -s "release/$name" || { echo "Missing or empty artifact: $name" >&2; exit 1; }
+            test -s "release/$name" || { echo "::warning::Missing artifact: $name"; echo "$name" >> missing-assets.txt; }
           done
-          printf '%s\n' "${expected[@]}" | sort > expected-assets.txt
-          find release -maxdepth 1 -type f -printf '%f\n' | sort > downloaded-assets.txt
-          diff -u expected-assets.txt downloaded-assets.txt
+          test -n "$(ls release)" || { echo "No artifacts built" >&2; exit 1; }
 
       - name: Create or update release
         env:
@@ -751,6 +757,9 @@ jobs:
           **Windows (Vulkan):**
           - [Windows x64 (Vulkan)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-vulkan-x64.zip)
           EOF
+          if [ -s missing-assets.txt ]; then
+            { echo; echo '**Not built in this release (failed):**'; sed 's/^/- /' missing-assets.txt; } >> release-notes.md
+          fi
           if gh release view "$RELEASE_TAG" >/dev/null 2>&1; then
             gh release edit "$RELEASE_TAG" --notes-file release-notes.md
           else

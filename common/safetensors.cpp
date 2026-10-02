@@ -3266,17 +3266,18 @@ static void st_build_plans(st_loader & L, gguf_context * meta, const fs::path & 
                 throw std::runtime_error("unexpected fused expert tensor '" + src_name + "'");
             }
             const uint64_t elem = (uint64_t) st_dtype_size(ref.dtype);
+            const st_ref & src = ref;
             auto add_experts = [&](const std::string & out, int64_t row_offs, int64_t nrows) {
                 auto & weights = exps[out];
                 if (weights.empty()) {
                     weights.resize(n_expert);
                 }
                 for (int64_t e = 0; e < (int64_t) n_expert; ++e) {
-                    st_ref s = ref;
-                    s.offs = ref.offs + (uint64_t) e * ref.ne[1] * ref.ne[2] * elem + (uint64_t) row_offs * ref.ne[2] * elem;
+                    st_ref s = src;
+                    s.offs = src.offs + (uint64_t) e * src.ne[1] * src.ne[2] * elem + (uint64_t) row_offs * src.ne[2] * elem;
                     s.ndim = 2;
                     s.ne[0] = nrows;
-                    s.ne[1] = ref.ne[2];
+                    s.ne[1] = src.ne[2];
                     s.ne[2] = 1;
                     weights[e] = s;
                 }
