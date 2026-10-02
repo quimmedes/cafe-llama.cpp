@@ -11,22 +11,39 @@ This is an opportunistic path. Unsupported nodes, unavailable cache capacity, co
 
 ## ROCm, Vulkan and Metal
 
-ROCm builds the CUDA provider through HIP, with the same options and behavior.
+ROCm builds the CUDA provider and the CUDA host MoE direct path through HIP, with the same options and behavior. It is compile-checked for gfx1100 and gfx942 but has not been run on AMD hardware.
 
-Vulkan and Metal use a generic provider (`ggml/src/ggml-backend-moe-cache-generic.cpp`) built on the ggml-backend API. It keeps a slot pool per expert shape on the first GPU of the scheduler, fills missed experts at most two per tensor and node during decode, and runs the hit rows on the GPU while the CPU computes the misses. Exact gate/up/SwiGLU(/down) subgraphs run as one fused graph per layer. A filled slot already serves the node that filled it. There is no expert-parallel dispatch, no profile prewarming and no direct GPU read of host experts.
+Vulkan and Metal use a generic provider (`ggml/src/ggml-backend-moe-cache-generic.cpp`) built on the ggml-backend API for experts forced to the CPU (`-cmoe`). It keeps a slot pool per expert shape on the first GPU of the scheduler, fills missed experts at most two per tensor and node during decode, and runs the hit rows on the GPU while the CPU computes the misses. Exact gate/up/SwiGLU(/down) subgraphs run as one fused graph per layer. A filled slot already serves the node that filled it. There is no expert-parallel dispatch and no profile prewarming.
 
-On Vulkan, `-hmoe` places the experts in pinned `Vulkan_Host` memory only with `--load-mode none`; with mmap they stay in `CPU_Mapped` memory like `-cmoe`. Pinned experts make fills direct DMA transfers. On Apple Silicon the memory is unified, so the cache only helps when experts are forced to the CPU.
+On Apple Silicon the memory is unified, so the GPU already reads experts from RAM and neither path is needed; the generic cache only helps when experts are forced to the CPU.
+
+### Vulkan host MoE direct path
+
+With `-hmoe`, Vulkan places the experts in pinned `Vulkan_Host_MoE` memory (also with mmap) and computes `MUL_MAT_ID` on the GPU, like `CUDA_Host_MoE`:
+
+- A gather shader copies the routed experts of each op into a device buffer, and the stock kernels run on that copy. For decode it copies only the routed experts and rewrites the ids. For large batches the copy engine moves the whole tensor. Fused `MUL_MAT_ID` + `ADD_ID`/`MUL` keeps the original ids.
+- A VRAM expert cache holds the hottest experts of each tensor in its own pool, sized from the free VRAM after the first graph. The gather counts expert uses in pinned memory. Before each graph, the hottest missing experts are copied into free or evicted slots, ahead of the graph in the same queue, so evicted slots stay valid for every earlier gather. Eviction uses the CUDA hysteresis (new score above twice the old score plus 4).
+- A CPU split hands a share of the misses to host workers: a publish shader writes their expert ids and activations to a mailbox in pinned memory, the gather skips them, and a merge shader waits for the workers and writes their rows. It is used for decode ops that are not fused.
+
+| Variable | Default | Meaning |
+| --- | ---: | --- |
+| `GGML_VK_MOE_CACHE_MB` | free VRAM minus the reserve | Upper bound of the VRAM expert cache |
+| `GGML_VK_MOE_DIRECT_CPU_FRAC` | `0.5` | Share of the misses computed by the host workers, `0` disables the split |
+| `GGML_VK_MOE_DIRECT_CPU_THREADS` | half the hardware threads minus 2, at least 2 | Host worker threads |
 
 Measured on one RTX 3090 with Qwen3-30B-A3B Q4_K_M, 128 generated tokens from a cold process:
 
 | Vulkan configuration | t/s |
 | --- | ---: |
-| All weights in VRAM | 166.4 |
+| All weights in VRAM | 170.5 |
 | `-cmoe`, cache off | 23.3 |
-| `-cmoe`, cache on | 33.4 - 35.8 |
-| `-hmoe --load-mode none`, cache on | 37.2 - 38.6 |
+| `-cmoe`, generic cache | 33.0 - 35.8 |
+| `-hmoe`, direct path, VRAM cache, no CPU split | 57.3 |
+| `-hmoe`, direct path, VRAM cache, CPU split 0.5 | 52.1 - 56.7 |
+| `-hmoe`, cache limited to 1 GiB, no CPU split | 23.8 |
+| `-hmoe`, cache limited to 1 GiB, CPU split 0.5 / 0.75 | 29.7 / 31.5 |
 
-Most of the remaining gap to CUDA comes from the per-layer switch between the GPU and the CPU split. CUDA avoids it with its direct path, which computes the experts on the GPU from VRAM slots and pinned host memory in one kernel.
+The CPU split pays off when the cache holds a small share of the experts, as with models much larger than the VRAM. Perplexity with `-hmoe` matched `-cmoe` exactly on six 512-token chunks.
 
 ## Configuration
 
