@@ -3489,7 +3489,7 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_fill_f32, "fill_f32", fill_f32_len, fill_f32_data, "main", 1, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_fill_f16, "fill_f16", fill_f16_len, fill_f16_data, "main", 1, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
 
-    ggml_vk_create_pipeline(device, device->pipeline_moe_gather, "moe_gather", moe_gather_len, moe_gather_data, "main", 4, sizeof(vk_op_moe_gather_push_constants), {256, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_moe_gather, "moe_gather", moe_gather_len, moe_gather_data, "main", 7, sizeof(vk_op_moe_gather_push_constants), {256, 1, 1}, {}, 1);
 
 #define CREATE_GLU(name)  \
     ggml_vk_create_pipeline(device, device->pipeline_ ## name [0], #name "_f32", name ## _f32_len, name ## _f32_data, "main", 3, sizeof(vk_op_glu_push_constants), {512, 1, 1}, {}, 1, true);   \
@@ -7943,6 +7943,192 @@ bool ggml_vk_use_mul_mat_vec_id(const struct ggml_cgraph * cgraph, int node_idx)
 
 static bool ggml_vk_moe_direct_src(const vk_device & device, const ggml_tensor * src0);
 
+// cache state of an expert tensor, created on first use
+static vk_moe_entry & ggml_vk_moe_entry_get(ggml_backend_vk_context * ctx, const ggml_tensor * src0) {
+    vk_moe_cache & mc = ctx->moe_cache;
+    auto it = mc.index.find(src0->data);
+    if (it != mc.index.end()) {
+        return mc.entries[it->second];
+    }
+    vk_moe_entry en;
+    en.host     = src0->data;
+    en.n_expert = src0->ne[2];
+    en.nb02     = src0->nb[2];
+    en.table    = ggml_vk_create_buffer_device(ctx->device, en.n_expert * sizeof(int32_t));
+    en.counts   = (uint32_t *) ggml_vk_host_malloc(ctx->device, en.n_expert * sizeof(uint32_t));
+    memset(en.counts, 0, en.n_expert * sizeof(uint32_t));
+    en.counts_last.assign(en.n_expert, 0);
+    en.score.assign(en.n_expert, 0.0f);
+    en.resident.assign(en.n_expert, -1);
+    mc.index[src0->data] = mc.entries.size();
+    mc.entries.push_back(std::move(en));
+    return mc.entries.back();
+}
+
+// once per graph: read the expert uses of the finished gathers, size the pools after the first
+// graph has registered every expert tensor, and queue fills of the hottest missing experts
+// ahead of this graph, so queue order keeps evicted slots alive for every earlier gather
+static void ggml_vk_moe_cache_step(ggml_backend_vk_context * ctx) {
+    vk_moe_cache & mc = ctx->moe_cache;
+    if (mc.entries.empty()) {
+        return;
+    }
+    mc.steps++;
+
+    for (vk_moe_entry & en : mc.entries) {
+        const volatile uint32_t * counts = en.counts;
+        for (int64_t e = 0; e < en.n_expert; e++) {
+            const uint32_t c = counts[e];
+            const uint32_t d = c - en.counts_last[e];
+            if (d == 0) {
+                continue;
+            }
+            en.counts_last[e] = c;
+            en.score[e] += (float) d;
+            mc.uses_total += d;
+            if (en.resident[e] >= 0) {
+                mc.uses_hit += d;
+            }
+        }
+        if (mc.steps % 64 == 0) {
+            for (float & s : en.score) {
+                s *= 0.5f;
+            }
+        }
+    }
+
+    if (!mc.allocated) {
+        if (mc.steps < 2) {
+            return;
+        }
+        mc.allocated = true;
+
+        size_t free = 0, total = 0;
+        ggml_backend_dev_memory(ggml_backend_reg_dev_get(ggml_backend_vk_reg(), ctx->device->idx), &free, &total);
+        size_t reserve = std::clamp<size_t>(total / 100 * 6, (size_t) 1024 << 20, (size_t) 3072 << 20);
+        reserve = std::min(reserve, total / 4);
+        size_t budget = free > reserve ? free - reserve : 0;
+        if (const char * env = getenv("GGML_VK_MOE_CACHE_MB")) {
+            budget = std::min(budget, (size_t) atoll(env) << 20);
+        }
+        double footprint = 0.0;
+        for (const vk_moe_entry & en : mc.entries) {
+            footprint += (double) en.n_expert * en.nb02;
+        }
+        size_t used = 0;
+        for (vk_moe_entry & en : mc.entries) {
+            int64_t n_slots = std::min<int64_t>(en.n_expert, (int64_t) (budget * (en.n_expert * en.nb02 / footprint) / en.nb02));
+            // a failed allocation retries with half the slots
+            for (; n_slots >= 4 && !en.pool; n_slots /= 2) {
+                try {
+                    en.pool = ggml_vk_create_buffer_device(ctx->device, n_slots * en.nb02);
+                } catch (const vk::SystemError &) {
+                    en.pool = nullptr;
+                }
+            }
+            if (!en.pool) {
+                continue;
+            }
+            en.n_slots = (int32_t) n_slots;
+            en.owner.assign(n_slots, -1);
+            for (int32_t s = (int32_t) n_slots - 1; s >= 0; s--) {
+                en.free_slots.push_back(s);
+            }
+            used += n_slots * en.nb02;
+        }
+        GGML_LOG_INFO("ggml_vulkan: MoE expert cache: %zu MiB of VRAM for %zu expert tensors\n", used >> 20, mc.entries.size());
+    }
+
+    struct fill_item { size_t entry; int32_t expert; int32_t slot; };
+    std::vector<fill_item> fills;
+
+    struct cand { size_t entry; int32_t expert; float score; };
+    std::vector<cand> cands;
+    bool growing = false;
+    for (size_t i = 0; i < mc.entries.size(); i++) {
+        const vk_moe_entry & en = mc.entries[i];
+        growing = growing || !en.free_slots.empty();
+        if (!en.pool) {
+            continue;
+        }
+        for (int64_t e = 0; e < en.n_expert; e++) {
+            if (en.resident[e] < 0 && en.score[e] >= 1.0f) {
+                cands.push_back({ i, (int32_t) e, en.score[e] });
+            }
+        }
+    }
+    const size_t k = std::min<size_t>(cands.size(), 4096);
+    std::partial_sort(cands.begin(), cands.begin() + k, cands.end(), [](const cand & a, const cand & b) { return a.score > b.score; });
+    cands.resize(k);
+
+    // fill faster while VRAM is still free
+    const size_t fill_cap = growing ? (size_t) 256 << 20 : (size_t) 32 << 20;
+    size_t fill_bytes = 0;
+    int n_evict = 0;
+    for (const cand & c : cands) {
+        vk_moe_entry & en = mc.entries[c.entry];
+        if (fill_bytes + en.nb02 > fill_cap) {
+            break;
+        }
+        int32_t slot = -1;
+        if (!en.free_slots.empty()) {
+            slot = en.free_slots.back();
+            en.free_slots.pop_back();
+        } else if (n_evict < 64) {
+            int32_t victim = -1;
+            for (int32_t s = 0; s < en.n_slots; s++) {
+                if (victim < 0 || en.score[en.owner[s]] < en.score[en.owner[victim]]) {
+                    victim = s;
+                }
+            }
+            // hysteresis against ping-pong between two experts of similar heat
+            if (victim >= 0 && c.score > 2.0f * en.score[en.owner[victim]] + 4.0f) {
+                en.resident[en.owner[victim]] = -1;
+                slot = victim;
+                n_evict++;
+                mc.n_evicted++;
+            }
+        }
+        if (slot < 0) {
+            continue;
+        }
+        en.owner[slot] = c.expert;
+        en.resident[c.expert] = slot;
+        en.table_dirty = true;
+        fills.push_back({ c.entry, c.expert, slot });
+        fill_bytes += en.nb02;
+        mc.n_filled++;
+    }
+
+    bool dirty = false;
+    for (const vk_moe_entry & en : mc.entries) {
+        dirty = dirty || (en.table_dirty && en.table_init);
+    }
+    if (fills.empty() && !dirty) {
+        return;
+    }
+
+    vk_context subctx = ggml_vk_get_compute_ctx(ctx);
+    vk::CommandBuffer & cmd = subctx->s->buffer->buf;
+    ggml_vk_sync_buffers(ctx, subctx);
+    for (const fill_item & f : fills) {
+        const vk_moe_entry & en = mc.entries[f.entry];
+        vk_buffer s_buf = nullptr;
+        size_t s_off = 0;
+        ggml_vk_host_get(ctx->device, en.host, s_buf, s_off);
+        GGML_ASSERT(s_buf != nullptr);
+        cmd.copyBuffer(s_buf->buffer, en.pool->buffer, { vk::BufferCopy(s_off + (size_t) f.expert * en.nb02, (size_t) f.slot * en.nb02, en.nb02) });
+    }
+    ggml_vk_sync_buffers(ctx, subctx);
+    for (vk_moe_entry & en : mc.entries) {
+        if (en.table_dirty && en.table_init) {
+            cmd.updateBuffer(en.table->buffer, 0, en.n_expert * sizeof(int32_t), en.resident.data());
+            en.table_dirty = false;
+        }
+    }
+    ggml_vk_sync_buffers(ctx, subctx);
+}
+
 // Copy the routed experts of dst->src[0] from pinned host memory into a device buffer and point
 // dst->src[0] at that copy, so the stock MUL_MAT_ID kernels read only the experts this op uses.
 // compact: route r gets slot r and dst->src[2] is swapped for ids rewritten to r
@@ -7979,6 +8165,18 @@ static void ggml_vk_moe_gather(ggml_backend_vk_context * ctx, vk_context & subct
     GGML_ASSERT(s_buf != nullptr);
     const size_t s_desc = s_off & ~(align - 1);
 
+    vk_moe_entry & en = ggml_vk_moe_entry_get(ctx, src0);
+    vk_buffer c_buf = nullptr;
+    size_t c_off = 0;
+    ggml_vk_host_get(ctx->device, en.counts, c_buf, c_off);
+    GGML_ASSERT(c_buf != nullptr);
+    if (!en.table_init) {
+        // every expert starts outside the cache
+        subctx->s->buffer->buf.updateBuffer(en.table->buffer, 0, en.n_expert * sizeof(int32_t), en.resident.data());
+        en.table_init  = true;
+        en.table_dirty = false;
+    }
+
     const vk_op_moe_gather_push_constants pc = {
         (uint32_t) (nb02 / sizeof(uint32_t)),
         n_ids,
@@ -8003,6 +8201,9 @@ static void ggml_vk_moe_gather(ggml_backend_vk_context * ctx, vk_context & subct
             ggml_vk_tensor_subbuffer(ctx, ids, true),
             vk_subbuffer{ d_buf, 0, experts_bytes },
             vk_subbuffer{ d_buf, experts_bytes, ids_bytes },
+            vk_subbuffer{ en.table, 0, en.n_expert * sizeof(int32_t) },
+            en.pool ? vk_subbuffer{ en.pool, 0, (size_t) en.n_slots * en.nb02 } : vk_subbuffer{ en.table, 0, en.n_expert * sizeof(int32_t) },
+            vk_subbuffer{ c_buf, c_off, en.n_expert * sizeof(uint32_t) },
         }, pc, { gx * 256, gy, gz });
     ggml_vk_sync_buffers(ctx, subctx);
 
@@ -12992,6 +13193,15 @@ void ggml_vk_cleanup(ggml_backend_vk_context * ctx) {
     ctx->moe_dense_old.clear();
     ggml_backend_buffer_free(ctx->moe_dense_buf);
     ctx->moe_dense_buf = nullptr;
+    if (!ctx->moe_cache.entries.empty() && ctx->moe_cache.uses_total > 0) {
+        GGML_LOG_DEBUG("ggml_vulkan: MoE expert cache: hit rate %.1f%%, %llu fills, %llu evictions\n",
+            100.0 * ctx->moe_cache.uses_hit / ctx->moe_cache.uses_total,
+            (unsigned long long) ctx->moe_cache.n_filled, (unsigned long long) ctx->moe_cache.n_evicted);
+    }
+    for (vk_moe_entry & en : ctx->moe_cache.entries) {
+        ggml_vk_host_free(ctx->device, en.counts);
+    }
+    ctx->moe_cache = {};
 
     ctx->prealloc_y_last_pipeline_used = nullptr;
     ctx->prealloc_y_last_tensor_used = nullptr;
@@ -14389,6 +14599,8 @@ static ggml_status ggml_backend_vk_graph_compute(ggml_backend_t backend, ggml_cg
     int submit_node_idx = 0; // index to first node in a batch
 
     ggml_vk_submit_transfer_ctx(ctx);
+
+    ggml_vk_moe_cache_step(ctx);
 
     vk_context compute_ctx;
     if (vk_perf_logger_enabled) {

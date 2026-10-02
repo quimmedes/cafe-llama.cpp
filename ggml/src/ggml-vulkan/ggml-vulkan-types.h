@@ -1241,6 +1241,37 @@ class vk_perf_logger {
     uint32_t print_count {};
 };
 
+// VRAM cache of one expert tensor kept in Vulkan_Host_MoE memory, read by the moe_gather shader
+struct vk_moe_entry {
+    const void * host = nullptr; // src0->data
+    int64_t n_expert = 0;
+    size_t  nb02 = 0;
+
+    vk_buffer table;             // device, slot of each expert or -1
+    uint32_t * counts = nullptr; // pinned host, uses of each expert, written by the gathers
+    vk_buffer pool;              // device, n_slots experts
+    int32_t n_slots = 0;
+
+    std::vector<uint32_t> counts_last;
+    std::vector<float>    score;
+    std::vector<int32_t>  resident; // slot of each expert or -1
+    std::vector<int32_t>  owner;    // expert of each slot or -1
+    std::vector<int32_t>  free_slots;
+    bool table_init  = false;
+    bool table_dirty = false;
+};
+
+struct vk_moe_cache {
+    std::unordered_map<const void *, size_t> index;
+    std::vector<vk_moe_entry> entries;
+    bool allocated = false;
+    uint64_t steps = 0;
+    uint64_t uses_total = 0;
+    uint64_t uses_hit = 0;
+    uint64_t n_filled = 0;
+    uint64_t n_evicted = 0;
+};
+
 struct ggml_backend_vk_context {
     std::string name;
 
@@ -1263,6 +1294,7 @@ struct ggml_backend_vk_context {
     std::vector<ggml_backend_buffer_t> moe_dense_old; // outgrown buffers, freed at cleanup since queued work may still read them
     ggml_tensor moe_dense_src0 {};
     ggml_tensor moe_dense_ids {};
+    vk_moe_cache moe_cache;
 
     uint64_t last_total_flops {UINT64_MAX};
 

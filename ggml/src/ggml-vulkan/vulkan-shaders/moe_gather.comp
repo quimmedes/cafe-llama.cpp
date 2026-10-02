@@ -1,15 +1,19 @@
 #version 450
 
-// copy the routed experts of a MUL_MAT_ID from pinned host memory into a device buffer
+// copy the routed experts of a MUL_MAT_ID into a device buffer, from the VRAM cache when the
+// expert is resident and from pinned host memory otherwise
 // compact: route r gets slot r and its id is rewritten to r
 // dense:   expert e stays at slot e and the ids are unchanged
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-layout (binding = 0) readonly  buffer S {uint data_s[];};
-layout (binding = 1) readonly  buffer I {int  data_i[];};
-layout (binding = 2) writeonly buffer D {uint data_d[];};
-layout (binding = 3) writeonly buffer R {int  data_r[];};
+layout (binding = 0) readonly  buffer S {uint data_s[];}; // pinned host experts
+layout (binding = 1) readonly  buffer I {int  data_i[];}; // routed ids
+layout (binding = 2) writeonly buffer D {uint data_d[];}; // device copy
+layout (binding = 3) writeonly buffer R {int  data_r[];}; // rewritten ids
+layout (binding = 4) readonly  buffer T {int  data_t[];}; // cache slot of each expert, -1 when not resident
+layout (binding = 5) readonly  buffer P {uint data_p[];}; // cache pool
+layout (binding = 6)           buffer C {uint data_c[];}; // uses of each expert, read by the host
 
 layout (push_constant) uniform parameter {
     uint expert_words;
@@ -38,10 +42,22 @@ void main() {
     if (e < 0 || uint(e) >= p.n_expert) {
         return;
     }
+    if (gl_GlobalInvocationID.x == 0) {
+        atomicAdd(data_c[uint(e)], 1u);
+    }
 
-    const uint src = p.src_offset + uint(e) * p.expert_words;
-    const uint dst = (p.compact != 0 ? r : uint(e)) * p.expert_words;
-    for (uint i = gl_GlobalInvocationID.x; i < p.expert_words; i += gl_NumWorkGroups.x * gl_WorkGroupSize.x) {
-        data_d[dst + i] = data_s[src + i];
+    const int  slot = data_t[uint(e)];
+    const uint dst  = (p.compact != 0 ? r : uint(e)) * p.expert_words;
+    const uint step = gl_NumWorkGroups.x * gl_WorkGroupSize.x;
+    if (slot >= 0) {
+        const uint src = uint(slot) * p.expert_words;
+        for (uint i = gl_GlobalInvocationID.x; i < p.expert_words; i += step) {
+            data_d[dst + i] = data_p[src + i];
+        }
+    } else {
+        const uint src = p.src_offset + uint(e) * p.expert_words;
+        for (uint i = gl_GlobalInvocationID.x; i < p.expert_words; i += step) {
+            data_d[dst + i] = data_s[src + i];
+        }
     }
 }
