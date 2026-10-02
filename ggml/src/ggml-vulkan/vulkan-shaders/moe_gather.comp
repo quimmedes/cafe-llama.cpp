@@ -14,6 +14,7 @@ layout (binding = 3) writeonly buffer R {int  data_r[];}; // rewritten ids
 layout (binding = 4) readonly  buffer T {int  data_t[];}; // cache slot of each expert, -1 when not resident
 layout (binding = 5) readonly  buffer P {uint data_p[];}; // cache pool
 layout (binding = 6)           buffer C {uint data_c[];}; // uses of each expert, read by the host
+layout (binding = 7) readonly  buffer H {uint data_h[];}; // host split state, see moe_cpu_publish.comp
 
 layout (push_constant) uniform parameter {
     uint expert_words;
@@ -25,6 +26,7 @@ layout (push_constant) uniform parameter {
     uint n_expert;
     uint src_offset;
     uint compact;
+    uint cpu_split;
 } p;
 
 void main() {
@@ -44,6 +46,11 @@ void main() {
     }
     if (gl_GlobalInvocationID.x == 0) {
         atomicAdd(data_c[uint(e)], 1u);
+    }
+
+    // the host workers compute this route, the merge overwrites its rows
+    if (p.cpu_split != 0 && data_h[256 + r] != 0) {
+        return;
     }
 
     const int  slot = data_t[uint(e)];

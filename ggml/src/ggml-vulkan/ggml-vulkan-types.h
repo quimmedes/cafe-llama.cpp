@@ -922,6 +922,8 @@ struct vk_device_struct {
     vk_pipeline pipeline_fill_f32;
     vk_pipeline pipeline_fill_f16;
     vk_pipeline pipeline_moe_gather;
+    vk_pipeline pipeline_moe_cpu_publish;
+    vk_pipeline pipeline_moe_cpu_merge;
 
     vk_pipeline pipeline_geglu[2];
     vk_pipeline pipeline_reglu[2];
@@ -1272,6 +1274,44 @@ struct vk_moe_cache {
     uint64_t n_evicted = 0;
 };
 
+// mailbox in pinned host memory between the moe_cpu_publish/merge shaders and the host workers
+// words: [0] seq, [16] done, [32..39] job header, [64..191] experts, from byte vk_moe_cpu_act_offset the
+// activations, from vk_moe_cpu_out_offset the results
+static constexpr uint32_t vk_moe_cpu_routes     = 128;
+static constexpr size_t   vk_moe_cpu_act_floats = (size_t) 1 << 20;
+static constexpr size_t   vk_moe_cpu_out_floats = (size_t) 1 << 21;
+static constexpr size_t   vk_moe_cpu_act_offset = 1024;
+static constexpr size_t   vk_moe_cpu_out_offset = vk_moe_cpu_act_offset + vk_moe_cpu_act_floats * sizeof(float);
+static constexpr size_t   vk_moe_cpu_mb_size    = vk_moe_cpu_out_offset + vk_moe_cpu_out_floats * sizeof(float);
+static constexpr uint32_t vk_moe_cpu_max_routes = 1024; // routes per op the state buffer can flag
+
+struct ggml_type_traits_cpu;
+typedef const struct ggml_type_traits_cpu * (*vk_moe_cpu_traits_fn)(enum ggml_type);
+
+// host workers that compute a share of the experts missing from the VRAM cache
+struct vk_moe_cpu {
+    uint32_t * mb = nullptr; // mailbox, pinned host memory
+    vk_buffer  state;        // device, see moe_cpu_publish.comp
+    vk_moe_cpu_traits_fn traits = nullptr;
+    float frac = 0.5f;
+    bool  state_init = false;
+
+    std::vector<std::thread> threads;
+    std::atomic<bool>     stop{false};
+    std::atomic<uint32_t> job_seq{0};
+    std::atomic<uint64_t> next{0};   // (seq << 32) | next work item
+    std::atomic<uint32_t> n_done{0}; // finished work items of the current job
+
+    // copy of the current job, filled by the leader before job_seq is published
+    uint32_t n_items = 0;
+    uint32_t n_cpu = 0;
+    ggml_type type = GGML_TYPE_F32;
+    uint32_t ncols = 0, nrows = 0;
+    const char * host = nullptr;
+    size_t nb02 = 0, nb01 = 0;
+    int32_t expert[vk_moe_cpu_routes];
+};
+
 struct ggml_backend_vk_context {
     std::string name;
 
@@ -1295,6 +1335,8 @@ struct ggml_backend_vk_context {
     ggml_tensor moe_dense_src0 {};
     ggml_tensor moe_dense_ids {};
     vk_moe_cache moe_cache;
+    std::unique_ptr<vk_moe_cpu> moe_cpu;
+    bool moe_cpu_tried = false;
 
     uint64_t last_total_flops {UINT64_MAX};
 

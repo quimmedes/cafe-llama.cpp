@@ -1,0 +1,42 @@
+#version 450
+
+// wait for the host workers of the current sequence and write their rows into the MUL_MAT_ID result
+// mailbox and state layouts: see moe_cpu_publish.comp
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) coherent volatile buffer M {uint  mb[];};
+layout (binding = 1) coherent volatile readonly buffer O {float mb_out[];};
+layout (binding = 2) readonly buffer S {uint st[];};
+layout (binding = 3) buffer D {float data_d[];};
+
+layout (push_constant) uniform parameter {
+    uint n_ids;
+    uint nrows;
+    uint s_channel;
+    uint s_col;
+    uint d_offset;
+} p;
+
+void main() {
+    const uint j = gl_WorkGroupID.y;
+    if (j >= st[1]) {
+        return;
+    }
+    if (gl_LocalInvocationID.x == 0) {
+        const uint seq = st[0];
+        while (int(mb[16] - seq) < 0) {
+        }
+    }
+    barrier();
+    memoryBarrierBuffer();
+
+    const uint row = gl_GlobalInvocationID.x;
+    if (row >= p.nrows) {
+        return;
+    }
+    const uint r = st[8 + j];
+    const uint t = r / p.n_ids;
+    const uint k = r % p.n_ids;
+    data_d[p.d_offset + k * p.s_channel + t * p.s_col + row] = mb_out[j * p.nrows + row];
+}

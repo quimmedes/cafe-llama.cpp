@@ -233,6 +233,36 @@ struct vk_op_moe_gather_push_constants {
     uint32_t n_expert;
     uint32_t src_offset;
     uint32_t compact;
+    uint32_t cpu_split;
+};
+
+struct vk_op_moe_cpu_publish_push_constants {
+    uint32_t n_ids;
+    uint32_t n_tok;
+    uint32_t ids_nb0;
+    uint32_t ids_nb1;
+    uint32_t ids_offset;
+    uint32_t n_expert;
+    uint32_t ne11;
+    uint32_t s11;
+    uint32_t s12;
+    uint32_t x_offset;
+    float    frac;
+    uint32_t type;
+    uint32_t ncols;
+    uint32_t nrows;
+    uint32_t nb01;
+    uint32_t nb02;
+    uint32_t host_lo;
+    uint32_t host_hi;
+};
+
+struct vk_op_moe_cpu_merge_push_constants {
+    uint32_t n_ids;
+    uint32_t nrows;
+    uint32_t s_channel;
+    uint32_t s_col;
+    uint32_t d_offset;
 };
 
 struct vk_op_glu_push_constants {

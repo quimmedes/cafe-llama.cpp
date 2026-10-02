@@ -1,4 +1,6 @@
 #include "ggml-vulkan-common.h"
+// only the type traits struct: the CPU split looks the functions up at run time
+#include "ggml-cpu.h"
 
 namespace {
 inline std::ostream & operator<<(std::ostream & os, vk::Buffer buffer) {
@@ -3489,7 +3491,9 @@ void ggml_vk_load_shaders(vk_device& device, vk_pipeline requested) {
     ggml_vk_create_pipeline(device, device->pipeline_fill_f32, "fill_f32", fill_f32_len, fill_f32_data, "main", 1, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
     ggml_vk_create_pipeline(device, device->pipeline_fill_f16, "fill_f16", fill_f16_len, fill_f16_data, "main", 1, sizeof(vk_op_push_constants), {512, 1, 1}, {}, 1);
 
-    ggml_vk_create_pipeline(device, device->pipeline_moe_gather, "moe_gather", moe_gather_len, moe_gather_data, "main", 7, sizeof(vk_op_moe_gather_push_constants), {256, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_moe_gather, "moe_gather", moe_gather_len, moe_gather_data, "main", 8, sizeof(vk_op_moe_gather_push_constants), {256, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_moe_cpu_publish, "moe_cpu_publish", moe_cpu_publish_len, moe_cpu_publish_data, "main", 6, sizeof(vk_op_moe_cpu_publish_push_constants), {256, 1, 1}, {}, 1);
+    ggml_vk_create_pipeline(device, device->pipeline_moe_cpu_merge, "moe_cpu_merge", moe_cpu_merge_len, moe_cpu_merge_data, "main", 4, sizeof(vk_op_moe_cpu_merge_push_constants), {256, 1, 1}, {}, 1);
 
 #define CREATE_GLU(name)  \
     ggml_vk_create_pipeline(device, device->pipeline_ ## name [0], #name "_f32", name ## _f32_len, name ## _f32_data, "main", 3, sizeof(vk_op_glu_push_constants), {512, 1, 1}, {}, 1, true);   \
@@ -8129,12 +8133,179 @@ static void ggml_vk_moe_cache_step(ggml_backend_vk_context * ctx) {
     ggml_vk_sync_buffers(ctx, subctx);
 }
 
+// Host workers of the CPU split: the leader waits for a new mailbox sequence and copies the job,
+// every worker then takes 32-row items of one host route until the job is done, the last one
+// posts the sequence in the done word that moe_cpu_merge waits for.
+static void ggml_vk_moe_cpu_worker(vk_moe_cpu * c, int id) {
+    constexpr uint32_t rows_per_item = 32;
+    volatile uint32_t * mb = c->mb;
+    const float * act = (const float *) ((const char *) c->mb + vk_moe_cpu_act_offset);
+    float * out = (float *) ((char *) c->mb + vk_moe_cpu_out_offset);
+
+    // spin while work is frequent, then poll slowly so an idle server does not burn a core
+    auto last = std::chrono::steady_clock::now();
+    auto wait = [&]() {
+        if (std::chrono::steady_clock::now() - last < std::chrono::milliseconds(20)) {
+#if defined(__x86_64__) || defined(_M_X64)
+            __builtin_ia32_pause();
+#endif
+        } else {
+            std::this_thread::sleep_for(std::chrono::microseconds(50));
+        }
+    };
+
+    uint32_t seen = 0;
+    std::vector<char> q;
+    int32_t q_route = -1;
+    uint32_t q_seq = 0;
+    while (!c->stop.load(std::memory_order_relaxed)) {
+        if (id == 0) {
+            const uint32_t s = mb[0];
+            if (s == seen) {
+                wait();
+                continue;
+            }
+            std::atomic_thread_fence(std::memory_order_acquire);
+            c->n_cpu = mb[32];
+            c->type  = (ggml_type) mb[33];
+            c->ncols = mb[34];
+            c->nrows = mb[35];
+            c->nb01  = mb[36];
+            c->nb02  = mb[37];
+            c->host  = (const char *) (uintptr_t) (((uint64_t) mb[39] << 32) | mb[38]);
+            for (uint32_t j = 0; j < c->n_cpu; j++) {
+                c->expert[j] = (int32_t) mb[64 + j];
+            }
+            c->n_items = c->n_cpu * ((c->nrows + rows_per_item - 1) / rows_per_item);
+            c->n_done.store(0, std::memory_order_relaxed);
+            c->next.store((uint64_t) s << 32, std::memory_order_relaxed);
+            c->job_seq.store(s, std::memory_order_release);
+            if (c->n_items == 0) {
+                mb[16] = s;
+            }
+        } else if (c->job_seq.load(std::memory_order_acquire) == seen) {
+            wait();
+            continue;
+        }
+        seen = c->job_seq.load(std::memory_order_acquire);
+        last = std::chrono::steady_clock::now();
+
+        const struct ggml_type_traits_cpu * tr = c->traits(c->type);
+        const struct ggml_type_traits_cpu * tq = c->traits(tr->vec_dot_type);
+        const size_t q_size = ggml_row_size(tr->vec_dot_type, c->ncols);
+        const uint32_t items_per_route = (c->nrows + rows_per_item - 1) / rows_per_item;
+        if (q.size() < q_size) {
+            q.resize(q_size);
+        }
+        for (;;) {
+            uint64_t v = c->next.load(std::memory_order_relaxed);
+            uint32_t item = UINT32_MAX;
+            while ((uint32_t) (v >> 32) == seen && (uint32_t) v < c->n_items) {
+                if (c->next.compare_exchange_weak(v, v + 1, std::memory_order_acq_rel)) {
+                    item = (uint32_t) v;
+                    break;
+                }
+            }
+            if (item == UINT32_MAX) {
+                break;
+            }
+            const uint32_t j  = item / items_per_route;
+            const uint32_t r0 = (item % items_per_route) * rows_per_item;
+            const uint32_t r1 = std::min(c->nrows, r0 + rows_per_item);
+            if (q_route != (int32_t) j || q_seq != seen) {
+                tq->from_float(act + (size_t) j * c->ncols, q.data(), c->ncols);
+                q_route = (int32_t) j;
+                q_seq   = seen;
+            }
+            const char * w = c->host + (size_t) c->expert[j] * c->nb02;
+            for (uint32_t r = r0; r < r1; ++r) {
+                float u = 0.0f;
+                tr->vec_dot(c->ncols, &u, 0, w + (size_t) r * c->nb01, 0, q.data(), 0, 1);
+                out[(size_t) j * c->nrows + r] = u;
+            }
+            if (c->n_done.fetch_add(1, std::memory_order_acq_rel) + 1 == c->n_items) {
+                std::atomic_thread_fence(std::memory_order_release);
+                mb[16] = seen;
+            }
+        }
+    }
+}
+
+// host workers of this context, created on the first direct op; null when the split is disabled
+static vk_moe_cpu * ggml_vk_moe_cpu_get(ggml_backend_vk_context * ctx) {
+    if (ctx->moe_cpu_tried) {
+        return ctx->moe_cpu.get();
+    }
+    ctx->moe_cpu_tried = true;
+
+    const char * frac_env = getenv("GGML_VK_MOE_DIRECT_CPU_FRAC");
+    const float frac = frac_env && *frac_env ? std::clamp((float) atof(frac_env), 0.0f, 1.0f) : 0.5f;
+    ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
+    if (frac <= 0.0f || !cpu_dev) {
+        return nullptr;
+    }
+    auto traits = (vk_moe_cpu_traits_fn) ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(cpu_dev), "ggml_get_type_traits_cpu");
+    if (!traits) {
+        return nullptr;
+    }
+    auto c = std::make_unique<vk_moe_cpu>();
+    c->traits = traits;
+    c->frac   = frac;
+    c->mb     = (uint32_t *) ggml_vk_host_malloc(ctx->device, vk_moe_cpu_mb_size);
+    memset(c->mb, 0, vk_moe_cpu_act_offset);
+    c->state  = ggml_vk_create_buffer_device(ctx->device, (256 + vk_moe_cpu_max_routes) * sizeof(uint32_t));
+
+    const char * threads_env = getenv("GGML_VK_MOE_DIRECT_CPU_THREADS");
+    const int n_threads = threads_env && *threads_env ? std::max(1, atoi(threads_env))
+                                                      : std::max(2, (int) std::thread::hardware_concurrency() / 2 - 2);
+    for (int i = 0; i < n_threads; i++) {
+        c->threads.emplace_back(ggml_vk_moe_cpu_worker, c.get(), i);
+    }
+    GGML_LOG_INFO("ggml_vulkan: %d CPU threads compute %.0f%% of the experts missing from VRAM\n", n_threads, 100.0f * frac);
+    ctx->moe_cpu = std::move(c);
+    return ctx->moe_cpu.get();
+}
+
+static void ggml_vk_moe_cpu_free(ggml_backend_vk_context * ctx) {
+    vk_moe_cpu * c = ctx->moe_cpu.get();
+    if (!c) {
+        return;
+    }
+    c->stop = true;
+    for (auto & t : c->threads) {
+        t.join();
+    }
+    ggml_vk_host_free(ctx->device, c->mb);
+    ctx->moe_cpu.reset();
+}
+
+// whether the host workers can take a share of the misses of this op
+static bool ggml_vk_moe_cpu_split_ok(ggml_backend_vk_context * ctx, const ggml_tensor * dst, bool compact) {
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+    const ggml_tensor * ids  = dst->src[2];
+    const int64_t n_routes = ids->ne[0] * ids->ne[1];
+    if (!compact || ctx->num_additional_fused_ops != 0 || n_routes > vk_moe_cpu_max_routes ||
+        src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32 || src1->nb[0] != sizeof(float) ||
+        src0->ne[0] * vk_moe_cpu_routes > (int64_t) vk_moe_cpu_act_floats ||
+        src0->ne[1] * vk_moe_cpu_routes > (int64_t) vk_moe_cpu_out_floats) {
+        return false;
+    }
+    vk_moe_cpu * c = ggml_vk_moe_cpu_get(ctx);
+    if (!c) {
+        return false;
+    }
+    const struct ggml_type_traits_cpu * tr = c->traits(src0->type);
+    return tr && tr->vec_dot && c->traits(tr->vec_dot_type)->from_float &&
+           src0->ne[0] % ggml_blck_size(tr->vec_dot_type) == 0;
+}
+
 // Copy the routed experts of dst->src[0] from pinned host memory into a device buffer and point
 // dst->src[0] at that copy, so the stock MUL_MAT_ID kernels read only the experts this op uses.
 // compact: route r gets slot r and dst->src[2] is swapped for ids rewritten to r
 // dense:   expert e keeps slot e, used for large batches and when the op is fused with
 //          ADD_ID/MUL, which index per expert with the original ids
-static void ggml_vk_moe_gather(ggml_backend_vk_context * ctx, vk_context & subctx, ggml_tensor * dst) {
+static bool ggml_vk_moe_gather(ggml_backend_vk_context * ctx, vk_context & subctx, ggml_tensor * dst) {
     ggml_tensor * src0 = dst->src[0];
     ggml_tensor * ids  = dst->src[2];
     GGML_ASSERT(ids->type == GGML_TYPE_I32 && src0->nb[2] % sizeof(uint32_t) == 0);
@@ -8145,6 +8316,7 @@ static void ggml_vk_moe_gather(ggml_backend_vk_context * ctx, vk_context & subct
     const int64_t  n_expert = src0->ne[2];
     const size_t   nb02     = src0->nb[2];
     const bool     compact  = (int64_t) n_routes < n_expert && ctx->num_additional_fused_ops == 0;
+    const bool     cpu_split = ggml_vk_moe_cpu_split_ok(ctx, dst, compact);
 
     const size_t align         = ctx->device->properties.limits.minStorageBufferOffsetAlignment;
     const size_t experts_bytes = GGML_PAD((compact ? n_routes : (size_t) n_expert) * nb02, align);
@@ -8187,24 +8359,64 @@ static void ggml_vk_moe_gather(ggml_backend_vk_context * ctx, vk_context & subct
         (uint32_t) n_expert,
         (uint32_t) ((s_off - s_desc) / sizeof(uint32_t)),
         compact ? 1u : 0u,
+        cpu_split ? 1u : 0u,
     };
 
-    vk_pipeline & pipeline = ctx->device->pipeline_moe_gather;
-    ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
     // the previous op may still read the copy
     ggml_vk_sync_buffers(ctx, subctx);
-    const uint32_t gx = std::min<uint32_t>(64, CEIL_DIV(pc.expert_words, 2048));
-    const uint32_t gy = std::min<uint32_t>(n_routes, 65535);
-    const uint32_t gz = CEIL_DIV(n_routes, gy);
-    ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, {
-            vk_subbuffer{ s_buf, s_desc, s_off - s_desc + ggml_nbytes(src0) },
-            ggml_vk_tensor_subbuffer(ctx, ids, true),
-            vk_subbuffer{ d_buf, 0, experts_bytes },
-            vk_subbuffer{ d_buf, experts_bytes, ids_bytes },
-            vk_subbuffer{ en.table, 0, en.n_expert * sizeof(int32_t) },
-            en.pool ? vk_subbuffer{ en.pool, 0, (size_t) en.n_slots * en.nb02 } : vk_subbuffer{ en.table, 0, en.n_expert * sizeof(int32_t) },
-            vk_subbuffer{ c_buf, c_off, en.n_expert * sizeof(uint32_t) },
-        }, pc, { gx * 256, gy, gz });
+    vk_moe_cpu * c = ctx->moe_cpu.get();
+    vk_buffer mb_buf = nullptr;
+    size_t mb_off = 0;
+    if (cpu_split) {
+        ggml_vk_host_get(ctx->device, c->mb, mb_buf, mb_off);
+        GGML_ASSERT(mb_buf != nullptr);
+        if (!c->state_init) {
+            const std::vector<uint32_t> zero(256 + vk_moe_cpu_max_routes, 0);
+            subctx->s->buffer->buf.updateBuffer(c->state->buffer, 0, zero.size() * sizeof(uint32_t), zero.data());
+            c->state_init = true;
+            ggml_vk_sync_buffers(ctx, subctx);
+        }
+        const ggml_tensor * src1 = dst->src[1];
+        const uint64_t host = (uint64_t) (uintptr_t) src0->data;
+        const vk_op_moe_cpu_publish_push_constants ppc = {
+            n_ids, n_tok, pc.ids_nb0, pc.ids_nb1, pc.ids_offset, (uint32_t) n_expert,
+            (uint32_t) src1->ne[1], (uint32_t) (src1->nb[1] / sizeof(float)), (uint32_t) (src1->nb[2] / sizeof(float)),
+            get_misalign_bytes(ctx, src1) / (uint32_t) sizeof(float),
+            c->frac, (uint32_t) src0->type, (uint32_t) src0->ne[0], (uint32_t) src0->ne[1],
+            (uint32_t) src0->nb[1], (uint32_t) nb02, (uint32_t) host, (uint32_t) (host >> 32),
+        };
+        vk_pipeline & publish = ctx->device->pipeline_moe_cpu_publish;
+        ggml_pipeline_request_descriptor_sets(ctx, publish, 1);
+        ggml_vk_dispatch_pipeline(ctx, subctx, publish, {
+                ggml_vk_tensor_subbuffer(ctx, ids, true),
+                vk_subbuffer{ en.table, 0, en.n_expert * sizeof(int32_t) },
+                ggml_vk_tensor_subbuffer(ctx, src1, true),
+                vk_subbuffer{ mb_buf, mb_off, vk_moe_cpu_act_offset },
+                vk_subbuffer{ mb_buf, mb_off + vk_moe_cpu_act_offset, vk_moe_cpu_act_floats * sizeof(float) },
+                vk_subbuffer{ c->state, 0, (256 + vk_moe_cpu_max_routes) * sizeof(uint32_t) },
+            }, ppc, { 256, 1, 1 });
+        ggml_vk_sync_buffers(ctx, subctx);
+    }
+    if ((int64_t) n_routes >= n_expert) {
+        // a large batch touches most experts: the copy engine moves the whole tensor faster than shader reads over PCIe
+        subctx->s->buffer->buf.copyBuffer(s_buf->buffer, d_buf->buffer, { vk::BufferCopy(s_off, 0, ggml_nbytes(src0)) });
+    } else {
+        vk_pipeline & pipeline = ctx->device->pipeline_moe_gather;
+        ggml_pipeline_request_descriptor_sets(ctx, pipeline, 1);
+        const uint32_t gx = std::min<uint32_t>(64, CEIL_DIV(pc.expert_words, 2048));
+        const uint32_t gy = std::min<uint32_t>(n_routes, 65535);
+        const uint32_t gz = CEIL_DIV(n_routes, gy);
+        ggml_vk_dispatch_pipeline(ctx, subctx, pipeline, {
+                vk_subbuffer{ s_buf, s_desc, s_off - s_desc + ggml_nbytes(src0) },
+                ggml_vk_tensor_subbuffer(ctx, ids, true),
+                vk_subbuffer{ d_buf, 0, experts_bytes },
+                vk_subbuffer{ d_buf, experts_bytes, ids_bytes },
+                vk_subbuffer{ en.table, 0, en.n_expert * sizeof(int32_t) },
+                en.pool ? vk_subbuffer{ en.pool, 0, (size_t) en.n_slots * en.nb02 } : vk_subbuffer{ en.table, 0, en.n_expert * sizeof(int32_t) },
+                vk_subbuffer{ c_buf, c_off, en.n_expert * sizeof(uint32_t) },
+                cpu_split ? vk_subbuffer{ c->state, 0, (256 + vk_moe_cpu_max_routes) * sizeof(uint32_t) } : vk_subbuffer{ en.table, 0, en.n_expert * sizeof(int32_t) },
+            }, pc, { gx * 256, gy, gz });
+    }
     ggml_vk_sync_buffers(ctx, subctx);
 
     ggml_tensor & s = ctx->moe_dense_src0;
@@ -8230,6 +8442,7 @@ static void ggml_vk_moe_gather(ggml_backend_vk_context * ctx, vk_context & subct
         dst->src[2] = &r;
     }
     dst->src[0] = &s;
+    return cpu_split;
 }
 
 void ggml_vk_mul_mat_id(ggml_backend_vk_context * ctx, vk_context& subctx, const struct ggml_cgraph * cgraph, int node_idx) {
@@ -8237,8 +8450,9 @@ void ggml_vk_mul_mat_id(ggml_backend_vk_context * ctx, vk_context& subctx, const
     ggml_tensor * src0_orig = dst->src[0];
     ggml_tensor * src2_orig = dst->src[2];
     const bool direct = ggml_vk_moe_direct_src(ctx->device, src0_orig);
+    bool cpu_split = false;
     if (direct) {
-        ggml_vk_moe_gather(ctx, subctx, dst);
+        cpu_split = ggml_vk_moe_gather(ctx, subctx, dst);
     }
     ggml_tensor * src0 = dst->src[0];
     ggml_tensor * src1 = dst->src[1];
@@ -8252,6 +8466,29 @@ void ggml_vk_mul_mat_id(ggml_backend_vk_context * ctx, vk_context& subctx, const
     if (direct) {
         dst->src[0] = src0_orig;
         dst->src[2] = src2_orig;
+    }
+    if (cpu_split) {
+        // overwrite the rows of the host routes once the workers have posted them
+        vk_moe_cpu * c = ctx->moe_cpu.get();
+        vk_buffer mb_buf = nullptr;
+        size_t mb_off = 0;
+        ggml_vk_host_get(ctx->device, c->mb, mb_buf, mb_off);
+        const uint32_t n_routes = (uint32_t) (src2_orig->ne[0] * src2_orig->ne[1]);
+        const vk_op_moe_cpu_merge_push_constants mpc = {
+            (uint32_t) src2_orig->ne[0], (uint32_t) dst->ne[0],
+            (uint32_t) (dst->nb[1] / sizeof(float)), (uint32_t) (dst->nb[2] / sizeof(float)),
+            get_misalign_bytes(ctx, dst) / (uint32_t) sizeof(float),
+        };
+        vk_pipeline & merge = ctx->device->pipeline_moe_cpu_merge;
+        ggml_pipeline_request_descriptor_sets(ctx, merge, 1);
+        ggml_vk_sync_buffers(ctx, subctx);
+        ggml_vk_dispatch_pipeline(ctx, subctx, merge, {
+                vk_subbuffer{ mb_buf, mb_off, vk_moe_cpu_act_offset },
+                vk_subbuffer{ mb_buf, mb_off + vk_moe_cpu_out_offset, vk_moe_cpu_out_floats * sizeof(float) },
+                vk_subbuffer{ c->state, 0, (256 + vk_moe_cpu_max_routes) * sizeof(uint32_t) },
+                ggml_vk_tensor_subbuffer(ctx, dst, true),
+            }, mpc, { (uint32_t) dst->ne[0], std::min<uint32_t>(n_routes, vk_moe_cpu_routes), 1 });
+        ggml_vk_sync_buffers(ctx, subctx);
     }
 }
 
@@ -13198,6 +13435,7 @@ void ggml_vk_cleanup(ggml_backend_vk_context * ctx) {
             100.0 * ctx->moe_cache.uses_hit / ctx->moe_cache.uses_total,
             (unsigned long long) ctx->moe_cache.n_filled, (unsigned long long) ctx->moe_cache.n_evicted);
     }
+    ggml_vk_moe_cpu_free(ctx);
     for (vk_moe_entry & en : ctx->moe_cache.entries) {
         ggml_vk_host_free(ctx->device, en.counts);
     }

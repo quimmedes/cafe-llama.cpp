@@ -1,0 +1,104 @@
+#version 450
+
+// pick a share of the routes missing from the VRAM cache for the host workers and publish
+// their expert ids and activations in the mapped mailbox, then bump the mailbox sequence
+//
+// mailbox words: [0] seq, [16] done, [32..39] job header, [64..191] expert of each host route
+// state words:   [0] seq, [1] host routes, [2] carry of the share, [8..135] route of each host route,
+//                [256..] 1 when the route is computed on the host
+
+layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
+
+layout (binding = 0) readonly buffer I {int   data_i[];};
+layout (binding = 1) readonly buffer T {int   data_t[];};
+layout (binding = 2) readonly buffer X {float data_x[];};
+layout (binding = 3) coherent buffer M {uint  mb[];};
+layout (binding = 4) coherent writeonly buffer A {float mb_act[];};
+layout (binding = 5) buffer S {uint st[];};
+
+layout (push_constant) uniform parameter {
+    uint  n_ids;
+    uint  n_tok;
+    uint  ids_nb0;
+    uint  ids_nb1;
+    uint  ids_offset;
+    uint  n_expert;
+    uint  ne11;
+    uint  s11;
+    uint  s12;
+    uint  x_offset;
+    float frac;
+    uint  type;
+    uint  ncols;
+    uint  nrows;
+    uint  nb01;
+    uint  nb02;
+    uint  host_lo;
+    uint  host_hi;
+} p;
+
+shared uint s_n;
+shared uint s_seq;
+
+void main() {
+    const uint n_routes = p.n_ids * p.n_tok;
+    if (gl_LocalInvocationID.x == 0) {
+        float acc = uintBitsToFloat(st[2]);
+        uint n = 0;
+        for (uint r = 0; r < n_routes; ++r) {
+            const uint t = r / p.n_ids;
+            const uint k = r % p.n_ids;
+            const int  e = data_i[p.ids_offset + t * p.ids_nb1 + k * p.ids_nb0];
+            uint skip = 0;
+            if (e >= 0 && uint(e) < p.n_expert && data_t[uint(e)] < 0 && n < 128) {
+                acc += p.frac;
+                if (acc >= 1.0) {
+                    acc -= 1.0;
+                    skip = 1;
+                    st[8 + n] = r;
+                    mb[64 + n] = uint(e);
+                    n++;
+                }
+            }
+            st[256 + r] = skip;
+        }
+        st[2] = floatBitsToUint(acc);
+        st[1] = n;
+        const uint seq = st[0] + (n > 0 ? 1u : 0u);
+        st[0] = seq;
+        if (n > 0) {
+            mb[32] = n;
+            mb[33] = p.type;
+            mb[34] = p.ncols;
+            mb[35] = p.nrows;
+            mb[36] = p.nb01;
+            mb[37] = p.nb02;
+            mb[38] = p.host_lo;
+            mb[39] = p.host_hi;
+        }
+        s_n   = n;
+        s_seq = seq;
+        memoryBarrierBuffer();
+    }
+    barrier();
+
+    const uint n = s_n;
+    if (n == 0) {
+        return;
+    }
+    for (uint j = 0; j < n; ++j) {
+        const uint r  = st[8 + j];
+        const uint t  = r / p.n_ids;
+        const uint k  = r % p.n_ids;
+        const uint xo = p.x_offset + (k % p.ne11) * p.s11 + t * p.s12;
+        for (uint i = gl_LocalInvocationID.x; i < p.ncols; i += gl_WorkGroupSize.x) {
+            mb_act[j * p.ncols + i] = data_x[xo + i];
+        }
+    }
+    // the activations must reach the host before the sequence does
+    memoryBarrierBuffer();
+    barrier();
+    if (gl_LocalInvocationID.x == 0) {
+        atomicExchange(mb[0], s_seq);
+    }
+}
