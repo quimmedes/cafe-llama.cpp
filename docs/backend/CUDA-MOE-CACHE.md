@@ -15,7 +15,6 @@ ROCm builds the CUDA provider through HIP, with the same options and behavior.
 
 Vulkan and Metal use a generic provider (`ggml/src/ggml-backend-moe-cache-generic.cpp`) built on the ggml-backend API. It keeps a slot pool per expert shape on the first GPU of the scheduler, fills missed experts in the background (at most two per node, decode only) and runs the hit rows as one `ggml_mul_mat_id` over the pool while the CPU computes the misses. It has no fused gate/up/SwiGLU path, no expert-parallel dispatch and no profile prewarming. With `-hmoe` on Vulkan the experts stay in pinned `Vulkan_Host` memory, so fills are direct DMA transfers. On Apple Silicon the memory is unified, so the cache only helps when experts are forced to the CPU.
 
-
 ## Configuration
 
 Use `--moe-cache MODE` with programs that use the common argument parser:
