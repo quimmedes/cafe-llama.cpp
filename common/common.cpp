@@ -1722,7 +1722,7 @@ struct llama_context_params common_context_params_to_llama(const common_params &
             char hex[32];
             snprintf(hex, sizeof(hex), "%016llx", (unsigned long long)hash);
             const_cast<common_params &>(params).moe_cache_profile_path =
-                fs_get_cache_file(string_format("moe-experts-%s.v1", hex));
+                fs_path_to_utf8(fs_get_cache_file(string_format("moe-experts-%s.v1", hex)));
         }
         if (!params.moe_cache_profile_path.empty()) {
             cparams.moe_cache_profile_path = params.moe_cache_profile_path.c_str();

@@ -19,6 +19,8 @@
 #if defined(_WIN32)
 #include <windows.h>
 #include <io.h>
+#include <fcntl.h>
+#include <sys/stat.h>
 #else
 #include <fcntl.h>
 #include <unistd.h>
@@ -71,8 +73,8 @@ bool llama_ssd_reader::open(const std::string & path, int lanes, bool direct, si
 
     for (int i = 0; i < lanes; i++) {
 #if defined(_WIN32)
-        // unsupported on this platform: fall back to buffered
-        int fd = -1;
+        // no O_DIRECT on this platform: use buffered reads
+        int fd = _open(path.c_str(), _O_RDONLY | _O_BINARY);
 #else
         int fd = -1;
         if (direct) {
@@ -144,6 +146,15 @@ void llama_ssd_reader::close() {
     for (size_t i = 0; i < bounces_.size(); i++) {
         if (bounces_[i]) {
             ssd_free_aligned(bounces_[i]);
+        }
+    }
+    for (int fd : fds_) {
+        if (fd != -1) {
+#if defined(_WIN32)
+            _close(fd);
+#else
+            ::close(fd);
+#endif
         }
     }
     fds_.clear();

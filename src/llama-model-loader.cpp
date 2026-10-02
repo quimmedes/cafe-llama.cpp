@@ -775,6 +775,11 @@ llama_model_loader::llama_model_loader(
         llm_kv = LLM_KV(llm_arch_from_string(arch_name));
     }
 
+    // aliased arch names keep their own prefix in the metadata keys
+    if (llm_kv.arch != LLM_ARCH_UNKNOWN && arch_name != llm_arch_name(llm_kv.arch)) {
+        llm_kv.prefix = arch_name.c_str();
+    }
+
     n_kv      = gguf_get_n_kv(metadata);
     n_tensors = weights_map.size();
 

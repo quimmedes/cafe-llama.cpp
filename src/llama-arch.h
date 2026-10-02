@@ -800,6 +800,7 @@ struct LLM_KV {
 
     llm_arch arch;
     const char * suffix;
+    const char * prefix = nullptr; // overrides the arch name in keys, for aliased archs
 
     std::string operator()(llm_kv kv) const;
 };

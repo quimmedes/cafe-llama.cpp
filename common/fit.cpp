@@ -701,11 +701,11 @@ static void common_params_fit_impl(
             const int64_t spill = std::max<int64_t>(0, sum_projected_model - sum_targets);
             if (int64_t(ram_free) > spill + int64_t(8192)*MiB) {
                 moe_spill_buft = buft;
-                LOG_INF("%s: spilled MoE experts go to %s (~%" PRId64 " MiB, %zu MiB of RAM free)\n", __func__,
-                    ggml_backend_buft_name(buft), spill/MiB, ram_free/MiB);
+                LOG_INF("%s: spilled MoE experts go to %s (~%" PRId64 " MiB, %" PRId64 " MiB of RAM free)\n", __func__,
+                    ggml_backend_buft_name(buft), spill/MiB, int64_t(ram_free/MiB));
             } else {
-                LOG_INF("%s: ~%" PRId64 " MiB of MoE experts spill, not enough free RAM (%zu MiB) to pin them: they stay in mapped CPU memory\n",
-                    __func__, spill/MiB, ram_free/MiB);
+                LOG_INF("%s: ~%" PRId64 " MiB of MoE experts spill, not enough free RAM (%" PRId64 " MiB) to pin them: they stay in mapped CPU memory\n",
+                    __func__, spill/MiB, int64_t(ram_free/MiB));
             }
         }
     }
