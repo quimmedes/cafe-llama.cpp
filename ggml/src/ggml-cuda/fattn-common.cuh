@@ -784,7 +784,7 @@ static __device__ __forceinline__ float fwht128_butterfly_inplace(float val, flo
     // intra-warp passes need neither smem nor sync
 #pragma unroll
     for (int h = 1; h <= 16; h *= 2) {
-        const float other = __shfl_xor_sync(0xFFFFFFFFULL, val, h);
+        const float other = __shfl_xor_sync(0xFFFFFFFF, val, h, WARP_SIZE);
         val = (tid & h) ? (other - val) : (val + other);
     }
 

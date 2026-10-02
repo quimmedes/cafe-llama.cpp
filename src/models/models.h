@@ -2868,7 +2868,7 @@ struct llama_model_glm5_next : public llama_model_base {
         // for graph_mtp
         struct no_trunk_t {};
         graph(const llama_model & model, const llm_graph_params & params, no_trunk_t) :
-            llama_model_deepseek4::graph_base<llm_build_delta_net_base>(params), model(model) {}
+            llm_build_delta_net_base(params), model(model) {}
     };
 
     // Draft head, the Nextn block as a non hyper connected DSA layer

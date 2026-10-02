@@ -2230,42 +2230,45 @@ struct common_speculative_impl_draft_mtp : public common_speculative_impl {
         }
     }
 
-    bool capture_dsa_index_share(const llama_batch & current) {
+    bool capture_dsa_index_share(const common_batch & current) {
         size_t n = 0;
         const int32_t * sel = llama_get_mtp_dsa_selection(params.ctx_dft, &n);
-        if (sel == nullptr || current.n_tokens <= 0 || n == 0 || n % (size_t) current.n_tokens != 0) {
+        const int32_t n_tokens = current.size();
+        if (sel == nullptr || n_tokens <= 0 || n == 0 || n % (size_t) n_tokens != 0) {
             return false;
         }
 
-        const size_t width = n / (size_t) current.n_tokens;
+        const size_t width = n / (size_t) n_tokens;
         for (auto & row : dsa_sel) {
             row.clear();
         }
-        for (int32_t k = 0; k < current.n_tokens; ++k) {
-            if (current.n_seq_id[k] != 1) {
+        for (int32_t k = 0; k < n_tokens; ++k) {
+            if (!current.tokens[k].seq_ids_extra.empty()) {
                 return false;
             }
-            const llama_seq_id seq_id = current.seq_id[k][0];
+            const llama_seq_id seq_id = current.tokens[k].seq_id;
             if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq || !dsa_sel[seq_id].empty()) {
                 return false;
             }
-            dsa_sel[seq_id].assign(sel + (size_t) k*width, sel + (size_t) (k + 1)*width);
+            dsa_sel[seq_id].resize(width);
+            std::copy_n(sel + (size_t) k*width, width, dsa_sel[seq_id].data());
         }
         dsa_sel_width = width;
         return true;
     }
 
-    bool stage_dsa_index_share(const llama_batch & current) {
-        if (dsa_sel_width == 0 || current.n_tokens <= 0) {
+    bool stage_dsa_index_share(const common_batch & current) {
+        const int32_t n_tokens = current.size();
+        if (dsa_sel_width == 0 || n_tokens <= 0) {
             return false;
         }
 
-        dsa_sel_batch.resize(dsa_sel_width*(size_t) current.n_tokens);
-        for (int32_t k = 0; k < current.n_tokens; ++k) {
-            if (current.n_seq_id[k] != 1) {
+        dsa_sel_batch.resize(dsa_sel_width*(size_t) n_tokens);
+        for (int32_t k = 0; k < n_tokens; ++k) {
+            if (!current.tokens[k].seq_ids_extra.empty()) {
                 return false;
             }
-            const llama_seq_id seq_id = current.seq_id[k][0];
+            const llama_seq_id seq_id = current.tokens[k].seq_id;
             if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq || dsa_sel[seq_id].size() != dsa_sel_width) {
                 return false;
             }

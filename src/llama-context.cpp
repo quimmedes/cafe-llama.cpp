@@ -11,6 +11,7 @@
 #include "llama-kv-cache.h"
 #include "llama-memory-hybrid-iswa.h"
 #include "llama-memory-hybrid.h"
+#include "llama-memory-hybrid-idx.h"
 #include "llama-memory.h"
 #include "llama-mmap.h"
 #include "llama-model.h"

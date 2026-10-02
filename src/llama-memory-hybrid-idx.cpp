@@ -1085,8 +1085,9 @@ void llama_memory_hybrid_idx_context::set_input_mtp_dsa_selection(
     GGML_ASSERT(saved.size() == n && (size_t) ggml_nelements(mask) == n);
     GGML_ASSERT(sel->ne[1] == (int64_t) ubatch->n_tokens);
 
-    const auto & st = kpool_cur();
+    const auto & lay = mem->kpool_layout_get();
     const int32_t n_kv = (int32_t) get_idx()->get_n_kv();
+    const uint32_t kv_size = mem->get_mem_idx()->get_size();
     GGML_ASSERT(n_kv > 0);
 
     std::vector<int32_t> mapped(n);
@@ -1095,7 +1096,8 @@ void llama_memory_hybrid_idx_context::set_input_mtp_dsa_selection(
         GGML_ASSERT(ubatch->n_seq_id[i] == 1);
         const llama_seq_id seq_id = ubatch->seq_id[i][0];
         GGML_ASSERT(seq_id >= 0 && seq_id < LLAMA_MAX_SEQ);
-        const auto & cells = st.seqs[seq_id].cells;
+        const auto & sq    = lay.seqs[seq_id];
+        const auto & cells = sq.cells;
 
         for (size_t j = 0; j < width; ++j) {
             const size_t k = (size_t) i*width + j;
@@ -1104,7 +1106,7 @@ void llama_memory_hybrid_idx_context::set_input_mtp_dsa_selection(
             const bool found = it != cells.end() && it->first == pos;
 
             if (found) {
-                mapped[k] = (int32_t) it->second;
+                mapped[k] = (int32_t) (sq.strm*kv_size + it->second);
                 valid[k] = 0.0f;
             } else {
                 mapped[k] = gather ? 0 : n_kv;

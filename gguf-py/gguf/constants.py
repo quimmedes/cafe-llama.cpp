@@ -241,6 +241,7 @@ class Keys:
             TYPES      = "{arch}.attention.indexer.types"
             KPOOL             = "{arch}.attention.indexer.kpool"              # GLM5-Next
             KPOOL_SELECT_TAIL = "{arch}.attention.indexer.kpool_select_tail"  # GLM5-Next
+            INDEX_SHARE_MTP   = "{arch}.attention.indexer.index_share_mtp"    # GLM5-Next
 
     class HyperConnection:
         COUNT                = "{arch}.hyper_connection.count"
