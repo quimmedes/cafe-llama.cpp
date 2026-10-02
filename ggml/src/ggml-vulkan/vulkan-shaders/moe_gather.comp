@@ -2,7 +2,7 @@
 
 // copy the routed experts of a MUL_MAT_ID into a device buffer, from the VRAM cache when the
 // expert is resident and from pinned host memory otherwise
-// compact: route r gets slot r and its id is rewritten to r
+// compact: route r gets slot r, routes that repeat an expert point to the first route of that expert
 // dense:   expert e stays at slot e and the ids are unchanged
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
@@ -29,17 +29,33 @@ layout (push_constant) uniform parameter {
     uint cpu_split;
 } p;
 
+bool host_route(uint r) {
+    return p.cpu_split != 0 && data_h[256 + r] != 0;
+}
+
+int route_expert(uint r) {
+    return data_i[p.ids_offset + (r / p.n_ids) * p.ids_nb1 + (r % p.n_ids) * p.ids_nb0];
+}
+
 void main() {
     const uint r = gl_WorkGroupID.y + gl_WorkGroupID.z * gl_NumWorkGroups.y;
     if (r >= p.n_ids * p.n_tok) {
         return;
     }
-    const uint t = r / p.n_ids;
-    const uint k = r % p.n_ids;
-    const int e = data_i[p.ids_offset + t * p.ids_nb1 + k * p.ids_nb0];
+    const int e = route_expert(r);
 
+    // first route with this expert that the GPU computes; only that route copies the expert
+    uint first = r;
+    if (p.compact != 0 && !host_route(r)) {
+        for (uint q = 0; q < r; ++q) {
+            if (route_expert(q) == e && !host_route(q)) {
+                first = q;
+                break;
+            }
+        }
+    }
     if (p.compact != 0 && gl_GlobalInvocationID.x == 0) {
-        data_r[r] = int(r);
+        data_r[r] = int(first);
     }
     if (e < 0 || uint(e) >= p.n_expert) {
         return;
@@ -49,7 +65,7 @@ void main() {
     }
 
     // the host workers compute this route, the merge overwrites its rows
-    if (p.cpu_split != 0 && data_h[256 + r] != 0) {
+    if (host_route(r) || first != r) {
         return;
     }
 

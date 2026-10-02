@@ -19,11 +19,11 @@ On Apple Silicon the memory is unified, so the GPU already reads experts from RA
 
 ### Vulkan host MoE direct path
 
-With `-hmoe`, Vulkan places the experts in pinned `Vulkan_Host_MoE` memory (also with mmap) and computes `MUL_MAT_ID` on the GPU, like `CUDA_Host_MoE`:
+With `-hmoe`, or when `-fit` spills the experts, Vulkan places them in pinned `Vulkan_Host_MoE` memory (also with mmap) and computes `MUL_MAT_ID` on the GPU, like `CUDA_Host_MoE`:
 
-- A gather shader copies the routed experts of each op into a device buffer, and the stock kernels run on that copy. For decode it copies only the routed experts and rewrites the ids. For large batches the copy engine moves the whole tensor. Fused `MUL_MAT_ID` + `ADD_ID`/`MUL` keeps the original ids.
+- A gather shader copies the routed experts of each op into a device buffer, and the stock kernels run on that copy. For small batches it copies each routed expert once and rewrites the ids. For large batches the copy engine moves the whole tensor. Fused `MUL_MAT_ID` + `ADD_ID`/`MUL` keeps the original ids.
 - A VRAM expert cache holds the hottest experts of each tensor in its own pool, sized from the free VRAM after the first graph. The gather counts expert uses in pinned memory. Before each graph, the hottest missing experts are copied into free or evicted slots, ahead of the graph in the same queue, so evicted slots stay valid for every earlier gather. Eviction uses the CUDA hysteresis (new score above twice the old score plus 4).
-- A CPU split hands a share of the misses to host workers: a publish shader writes their expert ids and activations to a mailbox in pinned memory, the gather skips them, and a merge shader waits for the workers and writes their rows. It is used for decode ops that are not fused.
+- A CPU split hands a share of the misses to host workers: a publish shader writes their expert ids and activations to a mailbox in pinned memory, and the gather skips them. The merge shader that writes their rows runs in a new submission that waits on a timeline semaphore signaled by the last worker. A shader that spins on host memory is not used: it can read stale results and it blocks the context switch of the GPU (NVIDIA Xid 109). The split is used for small batches, also for MTP verification, when the op is not fused.
 
 | Variable | Default | Meaning |
 | --- | ---: | --- |
@@ -43,7 +43,16 @@ Measured on one RTX 3090 with Qwen3-30B-A3B Q4_K_M, 128 generated tokens from a 
 | `-hmoe`, cache limited to 1 GiB, no CPU split | 23.8 |
 | `-hmoe`, cache limited to 1 GiB, CPU split 0.5 / 0.75 | 29.7 / 31.5 |
 
-The CPU split pays off when the cache holds a small share of the experts, as with models much larger than the VRAM. Perplexity with `-hmoe` matched `-cmoe` exactly on six 512-token chunks.
+The CPU split pays off when the cache holds a small share of the experts, as with models much larger than the VRAM. Perplexity with `-hmoe` matched `-cmoe` on 512-token chunks with 1-token and 4-token micro-batches, with and without the split.
+
+Qwen3.8-Flash-Next IQ3_XXS (76 GB, mixed IQ2/IQ3/IQ4_NL/Q2_0 experts) with the default `-fit` placement on the same machine (64 GB RAM), llama-server, 256 tokens:
+
+| Backend | No MTP | MTP draft (Q4_0 sidecar) |
+| --- | ---: | ---: |
+| CUDA | 22.4 | 26.6 - 31.5 |
+| Vulkan | 21.2 - 24.5 | 19.2 - 23.8 |
+
+Draft acceptance is the same on both backends. The Vulkan gap with MTP is in the verification batches of 3 to 4 tokens (27.9 versus 20.9 ms per token): CUDA computes them in one kernel that reads each expert in place, Vulkan copies the experts first. Runs vary by up to 30% with the page cache state when the model is larger than the RAM.
 
 ## Configuration
 

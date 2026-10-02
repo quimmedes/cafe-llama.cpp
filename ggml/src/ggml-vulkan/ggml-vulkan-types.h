@@ -1275,7 +1275,7 @@ struct vk_moe_cache {
 };
 
 // mailbox in pinned host memory between the moe_cpu_publish/merge shaders and the host workers
-// words: [0] seq, [16] done, [32..39] job header, [64..191] experts, from byte vk_moe_cpu_act_offset the
+// words: [0] seq, [32..39] job header, [64..191] experts, from byte vk_moe_cpu_act_offset the
 // activations, from vk_moe_cpu_out_offset the results
 static constexpr uint32_t vk_moe_cpu_routes     = 128;
 static constexpr size_t   vk_moe_cpu_act_floats = (size_t) 1 << 20;
@@ -1295,6 +1295,12 @@ struct vk_moe_cpu {
     vk_moe_cpu_traits_fn traits = nullptr;
     float frac = 0.5f;
     bool  state_init = false;
+
+    // the merge waits on this semaphore instead of spinning, so the GPU can still switch contexts
+    vk::Device    device;
+    vk::Semaphore sem;
+    uint64_t      rec_seq = 0;     // split ops recorded so far
+    uint64_t      signaled_seq = 0; // jobs finished by the workers, written by the last worker only
 
     std::vector<std::thread> threads;
     std::atomic<bool>     stop{false};

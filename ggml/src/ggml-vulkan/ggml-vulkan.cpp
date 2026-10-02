@@ -8154,6 +8154,11 @@ static void ggml_vk_moe_cpu_worker(vk_moe_cpu * c, int id) {
         }
     };
 
+    // jobs run one after the other, so the n-th finished job signals value n
+    auto finish = [&]() {
+        std::atomic_thread_fence(std::memory_order_release);
+        c->device.signalSemaphore({ c->sem, ++c->signaled_seq });
+    };
     uint32_t seen = 0;
     std::vector<char> q;
     int32_t q_route = -1;
@@ -8181,7 +8186,7 @@ static void ggml_vk_moe_cpu_worker(vk_moe_cpu * c, int id) {
             c->next.store((uint64_t) s << 32, std::memory_order_relaxed);
             c->job_seq.store(s, std::memory_order_release);
             if (c->n_items == 0) {
-                mb[16] = s;
+                finish();
             }
         } else if (c->job_seq.load(std::memory_order_acquire) == seen) {
             wait();
@@ -8224,8 +8229,7 @@ static void ggml_vk_moe_cpu_worker(vk_moe_cpu * c, int id) {
                 out[(size_t) j * c->nrows + r] = u;
             }
             if (c->n_done.fetch_add(1, std::memory_order_acq_rel) + 1 == c->n_items) {
-                std::atomic_thread_fence(std::memory_order_release);
-                mb[16] = seen;
+                finish();
             }
         }
     }
@@ -8254,6 +8258,11 @@ static vk_moe_cpu * ggml_vk_moe_cpu_get(ggml_backend_vk_context * ctx) {
     c->mb     = (uint32_t *) ggml_vk_host_malloc(ctx->device, vk_moe_cpu_mb_size);
     memset(c->mb, 0, vk_moe_cpu_act_offset);
     c->state  = ggml_vk_create_buffer_device(ctx->device, (256 + vk_moe_cpu_max_routes) * sizeof(uint32_t));
+    c->device = ctx->device->device;
+    vk::SemaphoreTypeCreateInfo tci{ vk::SemaphoreType::eTimeline, 0 };
+    vk::SemaphoreCreateInfo ci{};
+    ci.setPNext(&tci);
+    c->sem = c->device.createSemaphore(ci);
 
     const char * threads_env = getenv("GGML_VK_MOE_DIRECT_CPU_THREADS");
     const int n_threads = threads_env && *threads_env ? std::max(1, atoi(threads_env))
@@ -8276,6 +8285,7 @@ static void ggml_vk_moe_cpu_free(ggml_backend_vk_context * ctx) {
         t.join();
     }
     ggml_vk_host_free(ctx->device, c->mb);
+    c->device.destroySemaphore(c->sem);
     ctx->moe_cpu.reset();
 }
 
@@ -8481,6 +8491,9 @@ void ggml_vk_mul_mat_id(ggml_backend_vk_context * ctx, vk_context& subctx, const
         };
         vk_pipeline & merge = ctx->device->pipeline_moe_cpu_merge;
         ggml_pipeline_request_descriptor_sets(ctx, merge, 1);
+        // the merge goes in a new submission that waits for the workers on the semaphore
+        ggml_vk_ctx_begin(ctx->device, subctx);
+        subctx->s->wait_semaphores.push_back({ c->sem, ++c->rec_seq });
         ggml_vk_sync_buffers(ctx, subctx);
         ggml_vk_dispatch_pipeline(ctx, subctx, merge, {
                 vk_subbuffer{ mb_buf, mb_off, vk_moe_cpu_act_offset },

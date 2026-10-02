@@ -1,12 +1,12 @@
 #version 450
 
-// wait for the host workers of the current sequence and write their rows into the MUL_MAT_ID result
+// write the rows of the host workers into the MUL_MAT_ID result, the submission waits for the workers on a semaphore
 // mailbox and state layouts: see moe_cpu_publish.comp
 
 layout(local_size_x = 256, local_size_y = 1, local_size_z = 1) in;
 
-layout (binding = 0) coherent volatile buffer M {uint  mb[];};
-layout (binding = 1) coherent volatile readonly buffer O {float mb_out[];};
+layout (binding = 0) readonly buffer M {uint  mb[];};
+layout (binding = 1) readonly buffer O {float mb_out[];};
 layout (binding = 2) readonly buffer S {uint st[];};
 layout (binding = 3) buffer D {float data_d[];};
 
@@ -23,14 +23,6 @@ void main() {
     if (j >= st[1]) {
         return;
     }
-    if (gl_LocalInvocationID.x == 0) {
-        const uint seq = st[0];
-        while (int(mb[16] - seq) < 0) {
-        }
-    }
-    barrier();
-    memoryBarrierBuffer();
-
     const uint row = gl_GlobalInvocationID.x;
     if (row >= p.nrows) {
         return;
