@@ -73,6 +73,20 @@ list(APPEND GGML_SOURCES_ROCM ${SRCS})
 ggml_cuda_fattn_vec_instances(${CMAKE_CURRENT_SOURCE_DIR}/../ggml-cuda SRCS)
 list(APPEND GGML_SOURCES_ROCM ${SRCS})
 
+# turbo K/V is gpu-side only and always compiled and dispatched, same as ggml-cuda/CMakeLists.txt
+list(APPEND GGML_SOURCES_ROCM
+     ../ggml-cuda/template-instances/fattn-vec-instance-turbo4_0-f16.cu
+     ../ggml-cuda/template-instances/fattn-vec-instance-turbo2_0-f16.cu
+     ../ggml-cuda/template-instances/fattn-vec-instance-turbo3_0-f16.cu
+     ../ggml-cuda/template-instances/fattn-vec-instance-f16-turbo.cu
+     ../ggml-cuda/template-instances/fattn-vec-instance-turbo-turbo.cu)
+foreach (TURBO_DEF
+        GGML_CUDA_FA_TURBO4_0_F16 GGML_CUDA_FA_TURBO2_0_F16 GGML_CUDA_FA_TURBO3_0_F16
+        GGML_CUDA_FA_F16_TURBO4_0 GGML_CUDA_FA_F16_TURBO2_0 GGML_CUDA_FA_F16_TURBO3_0
+        GGML_CUDA_FA_TURBO4_0_TURBO4_0 GGML_CUDA_FA_TURBO2_0_TURBO2_0 GGML_CUDA_FA_TURBO3_0_TURBO3_0)
+    add_compile_definitions(${TURBO_DEF}=1)
+endforeach()
+
 ggml_add_backend_library(ggml-hip
                          ${GGML_HEADERS_ROCM}
                          ${GGML_SOURCES_ROCM}

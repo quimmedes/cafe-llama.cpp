@@ -29,11 +29,15 @@
 #define CU_MEM_LOCATION_TYPE_DEVICE hipMemLocationTypeDevice
 #define CU_MEM_ACCESS_FLAGS_PROT_READWRITE hipMemAccessFlagsProtReadWrite
 #define CU_CHECK(fn) {hipError_t err = fn; if(err != hipSuccess) { GGML_ABORT("HipVMM Failure: %s\n", hipGetErrorString(err)); }}
-#define __shfl_sync(mask, var, laneMask, width) __shfl(var, laneMask, width)
-#define __shfl_up_sync(mask, var, laneMask, width) __shfl_up(var, laneMask, width)
-#define __shfl_xor_sync(mask, var, laneMask, width) __shfl_xor(var, laneMask, width)
+// width is optional as in CUDA, HIP defaults it to warpSize
+#define __shfl_sync(mask, var, laneMask, ...) __shfl(var, laneMask, ##__VA_ARGS__)
+#define __shfl_up_sync(mask, var, laneMask, ...) __shfl_up(var, laneMask, ##__VA_ARGS__)
+#define __shfl_down_sync(mask, var, laneMask, ...) __shfl_down(var, laneMask, ##__VA_ARGS__)
+#define __shfl_xor_sync(mask, var, laneMask, ...) __shfl_xor(var, laneMask, ##__VA_ARGS__)
 #define __all_sync(mask, var) __all(var)
 #define __any_sync(mask, var) __any(var)
+// s_sleep waits 64*N clocks, N=8 is roughly the 256 ns used by the CUDA spin loops
+#define __nanosleep(ns) __builtin_amdgcn_s_sleep(8)
 #define cublasStrsmBatched hipblasStrsmBatched
 #define cublasCreate hipblasCreate
 #define cublasDestroy hipblasDestroy
@@ -61,9 +65,12 @@
 #define cudaErrorMemoryAllocation hipErrorOutOfMemory
 #define cudaErrorPeerAccessAlreadyEnabled hipErrorPeerAccessAlreadyEnabled
 #define cudaErrorPeerAccessNotEnabled hipErrorPeerAccessNotEnabled
+#define cudaErrorNotReady hipErrorNotReady
+#define cudaErrorUnknown hipErrorUnknown
 #define cudaEventCreateWithFlags hipEventCreateWithFlags
 #define cudaEventDisableTiming hipEventDisableTiming
 #define cudaEventRecord hipEventRecord
+#define cudaEventQuery hipEventQuery
 #define cudaEventSynchronize hipEventSynchronize
 #define cudaEvent_t hipEvent_t
 #define cudaEventDestroy hipEventDestroy
@@ -116,6 +123,12 @@
 #define cuMemGetAllocationGranularity hipMemGetAllocationGranularity
 #define CUmemAllocationProp hipMemAllocationProp
 #define cuDeviceGetAttribute hipDeviceGetAttribute
+#define cudaDeviceGetStreamPriorityRange hipDeviceGetStreamPriorityRange
+#define cudaMemcpyToSymbol hipMemcpyToSymbol
+#define cudaPeekAtLastError hipPeekAtLastError
+#define cudaStreamCreateWithPriority hipStreamCreateWithPriority
+#define cudaMemcpyFromSymbol hipMemcpyFromSymbol
+#define cudaStreamQuery hipStreamQuery
 #define cudaStreamCreateWithFlags hipStreamCreateWithFlags
 #define cudaStreamDestroy hipStreamDestroy
 #define cudaStreamFireAndForget hipStreamFireAndForget
