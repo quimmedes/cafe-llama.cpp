@@ -13,7 +13,20 @@ This is an opportunistic path. Unsupported nodes, unavailable cache capacity, co
 
 ROCm builds the CUDA provider through HIP, with the same options and behavior.
 
-Vulkan and Metal use a generic provider (`ggml/src/ggml-backend-moe-cache-generic.cpp`) built on the ggml-backend API. It keeps a slot pool per expert shape on the first GPU of the scheduler, fills missed experts in the background (at most two per node, decode only) and runs the hit rows as one `ggml_mul_mat_id` over the pool while the CPU computes the misses. It has no fused gate/up/SwiGLU path, no expert-parallel dispatch and no profile prewarming. With `-hmoe` on Vulkan the experts stay in pinned `Vulkan_Host` memory, so fills are direct DMA transfers. On Apple Silicon the memory is unified, so the cache only helps when experts are forced to the CPU.
+Vulkan and Metal use a generic provider (`ggml/src/ggml-backend-moe-cache-generic.cpp`) built on the ggml-backend API. It keeps a slot pool per expert shape on the first GPU of the scheduler, fills missed experts at most two per tensor and node during decode, and runs the hit rows on the GPU while the CPU computes the misses. Exact gate/up/SwiGLU(/down) subgraphs run as one fused graph per layer. A filled slot already serves the node that filled it. There is no expert-parallel dispatch, no profile prewarming and no direct GPU read of host experts.
+
+On Vulkan, `-hmoe` places the experts in pinned `Vulkan_Host` memory only with `--load-mode none`; with mmap they stay in `CPU_Mapped` memory like `-cmoe`. Pinned experts make fills direct DMA transfers. On Apple Silicon the memory is unified, so the cache only helps when experts are forced to the CPU.
+
+Measured on one RTX 3090 with Qwen3-30B-A3B Q4_K_M, 128 generated tokens from a cold process:
+
+| Vulkan configuration | t/s |
+| --- | ---: |
+| All weights in VRAM | 166.4 |
+| `-cmoe`, cache off | 23.3 |
+| `-cmoe`, cache on | 33.4 - 35.8 |
+| `-hmoe --load-mode none`, cache on | 37.2 - 38.6 |
+
+Most of the remaining gap to CUDA comes from the per-layer switch between the GPU and the CPU split. CUDA avoids it with its direct path, which computes the experts on the GPU from VRAM slots and pinned host memory in one kernel.
 
 ## Configuration
 
@@ -278,7 +291,7 @@ An `off` versus `on` comparison without `--repack off` includes the intended rep
 
 ## Current limitations
 
-- CUDA only. HIP, MUSA, Metal, Vulkan, and other backends do not register an implementation.
+- CUDA and ROCm use this provider. Vulkan and Metal use the generic provider described above, with the limits listed there. MUSA and other backends do not register an implementation.
 - CPU-resident expert `MUL_MAT_ID` only. Exact gate/up/SwiGLU graphs, including DeepSeek's per-input clamps, can fuse for up to the configured token batch and 64 flattened routed rows. Other GLU graphs use the stock path. There is no GPU-resident output handoff.
 - Heatmap prewarming is deliberately bounded and approximate. It does not reserve slots, synchronously fetch experts, or guarantee that a prior hot set remains profitable.
 - Direct writes through a raw host pointer bypass invalidation. Mutate cached weight buffers through the backend tensor and buffer APIs.
