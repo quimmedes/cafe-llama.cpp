@@ -1,0 +1,54 @@
+{
+    "problemMatcher": [
+        {
+            "owner": "cafe-gcc-clang",
+            "pattern": [
+                {
+                    "regexp": "^(.+?):(\\d+):(\\d+):\\s+(?:fatal\\s+)?(error):\\s+(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "severity": 4,
+                    "message": 5
+                }
+            ]
+        },
+        {
+            "owner": "cafe-msvc",
+            "pattern": [
+                {
+                    "regexp": "^(?:\\s*\\d+>)?([^\\s].*?)\\((\\d+)(?:,(\\d+))?\\)\\s*:\\s+(?:fatal\\s+)?(error)\\s+(\\w+\\d+)\\s*:\\s*(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "column": 3,
+                    "severity": 4,
+                    "code": 5,
+                    "message": 6
+                }
+            ]
+        },
+        {
+            "owner": "cafe-cmake",
+            "pattern": [
+                {
+                    "regexp": "^CMake Error(?: at (.+?):(\\d+))?.*$",
+                    "file": 1,
+                    "line": 2
+                },
+                {
+                    "regexp": "^\\s+(.+)$",
+                    "message": 1
+                }
+            ]
+        },
+        {
+            "owner": "cafe-linker",
+            "pattern": [
+                {
+                    "regexp": "^(.*(?:undefined reference|undefined symbol|unresolved external symbol|ld: |LNK\\d+|nvcc fatal|ninja: build stopped|error: linker command failed).*)$",
+                    "message": 1
+                }
+            ]
+        }
+    ]
+}

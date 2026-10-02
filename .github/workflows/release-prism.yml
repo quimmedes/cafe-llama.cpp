@@ -46,6 +46,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers/compiler.json"
+
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
@@ -96,6 +99,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers/compiler.json"
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
@@ -176,6 +182,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers/compiler.json"
+
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
@@ -233,6 +242,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers/compiler.json"
 
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
@@ -302,6 +314,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers/compiler.json"
 
       - name: Install ccache
         uses: ggml-org/ccache-action@v1.2.21
@@ -394,6 +409,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers/compiler.json"
+
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
@@ -453,6 +471,9 @@ jobs:
         with:
           fetch-depth: 0
 
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers/compiler.json"
+
       - name: ccache
         uses: ggml-org/ccache-action@v1.2.21
         with:
@@ -504,6 +525,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers/compiler.json"
 
       - name: Free disk space
         run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
@@ -572,6 +596,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers/compiler.json"
 
       - name: Install Ninja
         run: choco install ninja
@@ -667,6 +694,9 @@ jobs:
         uses: actions/checkout@v6
         with:
           fetch-depth: 0
+
+      - name: Register problem matchers
+        run: echo "::add-matcher::.github/problem-matchers/compiler.json"
 
       - name: Determine tag name
         id: tag
