@@ -1,6 +1,7 @@
 // Generic MoE expert cache provider for backends without a dedicated one (Vulkan, Metal).
 // Hot experts of host resident MUL_MAT_ID weights are copied into a slot pool on the GPU.
 // A cache hit runs as ggml_mul_mat_id over the pool on the GPU, misses stay on the CPU.
+// Gate, up, SwiGLU and down of one layer can run as a single fused graph.
 
 #include "ggml-backend-moe-cache.h"
 
@@ -9,6 +10,7 @@
 #include "ggml-impl.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstring>
 #include <map>
 #include <memory>
@@ -23,7 +25,7 @@ namespace {
 constexpr int    gmc_min_slots      = 64;
 constexpr int    gmc_max_rows       = 64;
 constexpr int    gmc_max_batch      = 10;
-constexpr int    gmc_fills_per_node = 2;
+constexpr int    gmc_fills_per_node = 2; // per weight tensor
 constexpr size_t gmc_min_expert     = 512u << 10;
 constexpr size_t MiB                = 1u << 20;
 
@@ -58,13 +60,16 @@ struct gmc_pool {
     }
 };
 
+// plain:  out = mul_mat_id(pool[0], act, ids[0])
+// fused:  out = [mul_mat_id(pool[2], ., ids[2]) of] swiglu(clamp(mul_mat_id(pool[0], act, ids[0])), clamp(mul_mat_id(pool[1], act, ids[1])))
 struct gmc_graph {
     ggml_context * ctx = nullptr;
     ggml_gallocr_t galloc = nullptr;
     ggml_cgraph * gf = nullptr;
     ggml_tensor * act = nullptr;
-    ggml_tensor * ids = nullptr;
+    ggml_tensor * ids[3] = {};
     ggml_tensor * out = nullptr;
+    int n_ids = 0;
     bool ok = false;
 
     ~gmc_graph() {
@@ -73,16 +78,20 @@ struct gmc_graph {
     }
 };
 
+// pools (gate or plain, up, down), padded rows, gate clamp, up clamp
+using gmc_graph_key = std::tuple<gmc_pool *, gmc_pool *, gmc_pool *, int, float, float, float, float>;
+
 struct gmc_session {
     ggml_backend_t be = nullptr;
     ggml_moe_cache_config config = {};
 
     std::map<gmc_shape_key, gmc_shape> census;
+    std::unordered_map<const void *, size_t> census_order; // first sighting order of each tensor
     bool finalized = false;
     bool disabled = false;
 
     std::map<gmc_shape_key, std::unique_ptr<gmc_pool>> pools;
-    std::map<std::pair<gmc_pool *, int>, std::unique_ptr<gmc_graph>> graphs;
+    std::map<gmc_graph_key, std::unique_ptr<gmc_graph>> graphs;
 
     // pinned when the device has a host buffer type, async copies from pageable memory are synchronous on Vulkan
     ggml_backend_buffer_t stage_buf = nullptr;
@@ -90,7 +99,16 @@ struct gmc_session {
     size_t stage_size = 0;
     uint64_t tick = 0;
 
+    uint64_t n_rows = 0; // routed rows seen
+    uint64_t n_hit = 0;  // rows already resident
+    uint64_t n_fill = 0;
+    uint64_t n_dispatch = 0;
+
     ~gmc_session() {
+        if (n_rows > 0) {
+            GGML_LOG_DEBUG("[moe-cache] %s: %llu rows, hit rate %.1f%%, %llu fills, %llu dispatches\n", ggml_backend_name(be),
+                           (unsigned long long) n_rows, 100.0 * n_hit / n_rows, (unsigned long long) n_fill, (unsigned long long) n_dispatch);
+        }
         if (be) {
             ggml_backend_synchronize(be);
         }
@@ -106,9 +124,9 @@ struct gmc_node {
     gmc_pool * pool = nullptr;
     const char * base = nullptr;
     size_t expert_size = 0;
-    int64_t n_tokens = 0;
     gmc_graph * g = nullptr;
     int n_hits = 0;
+    int64_t n_out = 0;
     const float * out = nullptr; // results in the staging buffer, valid after synchronize
 };
 
@@ -294,40 +312,14 @@ void gmc_finalize(gmc_session * s) {
                   ggml_backend_name(s->be), s->pools.size(), used / MiB);
 }
 
-gmc_graph * gmc_get_graph(gmc_session * s, gmc_pool * pool, int n) {
-    auto & slot = s->graphs[{pool, n}];
-    if (slot) {
-        return slot->ok ? slot.get() : nullptr;
-    }
-    slot = std::make_unique<gmc_graph>();
-    gmc_graph * g = slot.get();
-
-    ggml_init_params params = { 8*ggml_tensor_overhead() + ggml_graph_overhead(), nullptr, true };
-    g->ctx = ggml_init(params);
-    g->act = ggml_new_tensor_3d(g->ctx, GGML_TYPE_F32, pool->n_in, 1, n);
-    g->ids = ggml_new_tensor_2d(g->ctx, GGML_TYPE_I32, 1, n);
-    g->out = ggml_mul_mat_id(g->ctx, pool->t, g->act, g->ids);
-    if (!ggml_backend_supports_op(s->be, g->out)) {
-        return nullptr;
-    }
-    g->gf = ggml_new_graph(g->ctx);
-    ggml_build_forward_expand(g->gf, g->out);
-    g->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(s->be));
-    g->ok = ggml_gallocr_alloc_graph(g->galloc, g->gf);
-    return g->ok ? g : nullptr;
-}
-
-void * gmc_begin(const char * tensor_name, const void * host_base, size_t expert_size,
-                 int64_t n_in, int64_t n_out, int wtype, int64_t n_expert,
-                 int64_t n_tokens, int64_t n_rows) {
-    gmc_session * s = tl_session;
-    if (!s || s->disabled || !tensor_name || !host_base ||
-        (!strstr(tensor_name, "_exps") && !strstr(tensor_name, "_chexps"))) {
+// records the tensor in the shape census and returns its pool once the pools exist
+gmc_pool * gmc_pool_for(gmc_session * s, const char * name, const void * base, size_t expert_size,
+                        int64_t n_in, int64_t n_out, int wtype, int64_t n_expert) {
+    if (!name || !base || (!strstr(name, "_exps") && !strstr(name, "_chexps"))) {
         return nullptr;
     }
     const size_t min_expert = s->config.min_expert_explicit ? s->config.min_expert_bytes : gmc_min_expert;
-    const int max_batch = s->config.max_batch > 0 ? s->config.max_batch : gmc_max_batch;
-    if (expert_size < min_expert || n_tokens > max_batch || n_rows > gmc_max_rows ||
+    if (expert_size < min_expert || wtype < 0 || wtype >= GGML_TYPE_COUNT ||
         ggml_row_size((ggml_type) wtype, n_in) * n_out != expert_size) {
         return nullptr;
     }
@@ -337,81 +329,106 @@ void * gmc_begin(const char * tensor_name, const void * host_base, size_t expert
         auto & shape = s->census[key];
         shape.expert_size = expert_size;
         shape.n_expert = n_expert;
-        // the first repeat of a tensor means one full pass has been seen
-        if (!shape.tensors.insert(host_base).second) {
+        // a repeat closes the pass only after more than one layer of other tensors, since fused retries and
+        // fallbacks of the same layer register the same tensors again
+        auto [it_order, inserted] = s->census_order.try_emplace(base, s->census_order.size());
+        if (inserted) {
+            shape.tensors.insert(base);
+        } else if (s->census_order.size() - it_order->second > 3) {
             gmc_finalize(s);
         }
         if (!s->finalized || s->disabled) {
             return nullptr;
         }
     }
-
     auto it = s->pools.find(key);
-    if (it == s->pools.end()) {
-        return nullptr;
-    }
-    auto * node = new gmc_node();
-    node->s           = s;
-    node->pool        = it->second.get();
-    node->base        = (const char *) host_base;
-    node->expert_size = expert_size;
-    node->n_tokens    = n_tokens;
-    s->tick++;
-    return node;
+    return it == s->pools.end() ? nullptr : it->second.get();
 }
 
-int gmc_plan(void * opaque, const int32_t * ids, int n_ids, int32_t * slot_idx) {
-    auto * node = (gmc_node *) opaque;
-    gmc_session * s = node->s;
-    gmc_pool * pool = node->pool;
-
-    std::vector<int32_t> misses;
-    int n_hits = 0;
-    for (int i = 0; i < n_ids; i++) {
-        slot_idx[i] = -1;
-        if (ids[i] < 0) {
-            continue;
-        }
-        const void * key = node->base + (size_t) ids[i] * node->expert_size;
-        auto it = pool->slot_of.find(key);
-        if (it != pool->slot_of.end()) {
-            slot_idx[i] = it->second;
-            pool->last_use[it->second] = s->tick;
-            n_hits++;
-        } else if (std::find(misses.begin(), misses.end(), ids[i]) == misses.end()) {
-            misses.push_back(ids[i]);
+// slot of the expert, or -1 when it is not resident and no fill is left
+// a fill is queued before the dispatch on the same queue, so the filled slot can serve this node
+int gmc_resolve(gmc_session * s, gmc_pool * pool, const char * base, size_t expert_size, int32_t id, int & fills_left) {
+    const void * key = base + (size_t) id * expert_size;
+    auto it = pool->slot_of.find(key);
+    if (it != pool->slot_of.end()) {
+        pool->last_use[it->second] = s->tick;
+        s->n_hit++;
+        return it->second;
+    }
+    if (fills_left <= 0) {
+        return -1;
+    }
+    // least recently used slot not touched by this node
+    int victim = -1;
+    uint64_t oldest = UINT64_MAX;
+    for (int j = 0; j < pool->n_slots; j++) {
+        if (pool->last_use[j] < oldest && pool->last_use[j] != s->tick) {
+            oldest = pool->last_use[j];
+            victim = j;
         }
     }
-
-    // bounded demand fill into the least recently used slots not touched by this node
-    int filled = 0;
-    for (int32_t id : misses) {
-        if (filled >= gmc_fills_per_node) {
-            break;
-        }
-        int victim = -1;
-        uint64_t oldest = UINT64_MAX;
-        for (int j = 0; j < pool->n_slots; j++) {
-            if (pool->last_use[j] < oldest && pool->last_use[j] != s->tick) {
-                oldest = pool->last_use[j];
-                victim = j;
-            }
-        }
-        if (victim < 0) {
-            break;
-        }
-        if (pool->key_of[victim]) {
-            pool->slot_of.erase(pool->key_of[victim]);
-        }
-        const void * key = node->base + (size_t) id * node->expert_size;
-        ggml_backend_tensor_set_async(s->be, pool->t, key, (size_t) victim * node->expert_size, node->expert_size);
-        pool->key_of[victim] = key;
-        pool->slot_of[key] = victim;
-        // stays out of this node, the slot is filled behind any earlier work in queue order
-        pool->last_use[victim] = s->tick;
-        filled++;
+    if (victim < 0) {
+        return -1;
     }
-    return n_hits;
+    if (pool->key_of[victim]) {
+        pool->slot_of.erase(pool->key_of[victim]);
+    }
+    ggml_backend_tensor_set_async(s->be, pool->t, key, (size_t) victim * expert_size, expert_size);
+    pool->key_of[victim] = key;
+    pool->slot_of[key] = victim;
+    pool->last_use[victim] = s->tick;
+    fills_left--;
+    s->n_fill++;
+    return victim;
+}
+
+gmc_graph * gmc_get_graph(gmc_session * s, gmc_pool * p0, gmc_pool * p1, gmc_pool * p2, int n,
+                          float gate_min, float gate_max, float up_min, float up_max) {
+    auto & slot = s->graphs[{ p0, p1, p2, n, gate_min, gate_max, up_min, up_max }];
+    if (slot) {
+        return slot->ok ? slot.get() : nullptr;
+    }
+    slot = std::make_unique<gmc_graph>();
+    gmc_graph * g = slot.get();
+
+    ggml_init_params params = { 16*ggml_tensor_overhead() + ggml_graph_overhead(), nullptr, true };
+    g->ctx = ggml_init(params);
+    g->act = ggml_new_tensor_3d(g->ctx, GGML_TYPE_F32, p0->n_in, 1, n);
+    g->n_ids = p1 ? (p2 ? 3 : 2) : 1;
+    for (int i = 0; i < g->n_ids; i++) {
+        g->ids[i] = ggml_new_tensor_2d(g->ctx, GGML_TYPE_I32, 1, n);
+    }
+
+    std::vector<ggml_tensor *> ops;
+    auto add = [&](ggml_tensor * t) {
+        ops.push_back(t);
+        return t;
+    };
+    ggml_tensor * cur = add(ggml_mul_mat_id(g->ctx, p0->t, g->act, g->ids[0]));
+    if (p1) {
+        ggml_tensor * up = add(ggml_mul_mat_id(g->ctx, p1->t, g->act, g->ids[1]));
+        if (std::isfinite(gate_min) || std::isfinite(gate_max)) {
+            cur = add(ggml_clamp(g->ctx, cur, gate_min, gate_max));
+        }
+        if (std::isfinite(up_min) || std::isfinite(up_max)) {
+            up = add(ggml_clamp(g->ctx, up, up_min, up_max));
+        }
+        cur = add(ggml_swiglu_split(g->ctx, cur, up));
+        if (p2) {
+            cur = add(ggml_mul_mat_id(g->ctx, p2->t, cur, g->ids[2]));
+        }
+    }
+    g->out = cur;
+    for (ggml_tensor * t : ops) {
+        if (!ggml_backend_supports_op(s->be, t)) {
+            return nullptr;
+        }
+    }
+    g->gf = ggml_new_graph(g->ctx);
+    ggml_build_forward_expand(g->gf, g->out);
+    g->galloc = ggml_gallocr_new(ggml_backend_get_default_buffer_type(s->be));
+    g->ok = ggml_gallocr_alloc_graph(g->galloc, g->gf);
+    return g->ok ? g : nullptr;
 }
 
 char * gmc_stage_base(gmc_session * s) {
@@ -437,6 +454,95 @@ char * gmc_stage(gmc_session * s, size_t size) {
     return gmc_stage_base(s);
 }
 
+// upload the hit rows padded to a power of two, run the graph and queue the read back
+// slots holds n_ids arrays of n_hits slot indices
+bool gmc_run(gmc_session * s, gmc_node * node, gmc_graph * g, int n_hits, int n_pad, int64_t n_in,
+             const int32_t * const * slots, const float * const * act_rows) {
+    const int64_t n_out = g->out->ne[0];
+    const size_t act_bytes = (size_t) n_pad * n_in * sizeof(float);
+    const size_t ids_bytes = (size_t) n_pad * sizeof(int32_t);
+    char * stage = gmc_stage(s, act_bytes + g->n_ids * ids_bytes + (size_t) n_pad * n_out * sizeof(float));
+    if (!stage) {
+        return false;
+    }
+    float * act = (float *) stage;
+    for (int i = 0; i < n_hits; i++) {
+        memcpy(act + (size_t) i * n_in, act_rows[i], n_in * sizeof(float));
+    }
+    // padded rows compute slot 0 on zeros, their output is never read
+    memset(act + (size_t) n_hits * n_in, 0, (size_t) (n_pad - n_hits) * n_in * sizeof(float));
+    ggml_backend_tensor_set_async(s->be, g->act, act, 0, ggml_nbytes(g->act));
+
+    for (int k = 0; k < g->n_ids; k++) {
+        int32_t * ids = (int32_t *) (stage + act_bytes + k * ids_bytes);
+        for (int i = 0; i < n_pad; i++) {
+            ids[i] = i < n_hits ? slots[k][i] : 0;
+        }
+        ggml_backend_tensor_set_async(s->be, g->ids[k], ids, 0, ggml_nbytes(g->ids[k]));
+    }
+    if (ggml_backend_graph_compute_async(s->be, g->gf) != GGML_STATUS_SUCCESS) {
+        ggml_backend_synchronize(s->be);
+        return false;
+    }
+    float * out = (float *) (stage + act_bytes + g->n_ids * ids_bytes);
+    ggml_backend_tensor_get_async(s->be, g->out, out, 0, ggml_nbytes(g->out));
+
+    node->g      = g;
+    node->n_hits = n_hits;
+    node->n_out  = n_out;
+    node->out    = out;
+    s->n_dispatch++;
+    return true;
+}
+
+int gmc_pad(int n) {
+    // a few power of two graph sizes, so changing hit counts do not switch the backend between many graphs
+    int n_pad = 1;
+    while (n_pad < n) {
+        n_pad *= 2;
+    }
+    return n_pad;
+}
+
+void * gmc_begin(const char * tensor_name, const void * host_base, size_t expert_size,
+                 int64_t n_in, int64_t n_out, int wtype, int64_t n_expert,
+                 int64_t n_tokens, int64_t n_rows) {
+    gmc_session * s = tl_session;
+    const int max_batch = s && s->config.max_batch > 0 ? s->config.max_batch : gmc_max_batch;
+    if (!s || s->disabled || n_tokens > max_batch || n_rows > gmc_max_rows) {
+        return nullptr;
+    }
+    gmc_pool * pool = gmc_pool_for(s, tensor_name, host_base, expert_size, n_in, n_out, wtype, n_expert);
+    if (!pool) {
+        return nullptr;
+    }
+    auto * node = new gmc_node();
+    node->s           = s;
+    node->pool        = pool;
+    node->base        = (const char *) host_base;
+    node->expert_size = expert_size;
+    s->tick++;
+    return node;
+}
+
+int gmc_plan(void * opaque, const int32_t * ids, int n_ids, int32_t * slot_idx) {
+    auto * node = (gmc_node *) opaque;
+    gmc_session * s = node->s;
+
+    int fills = gmc_fills_per_node;
+    int n_hits = 0;
+    for (int i = 0; i < n_ids; i++) {
+        slot_idx[i] = -1;
+        if (ids[i] < 0) {
+            continue;
+        }
+        s->n_rows++;
+        slot_idx[i] = gmc_resolve(s, node->pool, node->base, node->expert_size, ids[i], fills);
+        n_hits += slot_idx[i] >= 0;
+    }
+    return n_hits;
+}
+
 int gmc_dispatch(void * opaque, int wtype, int64_t n_in, int64_t n_out, int n_hits,
                  const int32_t * slot_idx, const float * const * act_rows) {
     auto * node = (gmc_node *) opaque;
@@ -445,56 +551,85 @@ int gmc_dispatch(void * opaque, int wtype, int64_t n_in, int64_t n_out, int n_hi
     if (n_hits <= 0 || n_hits > gmc_max_rows || wtype != pool->type || n_in != pool->n_in || n_out != pool->n_out) {
         return 0;
     }
-    // a few power of two graph sizes, so changing hit counts do not switch the backend between many graphs
-    int n_pad = 1;
-    while (n_pad < n_hits) {
-        n_pad *= 2;
+    const int n_pad = gmc_pad(n_hits);
+    gmc_graph * g = gmc_get_graph(s, pool, nullptr, nullptr, n_pad, 0.0f, 0.0f, 0.0f, 0.0f);
+    return g && gmc_run(s, node, g, n_hits, n_pad, n_in, &slot_idx, act_rows) ? 1 : 0;
+}
+
+void * gmc_fused_begin(const ggml_moe_cache_tensor_desc * up, const ggml_moe_cache_tensor_desc * gate,
+                       const ggml_moe_cache_tensor_desc * down, int glu_op,
+                       float up_min, float up_max, float gate_min, float gate_max,
+                       const int32_t * ids, int n_rows, int64_t n_tokens,
+                       const float * const * act_rows, uint64_t * hit_mask) {
+    gmc_session * s = tl_session;
+    if (hit_mask) {
+        *hit_mask = 0;
     }
-    gmc_graph * g = gmc_get_graph(s, pool, n_pad);
-    if (!g) {
-        return 0;
+    const int max_batch = s && s->config.max_batch > 0 ? s->config.max_batch : gmc_max_batch;
+    if (!s || s->disabled || !up || !gate || !hit_mask || glu_op != GGML_GLU_OP_SWIGLU ||
+        n_rows <= 0 || n_rows > gmc_max_rows || n_tokens > max_batch) {
+        return nullptr;
     }
 
-    const size_t act_bytes = (size_t) n_pad * n_in * sizeof(float);
-    const size_t ids_bytes = (size_t) n_pad * sizeof(int32_t);
-    char * stage = gmc_stage(s, act_bytes + ids_bytes + (size_t) n_pad * n_out * sizeof(float));
-    if (!stage) {
-        return 0;
+    // every tensor joins the census, even when another one has no pool
+    gmc_pool * pg = gmc_pool_for(s, gate->name, gate->data, gate->expert_size, gate->n_in, gate->n_out, gate->type, gate->n_expert);
+    gmc_pool * pu = gmc_pool_for(s, up->name, up->data, up->expert_size, up->n_in, up->n_out, up->type, up->n_expert);
+    gmc_pool * pd = down ? gmc_pool_for(s, down->name, down->data, down->expert_size, down->n_in, down->n_out, down->type, down->n_expert) : nullptr;
+    if (!pg || !pu || (down && !pd) || gate->n_in != up->n_in || gate->n_out != up->n_out ||
+        (down && down->n_in != up->n_out)) {
+        return nullptr;
     }
-    float   * act = (float *) stage;
-    int32_t * ids = (int32_t *) (stage + act_bytes);
-    for (int i = 0; i < n_hits; i++) {
-        memcpy(act + (size_t) i * n_in, act_rows[i], n_in * sizeof(float));
-        ids[i] = slot_idx[i];
+    s->tick++;
+
+    int32_t slots[3][gmc_max_rows];
+    const float * acts[gmc_max_rows];
+    int fills[3] = { gmc_fills_per_node, gmc_fills_per_node, gmc_fills_per_node };
+    int n_hits = 0;
+    for (int r = 0; r < n_rows; r++) {
+        if (ids[r] < 0) {
+            continue;
+        }
+        s->n_rows += pd ? 3 : 2; // stats count one lookup per weight tensor
+        const int sg = gmc_resolve(s, pg, (const char *) gate->data, gate->expert_size, ids[r], fills[0]);
+        const int su = gmc_resolve(s, pu, (const char *) up->data, up->expert_size, ids[r], fills[1]);
+        const int sd = pd ? gmc_resolve(s, pd, (const char *) down->data, down->expert_size, ids[r], fills[2]) : 0;
+        if (sg < 0 || su < 0 || sd < 0) {
+            continue;
+        }
+        slots[0][n_hits] = sg;
+        slots[1][n_hits] = su;
+        slots[2][n_hits] = sd;
+        acts[n_hits] = act_rows[r];
+        n_hits++;
+        *hit_mask |= UINT64_C(1) << r;
     }
-    // padded rows compute slot 0 on zeros, their output is never read
-    memset(act + (size_t) n_hits * n_in, 0, (size_t) (n_pad - n_hits) * n_in * sizeof(float));
-    for (int i = n_hits; i < n_pad; i++) {
-        ids[i] = 0;
+    if (n_hits == 0) {
+        *hit_mask = 0;
+        return nullptr;
     }
-    ggml_backend_tensor_set_async(s->be, g->act, act, 0, ggml_nbytes(g->act));
-    ggml_backend_tensor_set_async(s->be, g->ids, ids, 0, ggml_nbytes(g->ids));
-    if (ggml_backend_graph_compute_async(s->be, g->gf) != GGML_STATUS_SUCCESS) {
-        ggml_backend_synchronize(s->be);
-        return 0;
+
+    const int n_pad = gmc_pad(n_hits);
+    gmc_graph * g = gmc_get_graph(s, pg, pu, pd, n_pad, gate_min, gate_max, up_min, up_max);
+    auto * node = new gmc_node();
+    node->s = s;
+    const int32_t * slot_ptrs[3] = { slots[0], slots[1], slots[2] };
+    if (!g || !gmc_run(s, node, g, n_hits, n_pad, gate->n_in, slot_ptrs, acts)) {
+        delete node;
+        *hit_mask = 0;
+        return nullptr;
     }
-    ggml_backend_tensor_get_async(s->be, g->out, stage + act_bytes + ids_bytes, 0, ggml_nbytes(g->out));
-    node->g = g;
-    node->n_hits = n_hits;
-    node->out = (const float *) (stage + act_bytes + ids_bytes);
-    return 1;
+    return node;
 }
 
 int gmc_collect(void * opaque, int n_hits, float * const * dst_rows, int64_t n_out) {
     auto * node = (gmc_node *) opaque;
     gmc_session * s = node->s;
-    if (!node->g || n_hits != node->n_hits || n_out != node->pool->n_out) {
+    if (!node->g || n_hits != node->n_hits || n_out != node->n_out) {
         return 0;
     }
     ggml_backend_synchronize(s->be);
-    const float * out = node->out;
     for (int i = 0; i < n_hits; i++) {
-        memcpy(dst_rows[i], out + (size_t) i * n_out, n_out * sizeof(float));
+        memcpy(dst_rows[i], node->out + (size_t) i * n_out, n_out * sizeof(float));
     }
     return 1;
 }
@@ -548,5 +683,6 @@ void ggml_moe_cache_register_generic(ggml_backend_reg_t reg) {
     ggml_moe_cache.dispatch        = gmc_dispatch;
     ggml_moe_cache.collect         = gmc_collect;
     ggml_moe_cache.end             = gmc_end;
+    ggml_moe_cache.fused_begin     = gmc_fused_begin;
     ggml_moe_cache.invalidate      = gmc_invalidate;
 }
