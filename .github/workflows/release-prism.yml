@@ -485,6 +485,157 @@ jobs:
           path: llama-${{ steps.tag.outputs.name }}-bin-win-vulkan-x64.zip
           name: llama-bin-win-vulkan-x64.zip
 
+  ubuntu-rocm:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 360
+
+    env:
+      ROCM_VERSION: "10.0.0"
+      GPU_TARGETS: "gfx908;gfx90a;gfx942;gfx950;gfx1010;gfx1011;gfx1012;gfx1030;gfx1031;gfx1032;gfx1033;gfx1034;gfx1035;gfx1036;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1200;gfx1201"
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Free disk space
+        run: sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc /opt/hostedtoolcache/CodeQL
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git cmake wget libssl-dev
+
+      - name: Setup TheRock with Wheels
+        run: |
+          python3 -m venv .venv
+          source .venv/bin/activate
+          python -m pip install --upgrade pip
+          python -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ "rocm[libraries,devel]==${ROCM_VERSION}"
+          ROCM_PATH=$(rocm-sdk path --root)
+          echo "ROCM_PATH=$ROCM_PATH" >> $GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=$(rocm-sdk path --cmake)" >> $GITHUB_ENV
+          echo "HIP_PATH=$ROCM_PATH" >> $GITHUB_ENV
+          echo "PATH=$(rocm-sdk path --bin):${PATH}" >> $GITHUB_ENV
+          echo "LD_LIBRARY_PATH=$ROCM_PATH/lib:${LD_LIBRARY_PATH:-}" >> $GITHUB_ENV
+          echo "$(pwd)/.venv/bin" >> $GITHUB_PATH
+
+      - name: Build
+        run: |
+          cmake -B build -S . \
+            -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_INSTALL_RPATH='$ORIGIN' \
+            -DCMAKE_BUILD_WITH_INSTALL_RPATH=ON \
+            -DGGML_BACKEND_DL=ON \
+            -DGGML_NATIVE=OFF \
+            -DGGML_CPU_ALL_VARIANTS=ON \
+            -DGPU_TARGETS="${GPU_TARGETS}" \
+            -DGGML_HIP=ON \
+            -DHIP_PLATFORM=amd \
+            ${{ env.CMAKE_ARGS }}
+          cmake --build build --config Release -j $(nproc)
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Pack artifacts
+        run: |
+          cp LICENSE ./build/bin/
+          tar -czvf llama-${{ steps.tag.outputs.name }}-bin-ubuntu-rocm-10.0-x64.tar.gz --transform "s,./,llama-${{ steps.tag.outputs.name }}/," -C ./build/bin .
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-bin-ubuntu-rocm-10.0-x64.tar.gz
+          name: llama-bin-ubuntu-rocm-10.0-x64.tar.gz
+
+  # builds only ggml-hip.dll + HIP runtime; extract over the win-cpu-x64 zip
+  windows-rocm:
+    runs-on: windows-2022
+    timeout-minutes: 360
+
+    env:
+      ROCM_VERSION: "10.0.0"
+      GPU_TARGETS: "gfx1010;gfx1011;gfx1012;gfx1030;gfx1031;gfx1032;gfx1033;gfx1034;gfx1035;gfx1036;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1153;gfx1200;gfx1201"
+
+    steps:
+      - name: Clone
+        uses: actions/checkout@v6
+        with:
+          fetch-depth: 0
+
+      - name: Install Ninja
+        run: choco install ninja
+
+      - name: Setup ROCm
+        uses: ./.github/actions/windows-setup-rocm
+        with:
+          version: ${{ env.ROCM_VERSION }}
+
+      - name: Setup ROCm Environment
+        run: |
+          $ErrorActionPreference = "Stop"
+          & C:\TheRock\build\.venv\Scripts\Activate.ps1
+          rocm-sdk init
+          if ($LASTEXITCODE -ne 0) { throw "rocm-sdk init failed with exit code $LASTEXITCODE" }
+          $rocmPath = (rocm-sdk path --root).Trim()
+          $cmakePath = (rocm-sdk path --cmake).Trim()
+          $binPath = (rocm-sdk path --bin).Trim()
+          echo "HIP_PATH=$rocmPath" >> $env:GITHUB_ENV
+          echo "CMAKE_PREFIX_PATH=$cmakePath" >> $env:GITHUB_ENV
+          echo "HIP_DEVICE_LIB_PATH=$rocmPath\lib\llvm\amdgcn\bitcode" >> $env:GITHUB_ENV
+          echo "HIP_PLATFORM=amd" >> $env:GITHUB_ENV
+          echo "LLVM_PATH=$rocmPath\lib\llvm" >> $env:GITHUB_ENV
+          echo "$binPath" >> $env:GITHUB_PATH
+          echo "C:\TheRock\build\.venv\Scripts" >> $env:GITHUB_PATH
+
+      - name: Build
+        run: |
+          cmake -S . -B build `
+            -G "Ninja Multi-Config" `
+            -DCMAKE_PREFIX_PATH="${env:HIP_PATH}" `
+            -DGGML_BACKEND_DL=ON `
+            -DGGML_NATIVE=OFF `
+            -DGGML_CPU=OFF `
+            -DGGML_HIP=ON `
+            -DCMAKE_C_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang.exe" `
+            -DCMAKE_CXX_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang++.exe" `
+            -DCMAKE_C_FLAGS="-Wno-error=incompatible-pointer-types" `
+            -DCMAKE_HIP_COMPILER="${env:HIP_PATH}\lib\llvm\bin\clang.exe" `
+            -DHIP_PATH="${env:HIP_PATH}" `
+            -DAMDGPU_TARGETS="${env:GPU_TARGETS}"
+          cmake --build build --config Release --parallel ${env:NUMBER_OF_PROCESSORS} --target ggml-hip
+          if (-not (Test-Path build\bin\Release\ggml-hip.dll)) { throw "ggml-hip.dll was not produced" }
+
+      - name: Determine tag name
+        id: tag
+        uses: ./.github/actions/get-tag-name
+
+      - name: Pack artifacts
+        run: |
+          $ErrorActionPreference = "Stop"
+          # bundle runtime next to ggml-hip.dll so it wins over the driver copy in System32
+          $binPath = (rocm-sdk path --bin).Trim()
+          foreach ($pattern in @("amdhip64_7.dll", "rocm_kpack.dll", "amd_comgr.dll")) {
+            $files = Get-ChildItem -Path $binPath -Filter $pattern -ErrorAction SilentlyContinue
+            if (-not $files) { throw "no match for $pattern in $binPath" }
+            foreach ($f in $files) { Copy-Item $f.FullName -Destination build\bin\Release -Force }
+          }
+          7z a -snl llama-${{ steps.tag.outputs.name }}-bin-win-rocm-10.0-x64.zip `
+            .\build\bin\Release\ggml-hip.dll `
+            .\build\bin\Release\amdhip64_7.dll `
+            .\build\bin\Release\rocm_kpack.dll `
+            .\build\bin\Release\amd_comgr.dll
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          path: llama-${{ steps.tag.outputs.name }}-bin-win-rocm-10.0-x64.zip
+          name: llama-bin-win-rocm-10.0-x64.zip
+
   release:
     if: ${{ github.event_name == 'push' || github.event.inputs.create_release == 'true' }}
 
@@ -501,6 +652,8 @@ jobs:
       - windows-cpu
       - windows-vulkan
       - windows-cuda
+      - ubuntu-rocm
+      - windows-rocm
 
     steps:
       - name: Clone
@@ -544,6 +697,8 @@ jobs:
             "llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.3-x64.zip"
             "llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.4-arm64.zip"
             "llama-${{ steps.tag.outputs.name }}-bin-win-vulkan-x64.zip"
+            "llama-${{ steps.tag.outputs.name }}-bin-ubuntu-rocm-10.0-x64.tar.gz"
+            "llama-${{ steps.tag.outputs.name }}-bin-win-rocm-10.0-x64.zip"
           )
           for name in "${expected[@]}"; do
             test -s "release/$name" || { echo "Missing or empty artifact: $name" >&2; exit 1; }
@@ -561,8 +716,8 @@ jobs:
           Pre-built binaries (cafe-llama.cpp). CUDA 12.4 builds cover Maxwell to Hopper (sm50-sm90); CUDA 13 builds cover Turing to Blackwell (sm75-sm121), incl. Jetson Orin/Thor on arm64.
 
           **macOS:**
-          - [macOS Apple Silicon (arm64)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-macos-arm64.tar.gz)
-          - [macOS Apple Silicon (arm64, KleidiAI enabled)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-macos-arm64-kleidiai.tar.gz)
+          - [macOS Apple Silicon (arm64, Metal)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-macos-arm64.tar.gz)
+          - [macOS Apple Silicon (arm64, Metal + KleidiAI)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-macos-arm64-kleidiai.tar.gz)
 
           **Linux (CPU):**
           - [Ubuntu x64 (CPU)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-x64.tar.gz)
@@ -586,6 +741,12 @@ jobs:
           - [Windows x64 (CUDA 12.4)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-cuda-12.4-x64.zip) - [CUDA runtime DLLs](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/cudart-llama-bin-win-cuda-12.4-x64.zip)
           - [Windows x64 (CUDA 13.3)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.3-x64.zip) - [CUDA runtime DLLs](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/cudart-llama-bin-win-cuda-13.3-x64.zip)
           - [Windows arm64 (CUDA 13.4)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.4-arm64.zip) - [CUDA runtime DLLs](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/cudart-llama-bin-win-cuda-13.4-arm64.zip)
+
+          **Linux (ROCm):**
+          - [Ubuntu x64 (ROCm 10.0)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-rocm-10.0-x64.tar.gz)
+
+          **Windows (ROCm):**
+          - [Windows x64 (ROCm 10.0, extract over the Windows x64 CPU zip)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-rocm-10.0-x64.zip)
 
           **Windows (Vulkan):**
           - [Windows x64 (Vulkan)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-vulkan-x64.zip)
