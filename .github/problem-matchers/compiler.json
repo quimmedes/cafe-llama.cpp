@@ -28,6 +28,27 @@
             ]
         },
         {
+            "owner": "cafe-nvcc",
+            "pattern": [
+                {
+                    "regexp": "^(?:\\s*\\d+>)?([^\\s].*?)\\((\\d+)\\):\\s+(error)\\s*:?\\s*(.*)$",
+                    "file": 1,
+                    "line": 2,
+                    "severity": 3,
+                    "message": 4
+                }
+            ]
+        },
+        {
+            "owner": "cafe-killed",
+            "pattern": [
+                {
+                    "regexp": "^(.*(?:Killed signal terminated program|internal compiler error|virtual memory exhausted|out of memory|make(?:\\[\\d+\\])?: \\*\\*\\*).*)$",
+                    "message": 1
+                }
+            ]
+        },
+        {
             "owner": "cafe-cmake",
             "pattern": [
                 {

@@ -36,7 +36,7 @@ void ggml_moe_cache_register(const void * owner) {
 #include <cstring>
 #include <deque>
 #include <fstream>
-#if defined(_MSC_VER) || defined(__x86_64__) || defined(__i386__)
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
 #include <immintrin.h>
 #endif
 #include <iterator>
@@ -54,6 +54,9 @@ void ggml_moe_cache_register(const void * owner) {
 
 #if defined(_WIN32)
 #  define WIN32_LEAN_AND_MEAN
+#  ifndef NOMINMAX
+#    define NOMINMAX
+#  endif
 #  include <windows.h>
 #  include <process.h>
 #elif defined(__linux__)
@@ -1269,7 +1272,7 @@ static void moe_cache_ring(uint32_t * d_seq, cudaStream_t stream) {
 }
 
 static inline void ring_pause() {
-#if defined(_MSC_VER) || defined(__x86_64__) || defined(__i386__)
+#if defined(_M_X64) || defined(_M_IX86) || defined(__x86_64__) || defined(__i386__)
     _mm_pause();
 #endif
 }

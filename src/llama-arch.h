@@ -1,6 +1,7 @@
 #pragma once
 
 #include "ggml.h" // ggml_op
+#include "llama.h" // LLAMA_API
 
 #include <string>
 #include <set>
@@ -796,7 +797,8 @@ enum llm_tensor_layer {
     LLM_TENSOR_LAYER_OUTPUT,
 };
 
-struct LLM_KV {
+// exported for common/safetensors.cpp, which writes GGUF metadata
+struct LLAMA_API LLM_KV {
     LLM_KV(llm_arch arch, const char * suffix = nullptr);
 
     llm_arch arch;

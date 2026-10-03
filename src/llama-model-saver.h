@@ -9,7 +9,8 @@
 // FIXME temporary function for better error messages
 bool llama_model_saver_supports_arch(llm_arch arch);
 
-struct llama_model_saver {
+// exported for common/safetensors.cpp, which converts safetensors checkpoints to GGUF
+struct LLAMA_API llama_model_saver {
     struct gguf_context * gguf_ctx = nullptr;
     const bool gguf_ctx_owned;
     const struct llama_model * model;

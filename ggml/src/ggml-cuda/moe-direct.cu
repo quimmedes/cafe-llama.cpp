@@ -5,6 +5,9 @@
 #include "ggml-cpu.h"
 
 #include <algorithm>
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
 #include <atomic>
 #include <cinttypes>
 #include <climits>
@@ -719,7 +722,7 @@ struct md_cpu {
 
 static inline void md_cpu_pause() {
 #if defined(__x86_64__) || defined(_M_X64)
-    __builtin_ia32_pause();
+    _mm_pause();
 #endif
 }
 
@@ -949,7 +952,9 @@ static __global__ void md_cpu_merge_kernel(const md_mailbox * __restrict__ mb, c
     if (threadIdx.x == 0) {
         const uint32_t seq = st->seq;
         while ((int32_t) (mb->done - seq) < 0) {
+#if defined(GGML_USE_HIP) || __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA
             __nanosleep(256);
+#endif
         }
     }
     __syncthreads();

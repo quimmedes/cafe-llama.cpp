@@ -1,6 +1,9 @@
 #include "ggml-vulkan-common.h"
 // only the type traits struct: the CPU split looks the functions up at run time
 #include "ggml-cpu.h"
+#if defined(__x86_64__) || defined(_M_X64)
+#include <immintrin.h>
+#endif
 
 namespace {
 inline std::ostream & operator<<(std::ostream & os, vk::Buffer buffer) {
@@ -8147,7 +8150,7 @@ static void ggml_vk_moe_cpu_worker(vk_moe_cpu * c, int id) {
     auto wait = [&]() {
         if (std::chrono::steady_clock::now() - last < std::chrono::milliseconds(20)) {
 #if defined(__x86_64__) || defined(_M_X64)
-            __builtin_ia32_pause();
+            _mm_pause();
 #endif
         } else {
             std::this_thread::sleep_for(std::chrono::microseconds(50));
