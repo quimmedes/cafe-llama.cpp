@@ -120,6 +120,10 @@ template void llama_model_saver::add_kv<std::vector<uint32_t>>(const enum llm_kv
 template void llama_model_saver::add_kv<std::vector<float>>(const enum llm_kv, const std::vector<float> &, const bool);
 template void llama_model_saver::add_kv<std::vector<uint64_t>>(const enum llm_kv, const std::vector<uint64_t> &, const bool);
 
+void llama_model_saver::add_kv(const enum llm_kv key, const std::vector<float> & value, const bool per_layer) {
+    add_kv<std::vector<float>>(key, value, per_layer);
+}
+
 void llama_model_saver::add_kv(const enum llm_kv key, const std::vector<std::string> & value) {
     std::vector<const char *> tmp(value.size());
     for (size_t i = 0; i < value.size(); ++i) {

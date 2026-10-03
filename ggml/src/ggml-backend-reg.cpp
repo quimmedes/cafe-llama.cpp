@@ -199,6 +199,9 @@ struct ggml_backend_registry {
             __func__, ggml_backend_reg_name(reg), ggml_backend_reg_dev_count(reg));
 #endif
         backends.push_back({ reg, std::move(handle) });
+        if (auto fn = (ggml_backend_cpu_traits_fn_t) ggml_backend_reg_get_proc_address(reg, "ggml_get_type_traits_cpu")) {
+            ggml_backend_set_cpu_traits_fn(fn);
+        }
         for (size_t i = 0; i < ggml_backend_reg_dev_count(reg); i++) {
             register_device(ggml_backend_reg_dev_get(reg, i));
         }

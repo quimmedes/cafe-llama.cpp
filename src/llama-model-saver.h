@@ -35,6 +35,9 @@ struct LLAMA_API llama_model_saver {
 
     void add_kv(enum llm_kv key, const std::vector<std::string> & value);
 
+    // not a template, so a Windows DLL exports it for callers outside llama
+    void add_kv(enum llm_kv key, const std::vector<float> & value, bool per_layer = false);
+
     void add_tensor(const struct ggml_tensor * tensor);
 
     void add_kv_from_model();

@@ -3,6 +3,7 @@
 #include "quantize.cuh"
 #include "unary.cuh"
 #include "ggml-cpu.h"
+#include "ggml-backend-impl.h"
 
 #include <algorithm>
 #if defined(__x86_64__) || defined(_M_X64)
@@ -838,11 +839,7 @@ static md_cpu * md_cpu_create() {
     if (md_cfg().cpu_frac <= 0.0f) {
         return nullptr;
     }
-    ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-    if (!cpu_dev) {
-        return nullptr;
-    }
-    auto fn = (md_traits_fn) ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(cpu_dev), "ggml_get_type_traits_cpu");
+    auto fn = (md_traits_fn) ggml_backend_get_cpu_traits_fn();
     if (!fn) {
         return nullptr;
     }

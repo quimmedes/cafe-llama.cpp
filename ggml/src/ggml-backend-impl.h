@@ -105,6 +105,16 @@ extern "C" {
     GGML_API struct ggml_backend_buffer * ggml_backend_meta_alloc_ctx_tensors_from_buft(struct ggml_context * ctx, ggml_backend_buffer_type_t buft);
 
     //
+    // CPU type traits for GPU backends that compute part of an op on the host
+    // backends link only ggml-base, so the registry stores the getter of the CPU backend here
+    //
+
+    typedef const struct ggml_type_traits_cpu * (*ggml_backend_cpu_traits_fn_t)(enum ggml_type type);
+
+    GGML_API void                         ggml_backend_set_cpu_traits_fn(ggml_backend_cpu_traits_fn_t fn);
+    GGML_API ggml_backend_cpu_traits_fn_t ggml_backend_get_cpu_traits_fn(void); // null when no CPU backend is registered
+
+    //
     // Backend (stream)
     //
 

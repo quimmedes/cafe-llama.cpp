@@ -41,6 +41,7 @@ static void ggml_backend_moe_cache_invalidate_buffer(
 #include <stdlib.h>
 #include <string.h>
 #include <algorithm>
+#include <atomic>
 #include <unordered_map>
 #include <vector>
 
@@ -2677,4 +2678,16 @@ static ggml_backend_buffer_type_t ggml_backend_cpu_buffer_from_ptr_type(void) {
 ggml_backend_buffer_t ggml_backend_cpu_buffer_from_ptr(void * ptr, size_t size) {
     GGML_ASSERT((uintptr_t)ptr % TENSOR_ALIGNMENT == 0 && "buffer pointer must be aligned");
     return ggml_backend_buffer_init(ggml_backend_cpu_buffer_from_ptr_type(), ggml_backend_cpu_buffer_from_ptr_i, ptr, size);
+}
+
+// CPU type traits getter, set by the registry
+
+static std::atomic<ggml_backend_cpu_traits_fn_t> g_cpu_traits_fn{nullptr};
+
+void ggml_backend_set_cpu_traits_fn(ggml_backend_cpu_traits_fn_t fn) {
+    g_cpu_traits_fn.store(fn, std::memory_order_release);
+}
+
+ggml_backend_cpu_traits_fn_t ggml_backend_get_cpu_traits_fn(void) {
+    return g_cpu_traits_fn.load(std::memory_order_acquire);
 }

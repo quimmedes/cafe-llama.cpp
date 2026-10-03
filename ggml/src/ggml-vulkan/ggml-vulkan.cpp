@@ -8247,11 +8247,10 @@ static vk_moe_cpu * ggml_vk_moe_cpu_get(ggml_backend_vk_context * ctx) {
 
     const char * frac_env = getenv("GGML_VK_MOE_DIRECT_CPU_FRAC");
     const float frac = frac_env && *frac_env ? std::clamp((float) atof(frac_env), 0.0f, 1.0f) : 0.5f;
-    ggml_backend_dev_t cpu_dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
-    if (frac <= 0.0f || !cpu_dev) {
+    if (frac <= 0.0f) {
         return nullptr;
     }
-    auto traits = (vk_moe_cpu_traits_fn) ggml_backend_reg_get_proc_address(ggml_backend_dev_backend_reg(cpu_dev), "ggml_get_type_traits_cpu");
+    auto traits = (vk_moe_cpu_traits_fn) ggml_backend_get_cpu_traits_fn();
     if (!traits) {
         return nullptr;
     }
