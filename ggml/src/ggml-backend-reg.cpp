@@ -46,6 +46,10 @@
 #include "ggml-vulkan.h"
 #endif
 
+#ifdef GGML_USE_RYZENAI
+#include "ggml-ryzenai.h"
+#endif
+
 #ifdef GGML_USE_WEBGPU
 #include "ggml-webgpu.h"
 #endif
@@ -133,6 +137,9 @@ struct ggml_backend_registry {
     } else {
         GGML_LOG_DEBUG("Vulkan backend disabled by GGML_DISABLE_VULKAN environment variable\n");
     }
+#endif
+#ifdef GGML_USE_RYZENAI
+        register_backend(ggml_backend_ryzenai_reg());
 #endif
 #ifdef GGML_USE_WEBGPU
         register_backend(ggml_backend_webgpu_reg());
@@ -594,6 +601,7 @@ void ggml_backend_load_all_from_path(const char * dir_path) {
     ggml_backend_load_best("rpc", silent, dir_path);
     ggml_backend_load_best("sycl", silent, dir_path);
     ggml_backend_load_best("vulkan", silent, dir_path);
+    ggml_backend_load_best("ryzenai", silent, dir_path);
     ggml_backend_load_best("virtgpu", silent, dir_path);
     ggml_backend_load_best("opencl", silent, dir_path);
     ggml_backend_load_best("hexagon", silent, dir_path);

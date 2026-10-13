@@ -17,6 +17,12 @@
 
 </div>
 
+## Ryzen AI NPU (experimental)
+
+On Linux, `cmake --preset ryzenai` builds the XDNA2 NPU backend together with Vulkan. The existing `--mmproj-device RyzenAI` option selects the NPU for the multimodal projector; `--device RyzenAI,Vulkan0 --split-mode layer --tensor-split 2,31` splits model layers between NPU and GPU. Supported matrix multiplies execute on NPU through bundled GEMM assets and system XRT; other operations use CPU. An external FastFlowLM checkout or executable is not required. See [build requirements, examples, precision limits and validation](docs/backend/RYZENAI.md).
+
+Powered by [FastFlowLM](https://github.com/ROCm/FastFlowLM).
+
 ## MoE Offloading & Memory Optimization
 
 In Mixture of Experts (MoE) models (such as **Qwen 3.8 Flash Next**, **DeepSeek-V2/V3**, **Mixtral**, etc.), expert weights represent the majority of parameters and VRAM. `cafe-llama.cpp` provides flags to offload MoE weights to **pinned host RAM (`CUDA_Host`)** or **CPU RAM** while keeping attention, KV cache, and routers on the GPU:
@@ -274,6 +280,7 @@ The `llama.cpp` project is build on top of the [ggml](https://github.com/ggml-or
 | [OpenCL](docs/backend/OPENCL.md) | Adreno GPU |
 | [OpenVINO [In Progress]](docs/backend/OPENVINO.md) | Intel CPUs, GPUs, and NPUs |
 | [RPC](https://github.com/ggml-org/llama.cpp/tree/master/tools/rpc) | All |
+| [RyzenAI](docs/backend/RYZENAI.md) | AMD XDNA2 NPU (Linux, experimental) |
 | [SYCL](docs/backend/SYCL.md) | Intel GPU |
 | [VirtGPU](docs/backend/VirtGPU.md) | VirtGPU APIR |
 | [Vulkan](docs/build.md#vulkan) | GPU |

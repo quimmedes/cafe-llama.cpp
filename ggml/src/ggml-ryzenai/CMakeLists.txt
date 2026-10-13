@@ -1,0 +1,82 @@
+if (NOT CMAKE_SYSTEM_NAME STREQUAL "Linux" OR NOT CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    message(FATAL_ERROR "GGML_RYZENAI requires Linux x86_64 and an XDNA2 NPU")
+endif()
+if (NOT GGML_CPU)
+    message(FATAL_ERROR "GGML_RYZENAI requires GGML_CPU for unsupported operations")
+endif()
+
+set(ryzenai_vendor "${CMAKE_CURRENT_SOURCE_DIR}/vendor")
+
+# Replace the auto-detected kernel path from builds made before bundling.
+if (GGML_RYZENAI_FLM_INCLUDE_DIR)
+    get_filename_component(old_flm_src "${GGML_RYZENAI_FLM_INCLUDE_DIR}/.." ABSOLUTE)
+    if (GGML_RYZENAI_XCLBIN STREQUAL "${old_flm_src}/xclbins/Qwen3-0.6B-NPU2/mm.xclbin")
+        unset(GGML_RYZENAI_XCLBIN CACHE)
+    endif()
+endif()
+if (GGML_RYZENAI_XCLBIN STREQUAL "/opt/fastflowlm/share/flm/xclbins/Qwen3-0.6B-NPU2/mm.xclbin")
+    unset(GGML_RYZENAI_XCLBIN CACHE)
+endif()
+foreach(old_var GGML_RYZENAI_FASTFLOWLM_ROOT GGML_RYZENAI_FLM_INCLUDE_DIR GGML_RYZENAI_GEMM_LIBRARY GGML_RYZENAI_AIEBU_LIBRARY)
+    unset(${old_var} CACHE)
+endforeach()
+
+set(ryzenai_gemm "${ryzenai_vendor}/lib/libgemm.so")
+set(ryzenai_aiebu "${ryzenai_vendor}/lib/libaiebu.a")
+set(GGML_RYZENAI_XCLBIN "${ryzenai_vendor}/xclbins/mm.xclbin" CACHE FILEPATH "Matching XDNA2 GEMM kernel (bundled by default)")
+foreach(asset "${ryzenai_vendor}/include/modules/gemm.hpp" "${ryzenai_gemm}" "${ryzenai_aiebu}" "${GGML_RYZENAI_XCLBIN}")
+    if (NOT EXISTS "${asset}")
+        message(FATAL_ERROR "RyzenAI asset missing: ${asset}. Restore the bundled vendor files or set GGML_RYZENAI_XCLBIN to a matching kernel.")
+    endif()
+endforeach()
+
+set(GGML_RYZENAI_XRT_ROOT "" CACHE PATH "XRT development prefix")
+find_path(GGML_RYZENAI_XRT_INCLUDE_DIR xrt/xrt_device.h
+    HINTS "${GGML_RYZENAI_XRT_ROOT}/include" "$ENV{XILINX_XRT}/include" /opt/xilinx/xrt/include)
+find_library(GGML_RYZENAI_XRT_LIBRARY NAMES xrt_coreutil libxrt_coreutil.so.2
+    HINTS "${GGML_RYZENAI_XRT_ROOT}/lib" "${GGML_RYZENAI_XRT_ROOT}/lib/x86_64-linux-gnu" /opt/xilinx/xrt/lib)
+find_path(GGML_RYZENAI_UUID_INCLUDE_DIR uuid/uuid.h HINTS "${GGML_RYZENAI_XRT_ROOT}/include")
+find_path(GGML_RYZENAI_DRM_INCLUDE_DIR drm/drm.h)
+if (NOT GGML_RYZENAI_XRT_INCLUDE_DIR OR NOT GGML_RYZENAI_XRT_LIBRARY OR NOT GGML_RYZENAI_UUID_INCLUDE_DIR OR NOT GGML_RYZENAI_DRM_INCLUDE_DIR)
+    message(FATAL_ERROR "XRT development files missing. Install libxrt-dev, uuid-dev and libdrm-dev, or set GGML_RYZENAI_XRT_ROOT. The XDNA userspace plugin is also required at runtime.")
+endif()
+
+configure_file("${ryzenai_gemm}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/libgemm.so" COPYONLY)
+configure_file("${GGML_RYZENAI_XCLBIN}" "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ryzenai-mm.xclbin" COPYONLY)
+add_library(ryzenai-gemm SHARED IMPORTED)
+set_target_properties(ryzenai-gemm PROPERTIES
+    IMPORTED_LOCATION "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/libgemm.so"
+    IMPORTED_NO_SONAME TRUE)
+
+ggml_add_backend_library(ggml-ryzenai ggml-ryzenai.cpp)
+set_target_properties(ggml-ryzenai PROPERTIES CXX_SCAN_FOR_MODULES OFF)
+target_compile_features(ggml-ryzenai PRIVATE cxx_std_20)
+target_compile_options(ggml-ryzenai PRIVATE -mavx2)
+target_include_directories(ggml-ryzenai SYSTEM PRIVATE
+    "${ryzenai_vendor}/include" "${GGML_RYZENAI_XRT_INCLUDE_DIR}"
+    "${GGML_RYZENAI_UUID_INCLUDE_DIR}" "${GGML_RYZENAI_DRM_INCLUDE_DIR}")
+target_compile_definitions(ggml-ryzenai PRIVATE
+    GGML_RYZENAI_DEFAULT_XCLBIN="${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/ryzenai-mm.xclbin")
+file(RELATIVE_PATH installed_xclbin "${CMAKE_INSTALL_FULL_BINDIR}" "${CMAKE_INSTALL_FULL_DATADIR}/llama.cpp/ryzenai/mm.xclbin")
+target_compile_definitions(ggml-ryzenai PRIVATE GGML_RYZENAI_INSTALLED_XCLBIN="${installed_xclbin}")
+target_link_libraries(ggml-ryzenai PRIVATE ryzenai-gemm "${ryzenai_aiebu}" "${GGML_RYZENAI_XRT_LIBRARY}" ${CMAKE_DL_LIBS})
+set_property(TARGET ggml-ryzenai APPEND PROPERTY INSTALL_RPATH "$ORIGIN")
+if (GGML_BACKEND_DL)
+    if (GGML_BACKEND_DIR)
+        install(FILES "${ryzenai_gemm}" DESTINATION "${GGML_BACKEND_DIR}")
+    else()
+        install(FILES "${ryzenai_gemm}" DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    endif()
+else()
+    install(FILES "${ryzenai_gemm}" DESTINATION "${CMAKE_INSTALL_LIBDIR}")
+endif()
+install(FILES "${GGML_RYZENAI_XCLBIN}" DESTINATION "${CMAKE_INSTALL_DATADIR}/llama.cpp/ryzenai" RENAME mm.xclbin)
+install(DIRECTORY "${ryzenai_vendor}/licenses" DESTINATION "${CMAKE_INSTALL_DATADIR}/llama.cpp/ryzenai")
+install(FILES "${ryzenai_vendor}/README.md" "${ryzenai_vendor}/PROVENANCE.json"
+    DESTINATION "${CMAKE_INSTALL_DATADIR}/llama.cpp/ryzenai")
+if (COMMAND license_add_file)
+    foreach(notice FastFlowLM-MIT.txt FastFlowLM-TERMS.md ThirdParty-MIT.txt Apache-2.0.txt GPL-2.txt Linux-syscall-note.txt)
+        license_add_file("RyzenAI ${notice}" "${ryzenai_vendor}/licenses/${notice}")
+    endforeach()
+endif()
+message(STATUS "RyzenAI: bundled GEMM=${ryzenai_gemm}, XRT=${GGML_RYZENAI_XRT_LIBRARY}, kernel=${GGML_RYZENAI_XCLBIN}")

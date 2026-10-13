@@ -1,0 +1,314 @@
+{
+  "upstream": "https://github.com/ROCm/FastFlowLM",
+  "commit": "6c9ed874908e4b793014a87bce4b43af644ef0db",
+  "files": {
+    "include/aiebu/aiebu.h": {
+      "source": "src/include/aiebu/aiebu.h",
+      "sha256": "af5e6c1e366b231e5ed190c2443474e04ee3a23f3691c994e38dc8f75dec35ec"
+    },
+    "include/biovault_bfloat16.h": {
+      "source": "src/include/biovault_bfloat16.h",
+      "sha256": "f885263e2585fba30f6327a3bd39dc54ce298cb6d15cff2d19ac0f2d0ceb92f1"
+    },
+    "include/buffer.hpp": {
+      "source": "src/include/buffer.hpp",
+      "sha256": "b0737528f55f7a84e0a2a539d3babb7876ec40f8633237826c8551daf5ecb11e"
+    },
+    "include/device_runtime.hpp": {
+      "source": "src/include/device_runtime.hpp",
+      "sha256": "0510ec68ffec47965d73a6e9e2e67f32e83d70cc679a2f202c585ccfdce779ab"
+    },
+    "include/lm_config.hpp": {
+      "source": "src/include/lm_config.hpp",
+      "sha256": "7aabb04c8a725fa004368ee6aac37bf3b5beec7bbbce99ca61b026176485db4d"
+    },
+    "include/modules/gemm.hpp": {
+      "source": "src/include/modules/gemm.hpp",
+      "sha256": "18c8cf6e82cc38d7daa328282880b9f934560edc27ba36d6f701e9fe9919c2cc"
+    },
+    "include/nlohmann/adl_serializer.hpp": {
+      "source": "src/include/nlohmann/adl_serializer.hpp",
+      "sha256": "80742b0081e0ac5094ad4d7a3549e969b004bb7ed86807911a8177c843701262"
+    },
+    "include/nlohmann/byte_container_with_subtype.hpp": {
+      "source": "src/include/nlohmann/byte_container_with_subtype.hpp",
+      "sha256": "2b75a051d2f82fd95f613c70472b85a281d085f1973791c1118244099bf38942"
+    },
+    "include/nlohmann/detail/abi_macros.hpp": {
+      "source": "src/include/nlohmann/detail/abi_macros.hpp",
+      "sha256": "cebb5441f1ce851444f47a7d8ea0446339ee499df83215ebd873c8347a191bd7"
+    },
+    "include/nlohmann/detail/conversions/from_json.hpp": {
+      "source": "src/include/nlohmann/detail/conversions/from_json.hpp",
+      "sha256": "fb2c183ee22f77668c76b5c1106af3fcb6d9ad156fe16b18ad7fd56a1cd01aa4"
+    },
+    "include/nlohmann/detail/conversions/to_chars.hpp": {
+      "source": "src/include/nlohmann/detail/conversions/to_chars.hpp",
+      "sha256": "405bfd861074d8125b035e4e00214e489eacbd8916c47e81e76aabf57818815e"
+    },
+    "include/nlohmann/detail/conversions/to_json.hpp": {
+      "source": "src/include/nlohmann/detail/conversions/to_json.hpp",
+      "sha256": "8cc8523b7ba2b549a0a08a0611765155a63ee81653ad3e414decfd656a520a56"
+    },
+    "include/nlohmann/detail/exceptions.hpp": {
+      "source": "src/include/nlohmann/detail/exceptions.hpp",
+      "sha256": "956e8ea024ed1b1203e6e604f9aa11195bc3b0cba371baeaa72e39f9452a5bc3"
+    },
+    "include/nlohmann/detail/hash.hpp": {
+      "source": "src/include/nlohmann/detail/hash.hpp",
+      "sha256": "a025807281c5d92fdfddcc993b2b2a9658146435cc10b003723b130698445c80"
+    },
+    "include/nlohmann/detail/input/binary_reader.hpp": {
+      "source": "src/include/nlohmann/detail/input/binary_reader.hpp",
+      "sha256": "69d511ee24ee4e2d6191ffa0294e659eb2fd22a12c36b1865614c8e949cfc8bd"
+    },
+    "include/nlohmann/detail/input/input_adapters.hpp": {
+      "source": "src/include/nlohmann/detail/input/input_adapters.hpp",
+      "sha256": "81dbcf625781414d9a0b9d232e39229ad02578996f185543c9f4607860bc5190"
+    },
+    "include/nlohmann/detail/input/json_sax.hpp": {
+      "source": "src/include/nlohmann/detail/input/json_sax.hpp",
+      "sha256": "500139711c5316f50397eefffdba84a8f11e9b4725937c00c041d0f2fb0e3fa5"
+    },
+    "include/nlohmann/detail/input/lexer.hpp": {
+      "source": "src/include/nlohmann/detail/input/lexer.hpp",
+      "sha256": "d930cf46ea32a19f39da672aa7d905c6bcacced51b75c1e01c1084e1bf27af3e"
+    },
+    "include/nlohmann/detail/input/parser.hpp": {
+      "source": "src/include/nlohmann/detail/input/parser.hpp",
+      "sha256": "54940a516d35969298b596815f81084f4d647c15d485829f205f8a4ec985464b"
+    },
+    "include/nlohmann/detail/input/position_t.hpp": {
+      "source": "src/include/nlohmann/detail/input/position_t.hpp",
+      "sha256": "0239037872b622a5f3f42fa1b453d201f977d21829b2dc4a19abe2594515eada"
+    },
+    "include/nlohmann/detail/iterators/internal_iterator.hpp": {
+      "source": "src/include/nlohmann/detail/iterators/internal_iterator.hpp",
+      "sha256": "bf015623518c5aab4762d9a4d21af0e85a26cdcb3fc6e69e464c8575a3b87aba"
+    },
+    "include/nlohmann/detail/iterators/iter_impl.hpp": {
+      "source": "src/include/nlohmann/detail/iterators/iter_impl.hpp",
+      "sha256": "76e2bfa4adccc367c166cb7660d47087c0892e03bad0cd7908cfeba6175b4355"
+    },
+    "include/nlohmann/detail/iterators/iteration_proxy.hpp": {
+      "source": "src/include/nlohmann/detail/iterators/iteration_proxy.hpp",
+      "sha256": "3c562f1783e1fc9476ed53d8054bc50309caa425d993996a9ddf9194fb2129cc"
+    },
+    "include/nlohmann/detail/iterators/iterator_traits.hpp": {
+      "source": "src/include/nlohmann/detail/iterators/iterator_traits.hpp",
+      "sha256": "960d1fefbe7cb220292b07e4ec047bfa9a3ccbd753adaf62e5d583f746e71e47"
+    },
+    "include/nlohmann/detail/iterators/json_reverse_iterator.hpp": {
+      "source": "src/include/nlohmann/detail/iterators/json_reverse_iterator.hpp",
+      "sha256": "6f072fb2b9e151ad9645cb03a9aa23231480bf447e53b2e0ecb41f45fb7503e1"
+    },
+    "include/nlohmann/detail/iterators/primitive_iterator.hpp": {
+      "source": "src/include/nlohmann/detail/iterators/primitive_iterator.hpp",
+      "sha256": "4be455f9b99b9f75a81ba333c1e2f2a382a41642f3b5a3fd7644bb15ee713494"
+    },
+    "include/nlohmann/detail/json_custom_base_class.hpp": {
+      "source": "src/include/nlohmann/detail/json_custom_base_class.hpp",
+      "sha256": "e622910868b019ba09460c96a6092c1018ed501f34cce4ed633641400c2d2500"
+    },
+    "include/nlohmann/detail/json_pointer.hpp": {
+      "source": "src/include/nlohmann/detail/json_pointer.hpp",
+      "sha256": "8a11f74003d3bf8cdfdcb0894b903af2568fb0de75f1e9b8cb6a7a08a95593b5"
+    },
+    "include/nlohmann/detail/json_ref.hpp": {
+      "source": "src/include/nlohmann/detail/json_ref.hpp",
+      "sha256": "5d133945d0859acaa82c50c1a044b1e1f806c0a38107eae24bf07ff5944fc1e3"
+    },
+    "include/nlohmann/detail/macro_scope.hpp": {
+      "source": "src/include/nlohmann/detail/macro_scope.hpp",
+      "sha256": "ab81c63264a051785c156f880b2b05dceb2a142f01029652638775e5c4ba5cb6"
+    },
+    "include/nlohmann/detail/macro_unscope.hpp": {
+      "source": "src/include/nlohmann/detail/macro_unscope.hpp",
+      "sha256": "01f3ada82b5d23a160f03af857223e84594725ea42ecd5cb21f9c9e8bfbb3aeb"
+    },
+    "include/nlohmann/detail/meta/call_std/begin.hpp": {
+      "source": "src/include/nlohmann/detail/meta/call_std/begin.hpp",
+      "sha256": "4629b547aa6b6629c266b1b474f576cbde5ce898c96502c828a72d99212b9f34"
+    },
+    "include/nlohmann/detail/meta/call_std/end.hpp": {
+      "source": "src/include/nlohmann/detail/meta/call_std/end.hpp",
+      "sha256": "e09dd80f2263ff192d60bad19bdbdc5402866d0b0c8caeb9c2759b26ba864a39"
+    },
+    "include/nlohmann/detail/meta/cpp_future.hpp": {
+      "source": "src/include/nlohmann/detail/meta/cpp_future.hpp",
+      "sha256": "71e606c586174ff875f5996a00bc6e84a49e0919eafd6fb38c7cb928dfdf5795"
+    },
+    "include/nlohmann/detail/meta/detected.hpp": {
+      "source": "src/include/nlohmann/detail/meta/detected.hpp",
+      "sha256": "d144ac2ab6bb92be35bfda7eec560b9d030760e4330b7f951a2aca63469488a1"
+    },
+    "include/nlohmann/detail/meta/identity_tag.hpp": {
+      "source": "src/include/nlohmann/detail/meta/identity_tag.hpp",
+      "sha256": "37ff788879d4b14ffa2e79bdc75b470d2c2ca5ebadafef649312f653455d45fa"
+    },
+    "include/nlohmann/detail/meta/is_sax.hpp": {
+      "source": "src/include/nlohmann/detail/meta/is_sax.hpp",
+      "sha256": "e60398b282767374747db20ab06101804c7345eea0761a313a298bf87b913f91"
+    },
+    "include/nlohmann/detail/meta/std_fs.hpp": {
+      "source": "src/include/nlohmann/detail/meta/std_fs.hpp",
+      "sha256": "257716f0958e9fd6c1dc3f0335716d779550353c58bc929e8dda1c79bd336701"
+    },
+    "include/nlohmann/detail/meta/type_traits.hpp": {
+      "source": "src/include/nlohmann/detail/meta/type_traits.hpp",
+      "sha256": "efe5985856111106958d373049b70624868696da5bd367dc9991cf5e78a5c1e6"
+    },
+    "include/nlohmann/detail/meta/void_t.hpp": {
+      "source": "src/include/nlohmann/detail/meta/void_t.hpp",
+      "sha256": "c340e7b148543b0abfd719ddbc3759e23c2feffc63656136a15fd80b98ca8bf8"
+    },
+    "include/nlohmann/detail/output/binary_writer.hpp": {
+      "source": "src/include/nlohmann/detail/output/binary_writer.hpp",
+      "sha256": "0ba7888b6ab8170619812dc7c9bf58ab14ad3e86cfadda9c3e19337782c8ddc5"
+    },
+    "include/nlohmann/detail/output/output_adapters.hpp": {
+      "source": "src/include/nlohmann/detail/output/output_adapters.hpp",
+      "sha256": "3322dce8f63e69930806bd8691c2cd9ece8a76b54b34f617641329c44559bbb5"
+    },
+    "include/nlohmann/detail/output/serializer.hpp": {
+      "source": "src/include/nlohmann/detail/output/serializer.hpp",
+      "sha256": "d8dfaf0419a2d069d6195f302400c2b7aa183dfe0f2ae939e2a3ff41689f5d7a"
+    },
+    "include/nlohmann/detail/string_concat.hpp": {
+      "source": "src/include/nlohmann/detail/string_concat.hpp",
+      "sha256": "fb30fb50c325a1b5610a62a9061a1966b4e850dd964635c1ad1c4c9da48f7daa"
+    },
+    "include/nlohmann/detail/string_escape.hpp": {
+      "source": "src/include/nlohmann/detail/string_escape.hpp",
+      "sha256": "58a900e91b28d1246ceae647e6a8924f9f97c2a593ced63d21191dcbe403df2c"
+    },
+    "include/nlohmann/detail/string_utils.hpp": {
+      "source": "src/include/nlohmann/detail/string_utils.hpp",
+      "sha256": "85e2fbdfe07f1a44b90d5422ee1b951d1053f32e429dc4aee36274fb03fd9354"
+    },
+    "include/nlohmann/detail/value_t.hpp": {
+      "source": "src/include/nlohmann/detail/value_t.hpp",
+      "sha256": "67ed7b164db48556bb4ae409a645401faba459081570f9b9f9ff977fd32c6114"
+    },
+    "include/nlohmann/json.hpp": {
+      "source": "src/include/nlohmann/json.hpp",
+      "sha256": "18934602e24a5318cad1518be76d25e92ec9de9572c79d2ef05b80603ab04c4e"
+    },
+    "include/nlohmann/json_fwd.hpp": {
+      "source": "src/include/nlohmann/json_fwd.hpp",
+      "sha256": "8777a878c20a412dd04c8011c87c3d72d74e48a4dda5e52f7948e26dd2168931"
+    },
+    "include/nlohmann/ordered_map.hpp": {
+      "source": "src/include/nlohmann/ordered_map.hpp",
+      "sha256": "96cfc138fb53164d8740de602f7996053c6f5ed5f629438fb042cf8abee930c5"
+    },
+    "include/nlohmann/thirdparty/hedley/hedley.hpp": {
+      "source": "src/include/nlohmann/thirdparty/hedley/hedley.hpp",
+      "sha256": "1547b367895f8be9f8283ae21f583182db572ad990236220002b632a15238712"
+    },
+    "include/nlohmann/thirdparty/hedley/hedley_undef.hpp": {
+      "source": "src/include/nlohmann/thirdparty/hedley/hedley_undef.hpp",
+      "sha256": "ddf06784ca9448b4899db96a409ec1cbc65a0f682db9c966c011f00b77ae75c4"
+    },
+    "include/npu_utils/amdxdna_accel.h": {
+      "source": "src/include/npu_utils/amdxdna_accel.h",
+      "sha256": "d969a358e1fe3445e11ef934584f32d4a75ea819ba671ce5c0dd0a57ebf18716"
+    },
+    "include/npu_utils/instr_utils/npu_cmd.hpp": {
+      "source": "src/include/npu_utils/instr_utils/npu_cmd.hpp",
+      "sha256": "5fbe45b4cc3586b14f00dafb2d2acdc0eed36fb777ff46755112ade242539ca6"
+    },
+    "include/npu_utils/instr_utils/npu_cmd_ddr.hpp": {
+      "source": "src/include/npu_utils/instr_utils/npu_cmd_ddr.hpp",
+      "sha256": "fcda129bcb377bbc9121b23fb635a24144464abacb0e8320f7b2eea2bd7054cb"
+    },
+    "include/npu_utils/instr_utils/npu_cmd_issue_token.hpp": {
+      "source": "src/include/npu_utils/instr_utils/npu_cmd_issue_token.hpp",
+      "sha256": "d96fb0679c854e0d8228db4c1cd65a384bdca9451b3c2b7bb0be81f9f680c437"
+    },
+    "include/npu_utils/instr_utils/npu_cmd_maskwrite.hpp": {
+      "source": "src/include/npu_utils/instr_utils/npu_cmd_maskwrite.hpp",
+      "sha256": "4ac19d11c5925ded12b66f0c0ff7c6be5064a840b496c44ee68365dcc8a6d963"
+    },
+    "include/npu_utils/instr_utils/npu_cmd_preemption.hpp": {
+      "source": "src/include/npu_utils/instr_utils/npu_cmd_preemption.hpp",
+      "sha256": "bc3a507a41af79e7379413fa70ac2673902b19b4391576b16f3b7538b4953146"
+    },
+    "include/npu_utils/instr_utils/npu_cmd_wait.hpp": {
+      "source": "src/include/npu_utils/instr_utils/npu_cmd_wait.hpp",
+      "sha256": "39819ed0baa8e8365725bbda388c13b15448b278583e6fb9faf37ed5839a9513"
+    },
+    "include/npu_utils/instr_utils/npu_cmd_write.hpp": {
+      "source": "src/include/npu_utils/instr_utils/npu_cmd_write.hpp",
+      "sha256": "342abf78e23fcb7f35db6a6a98612ab2b9ff789a34a9dff49b11f6ae23689015"
+    },
+    "include/npu_utils/instr_utils/npu_cmd_write_dma.hpp": {
+      "source": "src/include/npu_utils/instr_utils/npu_cmd_write_dma.hpp",
+      "sha256": "cb082d814194d61006692f491429e86e5548a3ccf1d543a321b3fb47bba57732"
+    },
+    "include/npu_utils/npu_instr_utils.hpp": {
+      "source": "src/include/npu_utils/npu_instr_utils.hpp",
+      "sha256": "353c58f9c29c29547d18a873c4943101f1bf969755c4f79a976ebe40e1077e52"
+    },
+    "include/npu_utils/npu_utils_xrt.hpp": {
+      "source": "src/include/npu_utils/npu_utils_xrt.hpp",
+      "sha256": "8c8d1671470a8c147e852458af1c4f657dc14effe4543fdca0b0cfb0b03f8f94"
+    },
+    "include/typedef.hpp": {
+      "source": "src/include/typedef.hpp",
+      "sha256": "ea47eecfc279de0c1c9a0b2562347242966b48f495a78cd279a066b63e9c9b3e"
+    },
+    "include/utils/debug_utils.hpp": {
+      "source": "src/include/utils/debug_utils.hpp",
+      "sha256": "bab0a01435810c8e0f4c3d0ea9a83a4179c9150e183a8814708ea4aedc9fc9ac"
+    },
+    "include/utils/file_access.hpp": {
+      "source": "src/include/utils/file_access.hpp",
+      "sha256": "9b0e8d407b85c8e7d7151015cf31c073406e68e7dee2c2b6d0aa7a3f569e4e3a"
+    },
+    "include/utils/utils.hpp": {
+      "source": "src/include/utils/utils.hpp",
+      "sha256": "86d317329afa8c426ae2a38ca6cf74fb3c5ef28cf4f858120ae52ce4d27790fd"
+    },
+    "lib/libaiebu.a": {
+      "source": "src/lib/xrt/libaiebu.a",
+      "sha256": "c6acc47cd54e6729ab32b1e53a59f3f21ecc12e142b5ea336a3e5f1aa535b863"
+    },
+    "lib/libgemm.so": {
+      "source": "src/lib/xrt/libgemm.so",
+      "sha256": "4edc9b8ad41059ced21d0b21ce08214fdc784fe4057aa667c10995d1177dad67"
+    },
+    "licenses/FastFlowLM-MIT.txt": {
+      "source": "LICENSE_RUNTIME.txt",
+      "sha256": "3de7fea911353980067e0f943d332dd74cbd2b610d4421318aaef25d8103f11d"
+    },
+    "licenses/FastFlowLM-TERMS.md": {
+      "source": "TERMS.md",
+      "sha256": "60094d30f6e18b819b2614f0060608bbf13bbb991be1891b85221df8d871beea"
+    },
+    "xclbins/mm.xclbin": {
+      "source": "src/xclbins/Qwen3-0.6B-NPU2/mm.xclbin",
+      "sha256": "4afc2a6f2459c0ddcf7de61193a6e83e53a951a0f6c33521456d569bab2c7142"
+    }
+  },
+  "license_files": {
+    "licenses/Apache-2.0.txt": {
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    "licenses/FastFlowLM-MIT.txt": {
+      "sha256": "3de7fea911353980067e0f943d332dd74cbd2b610d4421318aaef25d8103f11d"
+    },
+    "licenses/FastFlowLM-TERMS.md": {
+      "sha256": "60094d30f6e18b819b2614f0060608bbf13bbb991be1891b85221df8d871beea"
+    },
+    "licenses/GPL-2.txt": {
+      "sha256": "edaef632cbb643e4e7a221717a6c441a4c1a7c918e6e4d56debc3d8739b233f6"
+    },
+    "licenses/Linux-syscall-note.txt": {
+      "sha256": "9128ff28ee0f54b6b31a121e002b7c195e2563446430cd9b69fdc8fa7944ec3f"
+    },
+    "licenses/ThirdParty-MIT.txt": {
+      "sha256": "de1e607043d167cbc1e0ad8dbdbd982a297dd47636ecd750fa7b7b4c4dd2d3e7"
+    }
+  }
+}

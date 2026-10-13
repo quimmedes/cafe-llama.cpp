@@ -21,6 +21,7 @@ The following sections describe how to build with different backends and options
 * [MUSA](#musa)
 * [HIP](#hip)
 * [Vulkan](#vulkan)
+* [Ryzen AI NPU](backend/RYZENAI.md)
 * [CANN](#cann)
 * [ZenDNN](#zendnn)
 * [Arm® KleidiAI™](#arm-kleidiai)
