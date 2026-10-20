@@ -4,8 +4,7 @@
 #include <climits>
 #include <mutex>
 
-// named namespace: nvcc host stubs for kernels in an anonymous namespace trigger -Wextra-semi
-namespace ggml_cuda_gdn_mma {
+namespace ggml_cuda_gated_delta_net_mma {
 constexpr int D = 128;
 using bf16      = nv_bfloat16;
 
@@ -417,9 +416,8 @@ static gdn_path select_gdn_mma_path(int device, const ggml_cuda_gdn_mma_args & a
     return init<16, 128>(device) ? gdn_path::whole_head : gdn_path::ar;
 #endif // GGML_USE_HIP
 }
-}  // namespace ggml_cuda_gdn_mma
-
-using namespace ggml_cuda_gdn_mma;
+}  // namespace
+using namespace ggml_cuda_gated_delta_net_mma;
 
 bool ggml_cuda_gdn_mma_launch(int device, const ggml_cuda_gdn_mma_args & a, cudaStream_t stream) {
     if (!a.state_out) {

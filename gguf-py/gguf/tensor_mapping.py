@@ -417,6 +417,7 @@ class TensorNameMap:
             "model.layers.{bid}.post_attention_layernorm",       # gemma2 olmo2    # ge
             "layers.{bid}.post_attention_layernorm",             # embeddinggemma
             "model.layers.{bid}.post_self_attn_layernorm",       # glm-4-0414
+            "model.layers.{bid}.post_attn_norm",                 # kolibri1
             "model.layers.layers.{bid}.post_mixer_norm.weight",  # plamo2
         ),
 
@@ -487,10 +488,19 @@ class TensorNameMap:
         ),
 
         # Post feed-forward norm
+        MODEL_TENSOR.FFN_NORM_ADA_DOWN: (
+            "model.layers.{bid}.ada_rms_norm.linear1", # voxtral realtime
+        ),
+
+        MODEL_TENSOR.FFN_NORM_ADA_UP: (
+            "model.layers.{bid}.ada_rms_norm.linear2", # voxtral realtime
+        ),
+
         MODEL_TENSOR.FFN_POST_NORM: (
             "model.layers.{bid}.post_feedforward_layernorm",  # gemma2 olmo2
             "layers.{bid}.post_feedforward_layernorm",        # embeddinggemma
             "model.layers.{bid}.post_mlp_layernorm",          # glm-4-0414
+            "model.layers.{bid}.post_ffn_norm",               # kolibri1
             "model.layers.layers.{bid}.post_mlp_norm.weight", # plamo2
             "model.layers.{bid}.feed_forward.up_proj",
             "model.layers.{bid}.post_moe_norm",               # grok-2
@@ -531,9 +541,11 @@ class TensorNameMap:
 
         MODEL_TENSOR.FFN_EXP_PROBS_B: (
             "model.layers.{bid}.mlp.gate.e_score_correction",               # deepseek-v3 dots1
+            "model.layers.{bid}.mlp.gate.e_score_correction_bias",          # muse-spark
             "model.layers.{bid}.mlp.moe_statics.e_score_correction",        # ernie4.5-moe
             "model.layers.{bid}.mlp.gate.expert_bias",                      # bailingmoe2
             "model.layers.{bid}.mlp.expert_bias",                           # afmoe
+            "model.layers.{bid}.moe.router.expert_bias",                    # kolibri1
             "model.layers.{bid}.feed_forward.expert_bias",                  # lfm2moe
             "model.layers.{bid}.block_sparse_moe.e_score_correction",       # minimax-m2
             "backbone.layers.{bid}.mixer.gate.e_score_correction",          # nemotron-h-moe
@@ -686,10 +698,20 @@ class TensorNameMap:
 
         MODEL_TENSOR.MOE_LATENT_DOWN: (
             "backbone.layers.{bid}.mixer.fc1_latent_proj",                 # nemotron 3 super
+            "model.layers.{bid}.mlp.pre_expert_proj",                      # muse-spark
         ),
 
         MODEL_TENSOR.MOE_LATENT_UP: (
             "backbone.layers.{bid}.mixer.fc2_latent_proj",                 # nemotron 3 super
+            "model.layers.{bid}.mlp.post_expert_proj",                     # muse-spark
+        ),
+
+        MODEL_TENSOR.FFN_PRE_EXP_NORM: (
+            "model.layers.{bid}.mlp.pre_expert_norm",                      # muse-spark
+        ),
+
+        MODEL_TENSOR.FFN_POST_EXP_NORM: (
+            "model.layers.{bid}.mlp.experts.post_expert_norm",             # muse-spark
         ),
 
         # Feed-forward down
@@ -2521,6 +2543,7 @@ class TensorNameMap:
 
         MODEL_TENSOR.A_ENC_CONV1D: (
             "audio_tower.conv{bid}", # ultravox
+            "audio_tower.embedder.conv{bid}", # voxtral realtime
             "conformer.pre_encode.conv.{bid}", # lfm2
             "model.audio_tower.subsample_conv_projection.conv_{bid}.conv", # gemma3n
             "conformer.subsample_conv_projection.layer{bid}.conv", # gemma4
@@ -2553,6 +2576,7 @@ class TensorNameMap:
 
         MODEL_TENSOR.A_POST_NORM: (
             "audio_tower.layer_norm", # ultravox
+            "audio_tower.norm", # voxtral realtime
             "audio_encoder.dots_encoder.speech_encoder.layer_norm", # dots3note
             "audio_tower.ln_post", # qwen2omni
             "encoder.layer_norm", # mimo-audio-tokenizer
@@ -2624,6 +2648,7 @@ class TensorNameMap:
 
         MODEL_TENSOR.A_ENC_OUTPUT: (
             "audio_tower.layers.{bid}.self_attn.out_proj", # ultravox
+            "audio_tower.layers.{bid}.self_attn.o_proj", # voxtral realtime
             "audio_encoder.dots_encoder.speech_encoder.layers.{bid}.self_attn.out_proj", # dots3note
             "conformer.layers.{bid}.self_attn.linear_out", # lfm2
             "conformer.layers.{bid}.attention.post", # gemma3n
@@ -2663,6 +2688,7 @@ class TensorNameMap:
         MODEL_TENSOR.A_ENC_FFN_UP: (
             "audio_encoder.dots_encoder.speech_encoder.layers.{bid}.fc1_up", # dots3note (split from fc1 in conversion code)
             "audio_tower.layers.{bid}.fc1", # ultravox
+            "audio_tower.layers.{bid}.mlp.up_proj", # voxtral realtime
             "conformer.layers.{bid}.feed_forward1.linear1", # lfm2
             "conformer.layers.{bid}.ffw_layer_start.ffw_layer_1", # gemma3n
             "conformer.layers.{bid}.feed_forward1.ffw_layer_1", # gemma4
@@ -2673,11 +2699,13 @@ class TensorNameMap:
 
         MODEL_TENSOR.A_ENC_FFN_GATE: (
             "audio_encoder.dots_encoder.speech_encoder.layers.{bid}.fc1_gate", # dots3note (split from fc1 in conversion code)
+            "audio_tower.layers.{bid}.mlp.gate_proj", # voxtral realtime
         ),
 
         MODEL_TENSOR.A_ENC_FFN_DOWN: (
             "audio_encoder.dots_encoder.speech_encoder.layers.{bid}.fc2", # dots3note
             "audio_tower.layers.{bid}.fc2", # ultravox
+            "audio_tower.layers.{bid}.mlp.down_proj", # voxtral realtime
             "conformer.layers.{bid}.feed_forward1.linear2", # lfm2
             "conformer.layers.{bid}.ffw_layer_start.ffw_layer_2", # gemma3n
             "conformer.layers.{bid}.feed_forward1.ffw_layer_2", # gemma4
@@ -2830,6 +2858,7 @@ class TensorNameMap:
             "conformer.layers.{bid}.conv.batch_norm", # lfm2
             "conformer.layers.{bid}.lconv1d.pre_layer_norm", # gemma3n
             "sound_encoder.encoder.layers.{bid}.conv.norm", # parakeet
+            "encoder.layers.{bid}.conv.batch_norm", # granite_speech
         ),
 
         MODEL_TENSOR.A_ENC_CONV_NORM_MEAN: (
@@ -2838,7 +2867,6 @@ class TensorNameMap:
 
         MODEL_TENSOR.A_ENC_CONV_NORM_VAR: (
             "sound_encoder.encoder.layers.{bid}.conv.norm.running_var", # parakeet
-            "encoder.layers.{bid}.conv.batch_norm", # granite_speech
         ),
 
         MODEL_TENSOR.A_ENC_CONV_PW1: (
