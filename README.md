@@ -123,6 +123,43 @@ llama-server -m Qwen3.8-27B-Q5-v4-XYZ.gguf \
 
 - `--spec-draft-n-max 4` is the sweet spot (5 is equal, 3 and 6 slightly slower). Never use 7 or more: with 8 tokens per verify pass CUDA switches to the matrix-matrix kernels and decode drops by half.
 - `-hmoe` is not needed on a dense model.
+- On an RTX 30xx (GA10x), Q2_K / Q3_K / Q4_K weights now switch to the matrix-matrix kernels from 4 tokens, where they are faster: a Q3 target verifies 8 tokens in 33 ms instead of 52 ms. Q5_K and larger types still switch after 8 tokens.
+
+### Qwen 3.8 27B & EAGLE-4 Draft (`draft-eagle4`)
+
+GGUF quantizations of the EAGLE-4 draft for Qwen3.8-27B ([EAGLE-Corp/Qwen3.8-27B-EAGLE4](https://huggingface.co/EAGLE-Corp/Qwen3.8-27B-EAGLE4)) are available at:
+👉 **[Hugging Face: quimmedes/Qwen3.8-27B-EAGLE4-GGUF](https://huggingface.co/quimmedes/Qwen3.8-27B-EAGLE4-GGUF)**
+
+The files have no `token_embd`: the draft reads the target's token embeddings. They are subject to the Eagle 4 Source-Available License (see the model card).
+
+| File | Draft layer | LM head | Size | VRAM |
+| --- | --- | --- | ---: | ---: |
+| `Qwen3.8-27B-Draft4-Q2_0.gguf` - Recommended | Q2_K / Q3_K | Q2_K | 0.61 GB | 575 MiB |
+| `Qwen3.8-27B-Draft4-Q3_0.gguf` | Q3_K_M mix | Q6_K | 1.30 GB | 1232 MiB |
+| `Qwen3.8-27B-Draft4-Q4_0.gguf` | Q8_0 | Q5_K | 1.43 GB | 1354 MiB |
+| `Qwen3.8-27B-Draft4-Q8_0.gguf` | Q8_0 | Q8_0 | 1.91 GB | 1809 MiB |
+
+```sh
+llama-server -m Qwen3.8-27B-Q5-v4-XYZ.gguf \
+  -md Qwen3.8-27B-Draft4-Q2_0.gguf \
+  --spec-type draft-eagle4 --spec-draft-n-max 3 --spec-draft-p-min 0.5 \
+  -c 8192 -np 1 -fa on -ctk q8_0 -ctv q8_0 -ctkd q8_0 -ctvd q8_0 -kvu -ngl 99 -ngld 99
+```
+
+- The draft reads the hidden states of target layers 3, 31 and 59 and only runs with a Qwen3.8-27B target.
+- `--spec-draft-n-max 3 --spec-draft-p-min 0.5` was the best setting on an RTX 3090.
+- `--spec-draft-n-paths N` (server only, `-np 1`) drafts N paths, merges them into a token tree and verifies the whole tree in one target pass (tree attention mask, per-node conv window and gated delta net state). Every tree node keeps one recurrent-state snapshot of ~150 MB on Qwen3.5 / 3.8 hybrid targets, and on an RTX 3090 the tree was slower than the chain because verify cost grows with the number of tree tokens. `--spec-draft-p-split P` sets the minimum probability of a branch candidate.
+
+Measured on an RTX 3090, Qwen3.8-27B Q5 target, reasoning on, greedy, 512 tokens (t/s):
+
+| Draft | Python | C++ | Reasoning | Bash | Mean |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| none | 39.7 | 39.8 | 39.7 | 39.5 | 39.6 |
+| EAGLE-4 Q2_0 | 57.9 | 57.0 | 79.7 | 54.9 | 62.4 |
+| EAGLE-4 Q8_0 | 54.8 | 49.5 | 69.9 | 51.0 | 56.3 |
+| built-in MTP head, `--spec-draft-n-max 3` | 61.1 | 53.2 | 69.9 | 58.1 | 60.6 |
+
+Details: [docs/speculative.md](docs/speculative.md).
 
 ### Serving Safetensors Checkpoints
 
