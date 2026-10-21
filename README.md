@@ -134,14 +134,14 @@ The files have no `token_embd`: the draft reads the target's token embeddings. T
 
 | File | Draft layer | LM head | Size | VRAM |
 | --- | --- | --- | ---: | ---: |
-| `Qwen3.8-27B-Draft4-Q2_0.gguf` - Recommended | Q2_K / Q3_K | Q2_K | 0.61 GB | 575 MiB |
-| `Qwen3.8-27B-Draft4-Q3_0.gguf` | Q3_K_M mix | Q6_K | 1.30 GB | 1232 MiB |
-| `Qwen3.8-27B-Draft4-Q4_0.gguf` | Q8_0 | Q5_K | 1.43 GB | 1354 MiB |
-| `Qwen3.8-27B-Draft4-Q8_0.gguf` | Q8_0 | Q8_0 | 1.91 GB | 1809 MiB |
+| `Qwen3.8-27B-EAGLE4-Q2_0.gguf` - Recommended | Q2_K / Q3_K | Q2_K | 0.61 GB | 575 MiB |
+| `Qwen3.8-27B-EAGLE4-Q3_0.gguf` | Q3_K_M mix | Q6_K | 1.30 GB | 1232 MiB |
+| `Qwen3.8-27B-EAGLE4-Q4_0.gguf` | Q8_0 | Q5_K | 1.43 GB | 1354 MiB |
+| `Qwen3.8-27B-EAGLE4-Q8_0.gguf` | Q8_0 | Q8_0 | 1.91 GB | 1809 MiB |
 
 ```sh
 llama-server -m Qwen3.8-27B-Q5-v4-XYZ.gguf \
-  -md Qwen3.8-27B-Draft4-Q2_0.gguf \
+  -md Qwen3.8-27B-EAGLE4-Q2_0.gguf \
   --spec-type draft-eagle4 --spec-draft-n-max 3 --spec-draft-p-min 0.5 \
   -c 8192 -np 1 -fa on -ctk q8_0 -ctv q8_0 -ctkd q8_0 -ctvd q8_0 -kvu -ngl 99 -ngld 99
 ```
