@@ -348,6 +348,9 @@ Use exactly one of these options:
 --spec-draft-n-max                      N
                                         number of tokens to draft for speculative decoding (default: 3)
                                         (env: LLAMA_ARG_SPEC_DRAFT_N_MAX)
+--spec-draft-n-paths                    N
+                                        number of EAGLE-4 draft paths, merged into one token tree and verified in one target pass (default: 1, 1 = chain)
+                                        (env: LLAMA_ARG_SPEC_DRAFT_N_PATHS)
 --spec-draft-n-min                      N
                                         minimum number of draft tokens to use for speculative decoding (default: 0)
                                         (env: LLAMA_ARG_SPEC_DRAFT_N_MIN)
