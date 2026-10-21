@@ -793,6 +793,9 @@ struct llama_model {
     // eagle3 / dflash feature fusion layer
     struct ggml_tensor * fc   = nullptr;
     struct ggml_tensor * fc_s = nullptr;
+    struct ggml_tensor * fc_norm[3] = { nullptr, nullptr, nullptr }; // eagle4
+    struct ggml_tensor * efficient_lm_head      = nullptr; // eagle4 low-rank candidate head [rank, n_vocab]
+    struct ggml_tensor * efficient_lm_head_down = nullptr; // eagle4 candidate head projection [n_embd, rank]
     struct ggml_tensor * d2t = nullptr;  // draft to target vocabulary mapping
 
     // dspark

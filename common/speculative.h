@@ -76,6 +76,9 @@ struct common_speculative_draft_params {
     // the generated draft from the last _draft() call
     llama_tokens * result;
 
+    // optional multi-path drafts: one token chain per path
+    std::vector<llama_tokens> * result_paths = nullptr;
+
     // candidate distribution per drafted token; set it to make draft-simple and draft-mtp sample
     std::vector<std::vector<llama_token_data>> * result_q = nullptr;
 
@@ -85,6 +88,12 @@ struct common_speculative_draft_params {
 };
 
 common_speculative_draft_params & common_speculative_get_draft_params(common_speculative * spec, llama_seq_id seq_id);
+
+// sequence id of path path_id for slot slot_id (0 = the slot's own sequence)
+llama_seq_id common_speculative_path_seq(uint32_t n_slots, uint32_t n_paths, llama_seq_id slot_id, uint32_t path_id);
+
+// accept n_accepted tokens from path path_id (multi-path drafts)
+void common_speculative_accept_path(common_speculative * spec, llama_seq_id seq_id, int32_t path_id, uint16_t n_accepted);
 
 // optionally call once at the beginning of a new generation
 void common_speculative_begin(common_speculative * spec, llama_seq_id seq_id, const llama_tokens & prompt);

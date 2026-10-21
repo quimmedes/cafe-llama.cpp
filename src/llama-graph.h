@@ -232,6 +232,24 @@ public:
     const llama_rope_section_order rope_section_order = LLAMA_ROPE_SECTION_ORDER_TYXZ;
 };
 
+// token tree, see llama_batch_ext_set_tree_parent()
+class llm_graph_input_tree : public llm_graph_input_i {
+public:
+    llm_graph_input_tree(int64_t d_conv) : d_conv(d_conv) {}
+    virtual ~llm_graph_input_tree() = default;
+
+    void set_input(const llama_ubatch * ubatch) override;
+
+    bool can_reuse(const llm_graph_params & params) override;
+
+    // conv columns index the time steps [conv state (d_conv - 1), tokens (n_tokens)]
+    ggml_tensor * parent    = nullptr; // I32 [n_tokens], parent token, -1 for a root
+    ggml_tensor * conv_win  = nullptr; // I32 [d_conv*n_tokens], conv window of each token, oldest first
+    ggml_tensor * conv_snap = nullptr; // I32 [(d_conv - 1)*n_tokens], conv state of snapshot slot s (after token n_tokens - 1 - s)
+
+    const int64_t d_conv;
+};
+
 // temperature tuning, used by llama4
 class llm_graph_input_attn_temp : public llm_graph_input_i {
 public:
@@ -912,7 +930,8 @@ struct llm_graph_params {
                 (!ubatch.embd  && !other.ubatch.embd)  ||
                 (ubatch.token && other.ubatch.token && ubatch.embd && other.ubatch.embd)
             ) &&
-            (!ubatch.embd_state == !other.ubatch.embd_state);
+            (!ubatch.embd_state == !other.ubatch.embd_state) &&
+            (!ubatch.tree_parent == !other.ubatch.tree_parent);
 
         // when we split the batch using "equal_seqs" we have to verify that the participating sequences are the same
         //   the reason is because the set of attention streams would be different for different sequences

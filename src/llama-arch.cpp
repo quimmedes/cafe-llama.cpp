@@ -150,6 +150,7 @@ static const std::map<llm_arch, const char *> LLM_ARCH_NAMES = {
     { LLM_ARCH_PANGU_EMBED,      "pangu-embedded"   },
     { LLM_ARCH_MISTRAL3,         "mistral3"         },
     { LLM_ARCH_EAGLE3,           "eagle3"           },
+    { LLM_ARCH_EAGLE4,           "eagle4"           },
     { LLM_ARCH_DFLASH,           "dflash"           },
     { LLM_ARCH_MISTRAL4,         "mistral4"         },
     { LLM_ARCH_PADDLEOCR,        "paddleocr"        },
@@ -420,6 +421,8 @@ static const std::map<llm_kv, const char *> LLM_KV_NAMES = {
     { LLM_KV_TARGET_HIDDEN_SIZE,                     "%s.target_hidden_size"                     },
     { LLM_KV_NORM_BEFORE_RESIDUAL,                   "%s.norm_before_residual"                   },
     { LLM_KV_NORM_BEFORE_FC,                         "%s.norm_before_fc"                         },
+    { LLM_KV_FC_NORM,                                "%s.fc_norm"                                },
+    { LLM_KV_NORM_OUTPUT,                            "%s.norm_output"                            },
 
     { LLM_KV_DFLASH_BLOCK_SIZE,       "%s.block_size"       },
     { LLM_KV_DFLASH_CONV_KERNEL_SIZE, "%s.conv_kernel_size" },
@@ -811,6 +814,9 @@ static const std::map<llm_tensor, const char *> LLM_TENSOR_NAMES = {
     { LLM_TENSOR_MASKED_EMBD_CENTROIDS,                  "masked_embd_centroids" },
     { LLM_TENSOR_MASKED_EMBD_ORDERING,                   "masked_embd_ordering" },
     { LLM_TENSOR_FC,                                     "fc" },
+    { LLM_TENSOR_FC_NORM,                                "fc_norm.%d" },
+    { LLM_TENSOR_EFFICIENT_LM_HEAD,                      "efficient_lm_head" },
+    { LLM_TENSOR_EFFICIENT_LM_HEAD_DOWN,                 "efficient_lm_head_down_proj" },
     { LLM_TENSOR_D2T,                                    "d2t" },
     { LLM_TENSOR_DSPARK_MARKOV_W1,                       "markov_w1" },
     { LLM_TENSOR_DSPARK_MARKOV_W2,                       "markov_w2" },
@@ -1193,6 +1199,9 @@ static const std::map<llm_tensor, llm_tensor_info> LLM_TENSOR_INFOS = {
     {LLM_TENSOR_MASKED_EMBD_ORDERING,       {LLM_TENSOR_LAYER_INPUT,     GGML_OP_NONE}},
     // eagle3
     { LLM_TENSOR_FC,                       { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT }       },
+    { LLM_TENSOR_FC_NORM,                  { LLM_TENSOR_LAYER_REPEATING, GGML_OP_MUL }      },
+    { LLM_TENSOR_EFFICIENT_LM_HEAD,        { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT }       },
+    { LLM_TENSOR_EFFICIENT_LM_HEAD_DOWN,   { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_MUL_MAT }       },
     { LLM_TENSOR_D2T,                      { LLM_TENSOR_LAYER_OUTPUT, GGML_OP_GET_ROWS }      },
     // dspark
     {LLM_TENSOR_DSPARK_MARKOV_W1,           {LLM_TENSOR_LAYER_OUTPUT,    GGML_OP_GET_ROWS}},
@@ -1380,6 +1389,7 @@ bool llm_arch_supports_mixed_batch(const llm_arch & arch) {
         case LLM_ARCH_DEEPSEEK4:
         case LLM_ARCH_GRANITE_SWITCH:
         case LLM_ARCH_EAGLE3:
+        case LLM_ARCH_EAGLE4:
         case LLM_ARCH_DFLASH:
         case LLM_ARCH_GEMMA4_ASSISTANT:
             return false;

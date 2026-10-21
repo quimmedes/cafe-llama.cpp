@@ -2713,6 +2713,12 @@ extern "C" {
             struct ggml_tensor  * dt_bias,
             struct ggml_tensor  * a);
 
+    // token tree (single sequence, K >= n_tokens): token t starts from the state after token parent[t]
+    // instead of token t-1; parent[t] == -1 starts from the input state. parent is I32 [n_tokens], parent[t] < t
+    GGML_API void ggml_gated_delta_net_set_tree(
+            struct ggml_tensor  * gdn,
+            struct ggml_tensor  * parent);
+
     // DSA lightning indexer
     //
     // q:       [n_embd_idx, n_head_idx, n_batch, ne3 ]

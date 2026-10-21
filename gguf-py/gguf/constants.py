@@ -184,6 +184,8 @@ class Keys:
         HAS_CONFIDENCE_HEAD               = "{arch}.has_confidence_head"
         NORM_BEFORE_RESIDUAL              = "{arch}.norm_before_residual"
         NORM_BEFORE_FC                    = "{arch}.norm_before_fc"
+        FC_NORM                           = "{arch}.fc_norm"
+        NORM_OUTPUT                       = "{arch}.norm_output"
         REALTIME_DELAY_TOKENS             = "{arch}.realtime_delay_tokens"
 
     class Adapters:
@@ -712,6 +714,7 @@ class MODEL_ARCH(IntEnum):
     PANGU_EMBED      = auto()
     MISTRAL3         = auto()
     EAGLE3           = auto()
+    EAGLE4           = auto()
     DFLASH           = auto()
     MISTRAL4         = auto()
     PADDLEOCR        = auto()
@@ -1330,8 +1333,11 @@ class MODEL_TENSOR(IntEnum):
     NEXTN_HC_HEAD_NORM     = auto()
     NEXTN_HC_HEAD_DOWN     = auto()
     NEXTN_HC_HEAD_UP       = auto()
-    # eagle3
+    # eagle3/eagle4
     FC                     = auto()  # feature fusion layer
+    FC_NORM                = auto()  # per-aux-hidden-state norm before fc (eagle4)
+    EFFICIENT_LM_HEAD      = auto()  # low-rank candidate head (eagle4)
+    EFFICIENT_LM_HEAD_DOWN = auto()  # candidate head rank projection (eagle4)
     D2T                    = auto()  # draft to target vocabulary mapping
     # dspark
     # dspark drafter
@@ -1554,6 +1560,7 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.PANGU_EMBED:      "pangu-embedded",
     MODEL_ARCH.MISTRAL3:         "mistral3",
     MODEL_ARCH.EAGLE3:           "eagle3",
+    MODEL_ARCH.EAGLE4:           "eagle4",
     MODEL_ARCH.DFLASH:           "dflash",
     MODEL_ARCH.MISTRAL4:         "mistral4",
     MODEL_ARCH.PADDLEOCR:        "paddleocr",
@@ -2199,6 +2206,9 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.NEXTN_HC_HEAD_DOWN:        "blk.{bid}.nextn.hc_head_down",
     MODEL_TENSOR.NEXTN_HC_HEAD_UP:          "blk.{bid}.nextn.hc_head_up",
     MODEL_TENSOR.FC:                        "fc",
+    MODEL_TENSOR.FC_NORM:                   "fc_norm.{bid}",
+    MODEL_TENSOR.EFFICIENT_LM_HEAD:         "efficient_lm_head",
+    MODEL_TENSOR.EFFICIENT_LM_HEAD_DOWN:    "efficient_lm_head_down_proj",
     # dspark drafter
     MODEL_TENSOR.DSPARK_FC:                 "dspark.fc",
     MODEL_TENSOR.DSPARK_HIDDEN_NORM:        "dspark.hidden_norm",
@@ -5806,6 +5816,26 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FC,
         MODEL_TENSOR.ENC_OUTPUT_NORM,
         MODEL_TENSOR.D2T,
+    ],
+    MODEL_ARCH.EAGLE4: [
+        MODEL_TENSOR.TOKEN_EMBD,
+        MODEL_TENSOR.OUTPUT_NORM,
+        MODEL_TENSOR.OUTPUT,
+        MODEL_TENSOR.ROPE_FREQS,
+        MODEL_TENSOR.ATTN_NORM,
+        MODEL_TENSOR.ATTN_NORM_2,
+        MODEL_TENSOR.ATTN_Q,
+        MODEL_TENSOR.ATTN_K,
+        MODEL_TENSOR.ATTN_V,
+        MODEL_TENSOR.ATTN_OUT,
+        MODEL_TENSOR.FFN_NORM,
+        MODEL_TENSOR.FFN_GATE,
+        MODEL_TENSOR.FFN_DOWN,
+        MODEL_TENSOR.FFN_UP,
+        MODEL_TENSOR.FC,
+        MODEL_TENSOR.FC_NORM,
+        MODEL_TENSOR.EFFICIENT_LM_HEAD,
+        MODEL_TENSOR.EFFICIENT_LM_HEAD_DOWN,
     ],
     MODEL_ARCH.DFLASH: [
         MODEL_TENSOR.ATTN_POST_NORM,

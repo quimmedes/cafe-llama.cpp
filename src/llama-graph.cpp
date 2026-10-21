@@ -256,6 +256,47 @@ bool llm_graph_input_pos::can_reuse(const llm_graph_params & params) {
     return res;
 }
 
+void llm_graph_input_tree::set_input(const llama_ubatch * ubatch) {
+    GGML_ASSERT(ubatch->tree_parent);
+
+    const int64_t n_tokens = ubatch->n_tokens;
+
+    ggml_backend_tensor_set(parent, ubatch->tree_parent, 0, n_tokens*ggml_element_size(parent));
+
+    if (!conv_win) {
+        return;
+    }
+
+    // walk up the parents; past the root, continue into the conv state columns
+    std::vector<int32_t> win(d_conv*n_tokens);
+    for (int64_t t = 0; t < n_tokens; ++t) {
+        int32_t c = (int32_t) (d_conv - 1 + t);
+        win[t*d_conv + d_conv - 1] = c;
+        for (int64_t k = d_conv - 2; k >= 0; --k) {
+            if (c >= d_conv - 1) {
+                const int32_t p = ubatch->tree_parent[c - (d_conv - 1)];
+                c = p >= 0 ? (int32_t) (d_conv - 1 + p) : (int32_t) (d_conv - 2);
+            } else {
+                c -= 1;
+            }
+            win[t*d_conv + k] = c;
+        }
+    }
+
+    std::vector<int32_t> snap((d_conv - 1)*n_tokens);
+    for (int64_t s = 0; s < n_tokens; ++s) {
+        const int64_t t = n_tokens - 1 - s;
+        std::copy(win.begin() + t*d_conv + 1, win.begin() + (t + 1)*d_conv, snap.begin() + s*(d_conv - 1));
+    }
+
+    ggml_backend_tensor_set(conv_win,  win.data(),  0, win.size()*sizeof(int32_t));
+    ggml_backend_tensor_set(conv_snap, snap.data(), 0, snap.size()*sizeof(int32_t));
+}
+
+bool llm_graph_input_tree::can_reuse(const llm_graph_params & params) {
+    return params.ubatch.tree_parent != nullptr && parent->ne[0] == params.ubatch.n_tokens;
+}
+
 void llm_graph_input_attn_temp::set_input(const llama_ubatch * ubatch) {
     if (ubatch->pos && attn_scale) {
         const int64_t n_tokens = ubatch->n_tokens;

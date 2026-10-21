@@ -23,6 +23,7 @@ from .base import ModelBase, TextModel, gguf, logger
     "LlavaForConditionalGeneration",
     "VoxtralForConditionalGeneration",
     "LlamaForCausalLMEagle3",
+    "LlamaForCausalLMEagle4",
     "Eagle3LlamaForCausalLM",
     "Eagle3Speculator",
     "Eagle3DraftModel",
@@ -46,24 +47,29 @@ class LlamaModel(TextModel):
             hparams = ModelBase.load_hparams(self.dir_model, is_mistral_format=False)
             self.origin_hf_arch = hparams.get('architectures', [None])[0]
 
-        # Detect eagle3 draft checkpoint by hparams (some models don't use a distinct HF arch name)
-        if "draft_vocab_size" in self.hparams and self.hparams["num_hidden_layers"] == 1:
-            self.is_eagle3 = True
-            self.model_arch = gguf.MODEL_ARCH.EAGLE3
-            logger.info("Detected EAGLE-3 draft model, switching to EAGLE3 architecture")
-            # Re-initialize tensor_map with eagle3 architecture
+        # Detect eagle3/eagle4 draft checkpoints. EAGLE-4 has its own HF arch name;
+        # other eagle drafts are recognized by hparams (some use a generic arch name).
+        is_eagle4 = ("LlamaForCausalLMEagle4" in self.hparams.get("architectures", []) or
+                     ("efficient_lm_head_config" in self.hparams and self.hparams.get("num_hidden_layers") == 1))
+        if is_eagle4 or ("draft_vocab_size" in self.hparams and self.hparams["num_hidden_layers"] == 1):
+            self.is_eagle3 = not is_eagle4
+            self.is_eagle4 = is_eagle4
+            name = "EAGLE-4" if is_eagle4 else "EAGLE-3"
+            self.model_arch = gguf.MODEL_ARCH.EAGLE4 if is_eagle4 else gguf.MODEL_ARCH.EAGLE3
+            logger.info(f"Detected {name} draft model, switching to {self.model_arch.name} architecture")
+            # Re-initialize tensor_map with eagle architecture
             self.tensor_map = gguf.get_tensor_name_map(self.model_arch, self.block_count)
             # Update gguf_writer architecture
             self.gguf_writer.arch = gguf.MODEL_ARCH_NAMES[self.model_arch]
             self.gguf_writer.add_architecture()
             if self.target_model_dir is None:
                 raise ValueError(
-                    "EAGLE-3 model requires --target-model-dir to be specified. "
+                    f"{name} model requires --target-model-dir to be specified. "
                     "Please provide the path to the target model directory to read config.json"
                 )
-            # Read both eagle3 raw config and target model config
+            # Read both draft raw config and target model config
             with open(self.dir_model / "config.json", 'r', encoding='utf-8') as f:
-                eagle3_raw_config = json.load(f)
+                raw_config = json.load(f)
             with open(self.target_model_dir / "config.json", 'r', encoding='utf-8') as f:
                 target_config = json.load(f)
 
@@ -71,44 +77,106 @@ class LlamaModel(TextModel):
                 target_config = {**target_config, **target_config["text_config"]}
             self.target_vocab_size = target_config["vocab_size"]
 
-            # target_layers: use the eagle3 config's explicit aux hidden-state layer ids
-            # if present, else derive from the target layer count.
             target_num_layers = target_config["num_hidden_layers"]
-            aux_layer_ids = eagle3_raw_config.get("eagle_aux_hidden_state_layer_ids")
-            if aux_layer_ids:
-                target_layers = aux_layer_ids
+            if is_eagle4:
+                self._check_eagle4_supported(raw_config)
+                target_layers = raw_config.get("eagle_config", {}).get("eagle_aux_hidden_state_layer_ids")
+                if not target_layers or len(target_layers) != 3:
+                    raise ValueError("EAGLE-4 config requires 3 eagle_config.eagle_aux_hidden_state_layer_ids")
             else:
-                target_layers = [2, target_num_layers // 2, target_num_layers - 3]
-            logger.info(f"EAGLE-3: target_layers = {target_layers} (target model has {target_num_layers} layers)")
+                # target_layers: use the eagle3 config's explicit aux hidden-state layer ids
+                # if present, else derive from the target layer count.
+                aux_layer_ids = raw_config.get("eagle_aux_hidden_state_layer_ids")
+                target_layers = aux_layer_ids if aux_layer_ids else [2, target_num_layers // 2, target_num_layers - 3]
+            logger.info(f"{name}: target_layers = {target_layers} (target model has {target_num_layers} layers)")
             self.gguf_writer.add_target_layers(target_layers)
 
-            # target_hidden_size: prefer eagle3 config, fallback to target config
-            if eagle3_raw_config.get("target_hidden_size") is not None:
-                target_hidden_size = eagle3_raw_config["target_hidden_size"]
-                src = "EAGLE-3 config"
+            # target_hidden_size: prefer the draft config, fallback to target config
+            if raw_config.get("target_hidden_size") is not None:
+                target_hidden_size = raw_config["target_hidden_size"]
+                src = f"{name} config"
             else:
                 target_hidden_size = target_config["hidden_size"]
                 src = "target model config"
-            logger.info(f"EAGLE-3: target_hidden_size = {target_hidden_size} (from {src})")
+            logger.info(f"{name}: target_hidden_size = {target_hidden_size} (from {src})")
             self.gguf_writer.add_target_hidden_size(target_hidden_size)
 
-            # norm_before_residual (RedHat-style eagle3 specific)
-            norm_before_residual = eagle3_raw_config.get("norm_before_residual", False)
-            logger.info(f"EAGLE-3: norm_before_residual = {norm_before_residual}")
-            self.gguf_writer.add_norm_before_residual(norm_before_residual)
+            if is_eagle4:
+                fc_norm = bool(raw_config.get("fc_norm", False) or raw_config.get("enable_fc_norm", False))
+                norm_output = bool(raw_config.get("norm_output", False))
+                logger.info(f"EAGLE-4: fc_norm = {fc_norm}, norm_output = {norm_output}")
+                self.gguf_writer.add_fc_norm(fc_norm)
+                self.gguf_writer.add_norm_output(norm_output)
 
-            # norm_before_fc: RMSNorm applied to the fused target features before the
-            # fc projection (e.g. nvidia/gpt-oss-120b-Eagle3-v3)
-            norm_before_fc = eagle3_raw_config.get("norm_before_fc", False)
-            logger.info(f"EAGLE-3: norm_before_fc = {norm_before_fc}")
-            self.gguf_writer.add_norm_before_fc(norm_before_fc)
+                window = self._eagle4_sliding_window(raw_config)
+                if window is not None:
+                    logger.info(f"EAGLE-4: sliding_window = {window}")
+                    layer_types = raw_config.get("layer_types") or ["sliding_attention"]
+                    self.gguf_writer.add_sliding_window(window)
+                    self.gguf_writer.add_sliding_window_pattern([t == "sliding_attention" for t in layer_types])
+            else:
+                # norm_before_residual (RedHat-style eagle3 specific)
+                norm_before_residual = raw_config.get("norm_before_residual", False)
+                logger.info(f"EAGLE-3: norm_before_residual = {norm_before_residual}")
+                self.gguf_writer.add_norm_before_residual(norm_before_residual)
+
+                # norm_before_fc: RMSNorm applied to the fused target features before the
+                # fc projection (e.g. nvidia/gpt-oss-120b-Eagle3-v3)
+                norm_before_fc = raw_config.get("norm_before_fc", False)
+                logger.info(f"EAGLE-3: norm_before_fc = {norm_before_fc}")
+                self.gguf_writer.add_norm_before_fc(norm_before_fc)
+
+    @staticmethod
+    def _eagle4_sliding_window(config: dict) -> int | None:
+        window = config.get("sliding_window")
+        layer_types = config.get("layer_types")
+        enabled = config.get("use_sliding_window")
+        if layer_types is not None:
+            if len(layer_types) != config.get("num_hidden_layers"):
+                raise ValueError("EAGLE-4 layer_types must have one entry per layer")
+            unknown = set(layer_types) - {"full_attention", "sliding_attention"}
+            if unknown:
+                raise ValueError(f"EAGLE-4 layer_types has unknown entries: {sorted(unknown)}")
+            if "sliding_attention" in layer_types and not window:
+                raise ValueError("EAGLE-4 layer_types has sliding_attention but no sliding_window")
+            enabled = layer_types[0] == "sliding_attention"
+        elif enabled is None:
+            enabled = window is not None
+        if enabled and not window:
+            raise ValueError("EAGLE-4 use_sliding_window requires a positive sliding_window")
+        return int(window) if enabled else None
+
+    @staticmethod
+    def _check_eagle4_supported(config: dict) -> None:
+        # the llama.cpp graph implements the dense single-layer EAGLE-4 draft
+        if config.get("num_hidden_layers") != 1:
+            raise ValueError(f"EAGLE-4 draft must have num_hidden_layers=1, got {config.get('num_hidden_layers')}")
+        unsupported = []
+        for key in ("enable_moe", "attn_norm", "enable_post_mlp_norm", "enable_2hs", "enable_defa",
+                    "attention_bias", "mlp_bias", "bias"):
+            if config.get(key):
+                unsupported.append(f"{key}={config[key]}")
+        if config.get("use_rope") is False or config.get("position_embedding_type") in ("none", "nope"):
+            unsupported.append("NoPE")
+        if config.get("partial_rotary_factor") not in (None, 1):
+            unsupported.append(f"partial_rotary_factor={config['partial_rotary_factor']}")
+        if config.get("norm_before_residual") or config.get("norm_before_fc"):
+            unsupported.append("norm_before_residual/norm_before_fc")
+        if config.get("input_fuse_type", "concat") != "concat":
+            unsupported.append(f"input_fuse_type={config['input_fuse_type']}")
+        if config.get("draft_vocab_size", config.get("vocab_size")) != config.get("vocab_size"):
+            unsupported.append("reduced draft vocabulary")
+        if config.get("num_aux_hidden_states", 3) != 3:
+            unsupported.append(f"num_aux_hidden_states={config['num_aux_hidden_states']}")
+        if unsupported:
+            raise ValueError(f"EAGLE-4 draft uses unsupported features: {', '.join(unsupported)}")
 
     def set_vocab(self):
         # eagle3: use tokenizer from target model if provided
         original_dir_model = None
-        if getattr(self, 'is_eagle3', False):
+        if getattr(self, 'is_eagle3', False) or getattr(self, 'is_eagle4', False):
             assert self.target_model_dir is not None
-            logger.info(f"EAGLE-3: Using tokenizer from target model: {self.target_model_dir}")
+            logger.info(f"EAGLE: Using tokenizer from target model: {self.target_model_dir}")
             original_dir_model = self.dir_model
             self.dir_model = self.target_model_dir
 
@@ -213,6 +281,20 @@ class LlamaModel(TextModel):
         if "transformer_layer_config" in self.hparams:
             self.hparams = {**self.hparams, **self.hparams["transformer_layer_config"]}
 
+        # eagle4 detection
+        if getattr(self, 'is_eagle4', False):
+            logger.info("EAGLE-4: renaming layers.0.* / embed_tokens / norm to the llama layout")
+            new_tensors = {}
+            for name, gen in tensors.items():
+                if name.startswith("layers.0."):
+                    new_name = "model." + name
+                elif name in ("embed_tokens.weight", "norm.weight"):
+                    new_name = "model." + name
+                else:
+                    new_name = name
+                new_tensors[new_name] = gen
+            return new_tensors
+
         # eagle3 detection
         if "draft_vocab_size" in self.hparams and self.hparams["num_hidden_layers"] == 1:
             logger.info("EAGLE-3: renaming midlayer.* / layers.0.* to model.layers.0.*")
@@ -231,6 +313,28 @@ class LlamaModel(TextModel):
         return tensors
 
     def modify_tensors(self, data_torch: Tensor, name: str, bid: int | None) -> Iterable[tuple[str, Tensor]]:
+        # eagle4: the low-rank candidate head is a serving optimization; the dense
+        # lm_head is part of the checkpoint and produces the same distribution
+        if getattr(self, 'is_eagle4', False):
+            if name == "efficient_lm_head.weight":
+                yield (self.format_tensor_name(gguf.MODEL_TENSOR.EFFICIENT_LM_HEAD), data_torch)
+                return
+            if name == "efficient_lm_head_down_proj.weight":
+                yield (self.format_tensor_name(gguf.MODEL_TENSOR.EFFICIENT_LM_HEAD_DOWN), data_torch)
+                return
+            if name.startswith("efficient_lm_head"):
+                return
+            if name == "fc.weight":
+                yield (self.format_tensor_name(gguf.MODEL_TENSOR.FC), data_torch)
+                return
+            if name.startswith("fc_norm.") and name.endswith(".weight"):
+                idx = int(name.split(".")[1])
+                yield (self.format_tensor_name(gguf.MODEL_TENSOR.FC_NORM, idx), data_torch)
+                return
+            if name.endswith(".hidden_norm.weight"):
+                yield (self.format_tensor_name(gguf.MODEL_TENSOR.ATTN_NORM_2, bid), data_torch)
+                return
+
         # eagle3: special tensors that bypass standard llama mapping
         if getattr(self, 'is_eagle3', False):
             if name == "fc.weight":

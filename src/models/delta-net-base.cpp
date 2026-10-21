@@ -13,6 +13,31 @@ static ggml_tensor * get_slice_2d(ggml_context * ctx0, ggml_tensor * t, int64_t 
 
 llm_build_delta_net_base::llm_build_delta_net_base(const llm_graph_params & params) : llm_graph_context(params) {}
 
+llm_graph_input_tree * llm_build_delta_net_base::build_inp_tree(int64_t d_conv) {
+    if (inp_tree) {
+        GGML_ASSERT(inp_tree->d_conv == d_conv);
+        return inp_tree;
+    }
+
+    const int64_t n_tokens = ubatch.n_tokens;
+
+    auto inp = std::make_unique<llm_graph_input_tree>(d_conv);
+
+    inp->parent = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_tokens);
+    ggml_set_input(inp->parent);
+
+    inp->conv_win = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, d_conv*n_tokens);
+    ggml_set_input(inp->conv_win);
+
+    inp->conv_snap = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, (d_conv - 1)*n_tokens);
+    ggml_set_input(inp->conv_snap);
+
+    inp_tree = inp.get();
+    res->add_input(std::move(inp));
+
+    return inp_tree;
+}
+
 std::pair<ggml_tensor *, ggml_tensor *> llm_build_delta_net_base::build_delta_net_chunking(
         ggml_tensor * q,
         ggml_tensor * k,
@@ -468,6 +493,47 @@ ggml_tensor * llm_build_delta_net_base::build_conv_state(
     conv_states = ggml_reshape_3d(ctx0, conv_states, conv_kernel_size - 1, conv_channels, n_seqs);
     cb(conv_states, "conv_states_reshaped", il);
 
+    if (ubatch.tree_parent) {
+        // token tree: every token convolves over its own ancestor chain, so gather a window per token
+        // and run them as n_tokens sequences of one token
+        const int64_t n_tokens = ubatch.n_tokens;
+
+        GGML_ASSERT(n_seqs == 1);
+        GGML_ASSERT((int64_t) cparams.n_rs_seq + 1 >= n_tokens);
+
+        llm_graph_input_tree * tree = build_inp_tree(conv_kernel_size);
+
+        ggml_tensor * qkv_2d = ggml_is_contiguous(qkv_mixed)
+            ? ggml_reshape_2d(ctx0, qkv_mixed, conv_channels, n_tokens)
+            : ggml_cont_2d(ctx0, qkv_mixed, conv_channels, n_tokens);
+
+        // one row per time step: [conv_channels, d_conv - 1 + n_tokens]
+        ggml_tensor * steps = ggml_concat(ctx0,
+                ggml_cont(ctx0, ggml_transpose(ctx0, ggml_reshape_2d(ctx0, conv_states, conv_kernel_size - 1, conv_channels))),
+                qkv_2d, 1);
+        cb(steps, "conv_steps", il);
+
+        ggml_tensor * win = ggml_get_rows(ctx0, steps, tree->conv_win);
+        win = ggml_reshape_3d(ctx0, win, conv_channels, conv_kernel_size, n_tokens);
+        win = ggml_cont(ctx0, ggml_permute(ctx0, win, 1, 0, 2, 3));
+        cb(win, "conv_input_tree", il);
+
+        // snapshot slot s gets the conv state after token n_tokens - 1 - s
+        ggml_tensor * snap = ggml_get_rows(ctx0, steps, tree->conv_snap);
+        snap = ggml_reshape_3d(ctx0, snap, conv_channels, conv_kernel_size - 1, n_tokens);
+        snap = ggml_permute(ctx0, snap, 1, 0, 2, 3);
+
+        const size_t row_size_tree = ggml_row_size(conv_states_all->type, (conv_kernel_size - 1) * conv_channels);
+
+        ggml_tensor * snap_dst = ggml_view_2d(ctx0, conv_states_all,
+                (conv_kernel_size - 1) * conv_channels, n_tokens,
+                (size_t) mem_size * row_size_tree, (size_t) kv_head * row_size_tree);
+
+        ggml_build_forward_expand(gf, ggml_cpy(ctx0, snap, snap_dst));
+
+        return win;
+    }
+
     qkv_mixed = ggml_transpose(ctx0, qkv_mixed);
     cb(qkv_mixed, "qkv_mixed_transposed", il);
 
@@ -585,6 +651,10 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
     }
     if (raw) {
         ggml_gated_delta_net_set_raw_gates(gdn_out, gdn_raw_dt_bias, gdn_raw_a);
+    }
+    if (ubatch.tree_parent) {
+        GGML_ASSERT(inp_tree && state_rows == nullptr);
+        ggml_gated_delta_net_set_tree(gdn_out, inp_tree->parent);
     }
     if (n_seq_tokens > 1) {
         res->add_fused_node({LLM_FUSED_OP_GDN_CH, gdn_out, il});

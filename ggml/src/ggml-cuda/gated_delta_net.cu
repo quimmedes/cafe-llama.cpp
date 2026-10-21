@@ -26,6 +26,7 @@ gated_delta_net_cuda(const float * q,
                                      const float * raw_dt_bias,
                                      const float * raw_a,
                                      const float * curr_state,
+                                     const int32_t * tree_parent,
                                      float *       dst,
                                      float *       state,
                                      int64_t       H,
@@ -71,7 +72,8 @@ gated_delta_net_cuda(const float * q,
     const int64_t state_in_offset      = sequence * H * S_v * S_v + h_idx * S_v * S_v;
     const int64_t state_out_offset     = (sequence * H + h_idx) * S_v * S_v;
     state += state_out_offset;
-    curr_state += state_in_offset + col * S_v;
+    const float * s0_col = curr_state + state_in_offset + col * S_v;
+    curr_state = s0_col;
     attn_data += (sequence * n_tokens * H + h_idx) * S_v;
 
     float         s_shard[rows_per_lane];
@@ -85,6 +87,18 @@ gated_delta_net_cuda(const float * q,
     }
 
     for (int t = 0; t < n_tokens; t++) {
+        if constexpr (keep_rs_t) {
+            // token tree: start from the state after the parent token, written by this thread
+            if (tree_parent != nullptr && t > 0 && tree_parent[t] != t - 1) {
+                const int p = tree_parent[t];
+                const float * src = p < 0 ? s0_col : state + (int64_t) ((int) n_tokens - 1 - p) * state_slot_stride + col * S_v;
+#pragma unroll
+                for (int r = 0; r < rows_per_lane; r++) {
+                    s_shard[r] = src[r * lanes_per_col + lane_in_col];
+                }
+            }
+        }
+
         const float * q_t = q + iq3 * sq3 + t * sq2 + iq1 * sq1;
         const float * k_t = k + iq3 * sq3 + t * sq2 + iq1 * sq1;
         const float * v_t = v + sequence * sv3 + t * sv2 + h_idx * sv1;
@@ -202,7 +216,7 @@ gated_delta_net_cuda(const float * q,
 template <bool KDA, bool keep_rs_t, bool RAW, bool G_PRECOMPUTED>
 static void launch_gated_delta_net(
         const float * q_d, const float * k_d, const float * v_d,
-        const float * g_d, const float * b_d, const float * rb_d, const float * ra_d, const float * s_d,
+        const float * g_d, const float * b_d, const float * rb_d, const float * ra_d, const float * s_d, const int32_t * tp_d,
         float * dst_d, float * state_d,
         int64_t S_v,   int64_t H, int64_t n_tokens, int64_t n_seqs,
         int64_t sq1,   int64_t sq2, int64_t sq3,
@@ -231,26 +245,26 @@ static void launch_gated_delta_net(
     switch (S_v) {
         case 16:
             ggml_cuda_kernel_launch(gated_delta_net_cuda<16, KDA, keep_rs_t, RAW, G_PRECOMPUTED>, launch_params,
-                q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d, H,
+                q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, tp_d, dst_d, state_d, H,
                 n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
                 sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K);
             break;
         case 32:
             ggml_cuda_kernel_launch(gated_delta_net_cuda<32, KDA, keep_rs_t, RAW, G_PRECOMPUTED>, launch_params,
-                q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d, H,
+                q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, tp_d, dst_d, state_d, H,
                 n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
                 sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K);
             break;
         case 64: {
             ggml_cuda_kernel_launch(gated_delta_net_cuda<64, KDA, keep_rs_t, RAW, G_PRECOMPUTED>, launch_params,
-                q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d, H,
+                q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, tp_d, dst_d, state_d, H,
                 n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
                 sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K);
             break;
         }
         case 128: {
             ggml_cuda_kernel_launch(gated_delta_net_cuda<128, KDA, keep_rs_t, RAW, G_PRECOMPUTED>, launch_params,
-                q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d, H,
+                q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, tp_d, dst_d, state_d, H,
                 n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
                 sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, state_slot_stride, K);
             break;
@@ -379,8 +393,11 @@ static void ggml_cuda_op_gated_delta_net_impl(
     const float * ra_d = raw ? (const float *) dst->src[8]->data : nullptr;
     GGML_ASSERT(!(raw && kda)); // raw gates are defined for the scalar gate only
 
-    // the MMA path expects activated gates
-    if (!raw) {
+    const int32_t * tp_d = dst->src[9] ? (const int32_t *) dst->src[9]->data : nullptr;
+    GGML_ASSERT(tp_d == nullptr || (keep_rs && K >= n_tokens) || n_tokens == 1);
+
+    // the MMA path expects activated gates and a linear token order
+    if (!raw && tp_d == nullptr) {
         ggml_cuda_gdn_mma_args args = ggml_cuda_gdn_mma_args_from_tensor(dst);
         args.state_out = state_d;
         if (ggml_cuda_gdn_mma_launch(ctx.device, args, stream)) {
@@ -404,7 +421,7 @@ static void ggml_cuda_op_gated_delta_net_impl(
     }
 
 #define GDN_LAUNCH(KDA_, KEEP_, RAW_, PRE_)                                                       \
-    launch_gated_delta_net<KDA_, KEEP_, RAW_, PRE_>(q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, dst_d, state_d, \
+    launch_gated_delta_net<KDA_, KEEP_, RAW_, PRE_>(q_d, k_d, v_d, g_d, b_d, rb_d, ra_d, s_d, tp_d, dst_d, state_d, \
         S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,                                    \
         sb1, sb2, sb3, neqk1, rq3, scale, state_slot_stride, K, stream)
     if (kda) {

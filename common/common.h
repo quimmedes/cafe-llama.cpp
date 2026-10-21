@@ -176,6 +176,7 @@ enum common_speculative_type {
     COMMON_SPECULATIVE_TYPE_NONE,          // no speculative decoding
     COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE,  // standalone draft model speculative decoding
     COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3,  // Eagle3 speculative decoding
+    COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE4,  // Eagle4 speculative decoding
     COMMON_SPECULATIVE_TYPE_DRAFT_MTP,     // Multi-token prediction
     COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH,  // DFlash speculative decoding
     COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK,  // DSpark speculative decoding (DFlash + Markov head)
@@ -329,6 +330,7 @@ struct common_params_model {
 struct common_params_speculative_draft {
     int32_t n_max = 3; // maximum number of tokens to draft during speculative decoding
     int32_t n_min = 0; // minimum number of draft tokens to use for speculative decoding
+    int32_t n_paths = 1; // number of draft paths verified per round (1 = chain)
 
     float p_split = 0.1f; // speculative decoding split probability
     float p_min   = 0.0f; // minimum speculative decoding probability (greedy)
@@ -406,10 +408,26 @@ struct common_params_speculative {
 
     uint32_t need_n_rs_seq() const {
         bool needs_rs_seq = std::any_of(types.begin(), types.end(), [&](auto t) {
-            return t == COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE || t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH || t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
+            return t == COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE || t == COMMON_SPECULATIVE_TYPE_DRAFT_MTP || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 || t == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE4 || t == COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH || t == COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK;
         });
 
-        return needs_rs_seq ? draft.n_max : 0u;
+        return needs_rs_seq ? (uint32_t) n_verify_draft_max() : 0u;
+    }
+
+    bool needs_paths() const {
+        return draft.n_paths > 1 && std::find(types.begin(), types.end(),
+                COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE4) != types.end();
+    }
+
+    // max draft tokens verified per round: the chain, or the nodes of the draft tree
+    // path 0 is the chain, path p leaves it at depth (p - 1) % n_max (see the EAGLE4 drafter)
+    int32_t n_verify_draft_max() const {
+        const int32_t n_max = std::max(0, draft.n_max);
+        int32_t n = n_max;
+        for (int32_t p = 1; needs_paths() && n_max > 0 && p < draft.n_paths; ++p) {
+            n += n_max - (p - 1) % n_max;
+        }
+        return n;
     }
 };
 
@@ -1142,6 +1160,7 @@ struct common_batch {
         llama_embd   state; // non-owning view of the data passed to set_embd_state(), data == NULL if none
         std::vector<llama_seq_id> seq_ids_extra; // see add_seq()
         int32_t      decision_order = 0; // see llama_batch_ext_set_decision_order()
+        int32_t      tree_parent = -2; // see llama_batch_ext_set_tree_parent(), -2 if not set
     };
 
     std::vector<token> tokens; // mirror of the entries, tokens[i] describes batch index i
@@ -1173,6 +1192,9 @@ struct common_batch {
     bool add_seq(int32_t idx, llama_seq_id seq_id);
 
     bool set_output(int32_t idx, bool value);
+
+    // token tree parent of the entry at idx (batch index, -1 for a root), see llama_batch_ext_set_tree_parent()
+    bool set_tree_parent(int32_t idx, int32_t parent);
 
     // attach a token embedding to the entry at idx, can only be set once per entry
     bool set_embd(int32_t idx, llama_embd embd);

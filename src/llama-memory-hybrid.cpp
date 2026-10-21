@@ -179,6 +179,18 @@ llama_pos llama_memory_hybrid::seq_pos_max(llama_seq_id seq_id) const {
     return std::min(mem_attn->seq_pos_max(seq_id), mem_recr->seq_pos_max(seq_id));
 }
 
+bool llama_memory_hybrid::tree_supported() const {
+    return mem_attn->tree_supported() && mem_recr->tree_supported();
+}
+
+bool llama_memory_hybrid::tree_commit(llama_seq_id seq_id, const std::vector<int32_t> & keep) {
+    // recurrent first: it can fail without changes
+    if (!mem_recr->tree_commit(seq_id, keep)) {
+        return false;
+    }
+    return mem_attn->tree_commit(seq_id, keep);
+}
+
 std::map<ggml_backend_buffer_type_t, size_t> llama_memory_hybrid::memory_breakdown() const {
     std::map<ggml_backend_buffer_type_t, size_t> mb = mem_attn->memory_breakdown();
     for (const auto & buft_size : mem_recr->memory_breakdown()) {

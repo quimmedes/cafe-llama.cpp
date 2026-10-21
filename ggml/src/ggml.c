@@ -6630,6 +6630,23 @@ void ggml_gated_delta_net_set_raw_gates(
     gdn->src[8] = a;
 }
 
+void ggml_gated_delta_net_set_tree(
+        struct ggml_tensor  * gdn,
+        struct ggml_tensor  * parent) {
+    GGML_ASSERT(gdn->op == GGML_OP_GATED_DELTA_NET);
+    GGML_ASSERT(gdn->src[6] == NULL); // rows mode reads the state from the cache, not supported here
+
+    const int64_t n_tokens = gdn->src[2]->ne[2];
+    const int64_t n_seqs   = gdn->src[2]->ne[3];
+    const int64_t K        = ggml_get_op_params_i32(gdn, 0);
+
+    GGML_ASSERT(n_seqs == 1);
+    GGML_ASSERT(K >= n_tokens);
+    GGML_ASSERT(parent->type == GGML_TYPE_I32 && ggml_is_contiguous(parent) && ggml_nelements(parent) == n_tokens);
+
+    gdn->src[9] = parent;
+}
+
 // ggml_lightning_indexer
 
 struct ggml_tensor * ggml_lightning_indexer(

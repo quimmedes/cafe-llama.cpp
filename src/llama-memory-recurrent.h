@@ -52,6 +52,9 @@ public:
     llama_pos seq_pos_min(llama_seq_id seq_id) const override;
     llama_pos seq_pos_max(llama_seq_id seq_id) const override;
 
+    bool tree_supported() const override { return true; }
+    bool tree_commit(llama_seq_id seq_id, const std::vector<int32_t> & keep) override;
+
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
 
     bool prepare(const std::vector<llama_ubatch> & ubatches);
@@ -77,6 +80,10 @@ public:
     std::vector<uint32_t> rs_idx;
 
     void set_rs_idx(llama_seq_id seq_id, uint32_t idx);
+
+    // last tree ubatch, see find_slot(): seq, then (batch index, pos) per token
+    llama_seq_id tree_seq = -1;
+    std::vector<std::pair<int32_t, llama_pos>> tree_tokens;
 
     // computed before each graph build
     uint32_t n = 0;

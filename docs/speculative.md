@@ -52,6 +52,71 @@ Supported EAGLE-3 draft models include:
 
 For the full and up-to-date list of supported models, see #18039.
 
+### EAGLE-4 (`draft-eagle4`)
+
+EAGLE-4 is the next generation of the EAGLE drafter. The draft keeps the EAGLE-3 shape (one
+Llama layer, `fc` over three auxiliary hidden states, low-rank candidate head) and adds:
+
+- an RMSNorm per auxiliary hidden state before `fc` (`fc_norm`);
+- sliding-window attention in the draft layer (`sliding_window`, for example 4096);
+- the option to feed the normed output of the draft layer to the next draft step (`norm_output`).
+
+The low-rank candidate head only speeds up the LM head by re-scoring a candidate subset. The
+checkpoint also carries the full `lm_head`, so llama.cpp projects the full vocabulary. The draft
+distribution only affects how many tokens are accepted; every token is verified by the target.
+
+Convert with `--target-model-dir` so the draft inherits the target tokenizer and the auxiliary layer
+indices:
+
+```bash
+# the EAGLE-4 draft repo has no tokenizer; point at a local target model checkout
+python convert_hf_to_gguf.py EAGLE-Corp/Qwen3.8-27B-EAGLE4 --remote \
+    --target-model-dir /path/to/Qwen3.8-27B --outtype bf16 --outfile Qwen3.8-27B-EAGLE4.gguf
+
+llama-server -m Qwen3.8-27B.gguf -md Qwen3.8-27B-EAGLE4.gguf --spec-type draft-eagle4
+```
+
+`draft-eagle4` is auto-detected from the draft GGUF architecture. llama.cpp drafts a token chain
+with the draft layer; the reference engine's adaptive tree policy and candidate-head top-k shortcut
+are not used, and the flexible draft structure (latent MoE, NoPE, `attn_norm`) is not converted.
+Only dense single-layer drafts with RoPE and the full target vocabulary are supported.
+
+The checkpoint's rank-r candidate factors are converted and loaded. `LLAMA_EAGLE4_CANDIDATE_HEAD=1`
+scores the draft vocabulary through them instead of the full LM head; on current backends the full
+head is usually faster, so that path is opt-in.
+
+On an RTX 3090 with a Qwen3.8-27B Q3 target (8k context, q8_0 KV, greedy, 256 tokens, five
+prompts), the best measured setting was `--spec-draft-n-max 4 --spec-draft-p-min 0.5`:
+77.5 t/s vs 58.0 t/s without speculation.
+
+With a Qwen3.8-27B Q5 target (37.1 t/s without speculation), reasoning on and code prompts (512 tokens),
+EAGLE-4 only matched the target's own MTP head: MTP `--spec-draft-n-max 3 --spec-draft-p-min 0.5` gave 58.0 t/s, EAGLE-4 with
+a Q8_0 draft and `--spec-draft-n-max 3` 58.7 t/s, and with a Q4_K_M draft and `--spec-draft-n-max 4`
+54.3 t/s. The first draft token is accepted 76-79% of the time with EAGLE-4 and 80-85% with MTP.
+
+`--spec-draft-n-paths N` (default 1, server only) drafts a token tree: path 0 is the greedy chain
+and path p leaves it at depth `(p - 1) % n_max` with the next candidate, if that candidate has
+probability >= `--spec-draft-p-split`, and then continues greedily. All paths of one depth are
+drafted in one batch. The paths are merged into one tree and the target verifies the whole tree in
+one pass of the slot's sequence (`llama_batch_ext_set_tree_parent()`): attention sees only the
+ancestors of each token, and on Qwen3.5 / Qwen3-Next targets every tree token gets its own conv
+window and continues the gated delta net state of its parent (`ggml_gated_delta_net_set_tree()`).
+After acceptance `llama_tree_commit()` keeps the accepted chain and rolls the recurrent state back
+to its last token. This needs `-np 1`, and on recurrent targets one rollback snapshot per tree node
+(`n_rs_seq` is raised to the tree size, each snapshot costs one recurrent state).
+
+On the same RTX 3090 setup the tree raises the accepted length but not the speed, because target
+verification cost still grows with the number of tree tokens (about 17, 30, 33, 37 and 41 ms for
+1, 4, 8, 9 and 16 tokens):
+
+| draft | t/s |
+|---|---:|
+| chain, n_max 3 | 73.9 |
+| chain, n_max 4 | 77.5 |
+| tree, n_max 3, 2 paths | 71.7 |
+| tree, n_max 4, 2 paths | 72.5 |
+| tree, n_max 4, 4 paths, p_split 0.25 | 71.2 |
+
 ### DFlash (`draft-dflash`)
 
 DFlash produces an entire block of draft tokens in a single forward pass (block diffusion) and
@@ -263,7 +328,7 @@ Use exactly one of these options:
 ### General Speculative Parameters
 
 ```
---spec-type [none|draft-simple|draft-eagle3|draft-dflash|draft-dspark|draft-mtp|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod]
+--spec-type [none|draft-simple|draft-eagle3|draft-eagle4|draft-dflash|draft-dspark|draft-mtp|ngram-cache|ngram-simple|ngram-map-k|ngram-map-k4v|ngram-mod]
                                         comma-separated list of types of speculative decoding to use
                                         (default: none)
                                         (env: LLAMA_ARG_SPEC_TYPE)
@@ -406,6 +471,7 @@ Specifies a comma-separated list of speculative decoding types to use.
 | `none` | No speculative decoding (default) |
 | `draft-simple` | Use a simple draft model for speculation |
 | `draft-eagle3` | Use an EAGLE-3 draft model that reads the target's hidden states |
+| `draft-eagle4` | Use an EAGLE-4 draft model (sliding-window draft layer, same hidden-state inputs as EAGLE-3) |
 | `draft-dflash` | Use a DFlash block-diffusion draft model that emits a block per step |
 | `draft-dspark` | Use a DSpark draft model (DFlash backbone + semi-autoregressive Markov head) |
 | `draft-mtp` | Use Multi Token Prediction (MTP) heads from the main model |

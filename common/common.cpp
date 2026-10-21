@@ -1267,6 +1267,10 @@ common_init_result::common_init_result(common_params & params, bool model_only) 
         if (spec_mtp) {
             cparams_dft.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
         }
+        // the EAGLE4 tree drafter keeps one sequence per path
+        if (params.speculative.needs_paths()) {
+            cparams_dft.n_seq_max *= params.speculative.draft.n_paths;
+        }
         const common_fit_extra_model extra = {
             /*.path_model   =*/ params_dft.model.path.c_str(),
             /*.mparams      =*/ &mparams_dft,
@@ -2272,6 +2276,14 @@ bool common_batch::add_seq(int32_t idx, llama_seq_id seq_id) {
     return true;
 }
 
+bool common_batch::set_tree_parent(int32_t idx, int32_t parent) {
+    if (idx < 0 || idx >= size() || parent < -1 || parent >= idx) {
+        return false;
+    }
+    tokens[idx].tree_parent = parent;
+    return true;
+}
+
 bool common_batch::set_output(int32_t idx, bool value) {
     if (idx < 0 || idx >= size()) {
         return false;
@@ -2347,6 +2359,10 @@ llama_batch_ext * common_batch::get_sub_batch(int32_t off, int32_t n) {
         }
         if (t.decision_order != 0) {
             llama_batch_ext_set_decision_order(res, idx, (llama_decision_order) t.decision_order);
+        }
+        if (t.tree_parent >= -1) {
+            GGML_ASSERT(t.tree_parent < off + n && (t.tree_parent == -1 || t.tree_parent >= off) && "tree parent outside the sub-batch");
+            llama_batch_ext_set_tree_parent(res, idx, t.tree_parent >= 0 ? t.tree_parent - off : -1);
         }
     }
 

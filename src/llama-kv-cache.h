@@ -144,6 +144,9 @@ public:
     llama_pos seq_pos_min(llama_seq_id seq_id) const override;
     llama_pos seq_pos_max(llama_seq_id seq_id) const override;
 
+    bool tree_supported() const override { return true; }
+    bool tree_commit(llama_seq_id seq_id, const std::vector<int32_t> & keep) override;
+
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const override;
 
     // state write/load
@@ -328,6 +331,10 @@ private:
 
     // maps from a sequence id to a stream id
     std::vector<uint32_t> seq_to_stream;
+
+    // cells of the last applied tree ubatch: (batch index, cell index) per token, see apply_ubatch()
+    std::vector<std::pair<int32_t, uint32_t>> tree_cells;
+    uint32_t tree_strm = 0;
 
     // pending stream copies that will be applied during the next update
     stream_copy_info sc_info;

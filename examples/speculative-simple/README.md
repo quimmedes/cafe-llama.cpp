@@ -33,6 +33,13 @@ Demonstration of basic greedy speculative decoding
         --spec-type draft-eagle3 --spec-draft-n-max 3 -ngld 99 --color on \
         -n 256 --temp 0 --top-k 1 --seed 42 -ngl 99 -lv 4
 
+# spec-type draft-eagle4 (convert with --target-model-dir first, see docs/speculative.md)
+./bin/llama-speculative-simple \
+        -m Qwen3.8-27B.gguf -md Qwen3.8-27B-EAGLE4.gguf \
+        -p "Here is a quick sort implementation in C++. Just code, no comments:\n\n#include" \
+        --spec-type draft-eagle4 --spec-draft-n-max 3 -ngld 99 --color on \
+        -n 256 --temp 0 --top-k 1 --seed 42 -ngl 99 -lv 4
+
 # spec-type draft-dflash
 ./bin/llama-speculative-simple \
         -hf ggml-org/Qwen3-8B-GGUF \

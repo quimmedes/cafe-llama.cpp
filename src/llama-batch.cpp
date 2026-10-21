@@ -223,6 +223,34 @@ bool llama_batch_allocr::init(
         }
     }
 
+    // token tree, kept empty if no entry has a parent set
+    for (int32_t i = 0; i < n_tok; ++i) {
+        if (batch_inp.tokens[i].has_tree_parent) {
+            tree_parent.resize(n_tok);
+            break;
+        }
+    }
+
+    for (int32_t i = 0; i < (int32_t) tree_parent.size(); ++i) {
+        const auto & tok = batch_inp.tokens[i];
+        const int32_t p = tok.has_tree_parent ? tok.tree_parent : i - 1;
+
+        if (p < -1 || p >= i) {
+            LLAMA_LOG_ERROR("%s: invalid tree parent %d for token %d, the parent must come before the token\n", __func__, p, i);
+            return false;
+        }
+        if (tok.seq_ids.size() != 1 || *tok.seq_ids.begin() != *batch_inp.tokens[0].seq_ids.begin()) {
+            LLAMA_LOG_ERROR("%s: a token tree must be a single sequence\n", __func__);
+            return false;
+        }
+        if (p >= 0 && tok.pos[0] != batch_inp.tokens[p].pos[0] + 1) {
+            LLAMA_LOG_ERROR("%s: tree token %d has position %d, expected parent position + 1 = %d\n", __func__, i, tok.pos[0], batch_inp.tokens[p].pos[0] + 1);
+            return false;
+        }
+
+        tree_parent[i] = p;
+    }
+
     //
     // set up the internal llama_batch to point to our owned arrays
     //
@@ -314,6 +342,7 @@ bool llama_batch_allocr::init(
             /*.output       =*/ batch.logits,
             /*.type         =*/ is_embd_vec.empty() ? nullptr : is_embd_vec.data(),
             /*.decision_order =*/ decision_order.empty() ? nullptr : decision_order.data(),
+            /*.tree_parent  =*/ tree_parent.empty() ? nullptr : tree_parent.data(),
             /*.data         =*/ {},
         };
 
@@ -539,6 +568,7 @@ llama_ubatch llama_batch_allocr::ubatch_reserve(uint32_t n_seq_tokens, uint32_t 
         /*.output       =*/ udata->output.data(),
         /*.type         =*/ nullptr,
         /*.decision_order =*/ nullptr,
+        /*.tree_parent  =*/ nullptr,
         /*.data         =*/ std::move(udata),
     };
 
@@ -845,6 +875,7 @@ void llama_batch_allocr::clear() {
     seq_id_unq  .clear();
     output      .clear();
     decision_order.clear();
+    tree_parent.clear();
 
     for (auto & cur : seq_pos) {
         cur.clear();
@@ -897,6 +928,7 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
     udata->output    .resize(n_tokens);
     udata->type      .resize(mixed ? n_tokens : 0);
     udata->decision_order.resize(decision_order.empty() ? 0 : n_tokens);
+    udata->tree_parent.resize(tree_parent.empty() ? 0 : n_tokens);
 
     udata->batch_idxs = idxs;
     udata->seq_id_data.reserve(n_tokens);
@@ -929,6 +961,17 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
 
         if (!decision_order.empty()) {
             udata->decision_order[i] = decision_order[idxs[i]];
+        }
+
+        // the whole tree is in this ubatch, see llama_context::decode()
+        if (!tree_parent.empty()) {
+            const int32_t p = tree_parent[idxs[i]];
+            int32_t j = -1;
+            if (p >= 0) {
+                j = (int32_t) (std::find(idxs.begin(), idxs.begin() + i, p) - idxs.begin());
+                GGML_ASSERT(j < (int32_t) i && "tree parent is not in the ubatch");
+            }
+            udata->tree_parent[i] = j;
         }
 
         for (int s = 0; s < udata->n_seq_id[i]; ++s) {
@@ -975,6 +1018,7 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
         /*.output       =*/ udata->output.data(),
         /*.type         =*/ mixed ? udata->type.data() : nullptr,
         /*.decision_order =*/ udata->decision_order.empty() ? nullptr : udata->decision_order.data(),
+        /*.tree_parent  =*/ udata->tree_parent.empty() ? nullptr : udata->tree_parent.data(),
         /*.data         =*/ std::move(udata),
     };
 
@@ -1337,6 +1381,15 @@ bool llama_batch_ext::set_decision_order(int32_t idx, int32_t order) {
     return true;
 }
 
+bool llama_batch_ext::set_tree_parent(int32_t idx, int32_t parent) {
+    if (idx < 0 || idx >= (int32_t) tokens.size() || parent < -1 || parent >= idx) {
+        return false;
+    }
+    tokens[idx].has_tree_parent = true;
+    tokens[idx].tree_parent     = parent;
+    return true;
+}
+
 // llama_batch_ext C API
 
 llama_batch_ext * llama_batch_ext_init(llama_context * ctx) {
@@ -1403,6 +1456,10 @@ bool llama_batch_ext_set_output_logits(llama_batch_ext * batch, int32_t idx, boo
 
 bool llama_batch_ext_set_decision_order(llama_batch_ext * batch, int32_t idx, llama_decision_order order) {
     return batch->set_decision_order(idx, order);
+}
+
+bool llama_batch_ext_set_tree_parent(llama_batch_ext * batch, int32_t idx, int32_t parent) {
+    return batch->set_tree_parent(idx, parent);
 }
 
 // llama_batch_compat

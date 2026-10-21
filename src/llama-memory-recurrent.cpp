@@ -433,6 +433,44 @@ void llama_memory_recurrent::set_rs_idx(llama_seq_id seq_id, uint32_t idx) {
     rs_idx[seq_id] = idx;
 }
 
+bool llama_memory_recurrent::tree_commit(llama_seq_id seq_id, const std::vector<int32_t> & keep) {
+    if (tree_seq != seq_id || tree_tokens.empty() || keep.empty()) {
+        return false;
+    }
+
+    // the kept chain ends at its last token in ubatch order
+    int32_t last = -1;
+    for (int32_t i = 0; i < (int32_t) tree_tokens.size(); ++i) {
+        if (std::find(keep.begin(), keep.end(), tree_tokens[i].first) != keep.end()) {
+            last = i;
+        }
+    }
+    if (last < 0) {
+        return false;
+    }
+
+    const int32_t tail_id = cells[seq_id].tail;
+    if (tail_id < 0) {
+        return false;
+    }
+    auto & cell = cells[tail_id];
+
+    // snapshot slot r holds the state r tokens before the end of the ubatch
+    const uint32_t rollback = (uint32_t) tree_tokens.size() - 1 - (uint32_t) last;
+    if (rollback > 0 && !is_empty()) {
+        if (cell.seq_id.size() > 1 || rollback > n_rs_seq || rs_idx[seq_id] != 0) {
+            return false;
+        }
+        set_rs_idx(seq_id, rollback);
+    }
+    cell.pos = tree_tokens[last].second;
+
+    tree_tokens.clear();
+    tree_seq = -1;
+
+    return true;
+}
+
 std::map<ggml_backend_buffer_type_t, size_t> llama_memory_recurrent::memory_breakdown() const {
     std::map<ggml_backend_buffer_type_t, size_t> ret;
     for (const auto & [_, buf] : ctxs_bufs) {
@@ -672,7 +710,7 @@ bool llama_memory_recurrent::find_slot(const llama_ubatch & ubatch) {
         const int32_t cell_id = s + min;
         auto & cell = cells[cell_id];
 
-        if (cell.pos >= 0 && last_pos != cell.pos + (llama_pos) n_seq_tokens) {
+        if (cell.pos >= 0 && !ubatch.tree_parent && last_pos != cell.pos + (llama_pos) n_seq_tokens) {
             // What should happen when the pos backtracks or skips a value?
             // Clearing the state mid-batch would require special-casing which isn't done.
             LLAMA_LOG_WARN("%s: non-consecutive token position %d after %d for sequence %d with %u new tokens\n",
@@ -684,6 +722,16 @@ bool llama_memory_recurrent::find_slot(const llama_ubatch & ubatch) {
             const llama_seq_id seq_id = ubatch.seq_id[i][j];
             cell.seq_id.insert(seq_id);
             cells[seq_id].tail = cell_id;
+        }
+    }
+
+    tree_tokens.clear();
+    tree_seq = -1;
+    if (ubatch.tree_parent) {
+        GGML_ASSERT(n_seqs == 1);
+        tree_seq = ubatch.seq_id[0][0];
+        for (uint32_t i = 0; i < n_seq_tokens; ++i) {
+            tree_tokens.emplace_back(ubatch.data ? ubatch.data->batch_idxs[i] : (int32_t) i, ubatch.pos[i]);
         }
     }
 

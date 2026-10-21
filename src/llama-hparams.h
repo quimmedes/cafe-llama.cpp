@@ -67,6 +67,8 @@ struct llama_hparams {
     bool swin_norm;
     bool norm_before_residual = false;
     bool norm_before_fc       = false;
+    bool fc_norm              = false; // eagle4: RMSNorm each aux hidden state before fc
+    bool norm_output          = false; // eagle4: feed the normed output to the next draft step
 
     uint32_t n_ctx_train; // context size the model was trained on
     uint32_t n_embd;

@@ -16688,6 +16688,9 @@ static bool ggml_backend_vk_device_supports_op(ggml_backend_dev_t dev, const ggm
                 if (S_v != 16 && S_v != 32 && S_v != 64 && S_v != 128) {
                     return false;
                 }
+                if (op->src[9] != nullptr) {
+                    return false; // token tree not implemented
+                }
                 for (int i = 0; i < 6; i++) {
                     if (op->src[i] == nullptr || op->src[i]->type != GGML_TYPE_F32) {
                         return false;

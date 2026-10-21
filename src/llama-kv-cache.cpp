@@ -1214,6 +1214,38 @@ void llama_kv_cache::apply_ubatch(const slot_info & sinfo, const llama_ubatch & 
 
         head = sinfo.idxs[s].back() + 1;
     }
+
+    tree_cells.clear();
+    if (ubatch.tree_parent) {
+        GGML_ASSERT(sinfo.n_stream() == 1);
+        tree_strm = sinfo.strm[0];
+        for (uint32_t i = 0; i < sinfo.size(); ++i) {
+            const int32_t bidx = ubatch.data ? ubatch.data->batch_idxs[i] : (int32_t) i;
+            tree_cells.emplace_back(bidx, sinfo.idxs[0][i]);
+        }
+    }
+}
+
+bool llama_kv_cache::tree_commit(llama_seq_id seq_id, const std::vector<int32_t> & keep) {
+    if (tree_cells.empty()) {
+        return false;
+    }
+
+    auto & cells = v_cells[tree_strm];
+    auto & head  = v_heads[tree_strm];
+
+    for (const auto & [bidx, idx] : tree_cells) {
+        if (std::find(keep.begin(), keep.end(), bidx) != keep.end()) {
+            continue;
+        }
+        if (cells.seq_has(idx, seq_id) && cells.seq_rm(idx, seq_id)) {
+            head = std::min(head, idx);
+        }
+    }
+
+    tree_cells.clear();
+
+    return true;
 }
 
 bool llama_kv_cache::get_can_shift() const {
@@ -1962,6 +1994,28 @@ static void set_input_kq_mask_impl(const args_set_input_kq_mask & args, T * data
     }
 }
 
+// token tree: a tree token sees the tree tokens on its own ancestor chain only
+template<typename T>
+static void set_input_kq_mask_tree(const llama_ubatch * ubatch, const std::vector<std::pair<int32_t, uint32_t>> & tree_cells, int64_t n_kv, T * data) {
+    const uint32_t n_tokens = ubatch->n_tokens;
+
+    GGML_ASSERT(tree_cells.size() == n_tokens);
+
+    std::vector<uint8_t> anc(n_tokens);
+    for (uint32_t i = 0; i < n_tokens; ++i) {
+        std::fill(anc.begin(), anc.end(), 0);
+        for (int32_t a = (int32_t) i; a >= 0; a = ubatch->tree_parent[a]) {
+            anc[a] = 1;
+        }
+        for (uint32_t j = 0; j < n_tokens; ++j) {
+            if (!anc[j]) {
+                GGML_ASSERT(tree_cells[j].second < n_kv);
+                data[(uint64_t) n_kv*i + tree_cells[j].second] = llama_cast<T>(-INFINITY);
+            }
+        }
+    }
+}
+
 void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * ubatch, bool causal_attn) const {
     const uint32_t n_tokens = ubatch->n_tokens;
 
@@ -1997,8 +2051,14 @@ void llama_kv_cache::set_input_kq_mask(ggml_tensor * dst, const llama_ubatch * u
 
     if (dst->type == GGML_TYPE_F16) {
         set_input_kq_mask_impl<ggml_fp16_t>(args, (ggml_fp16_t *) dst->data, causal_attn);
+        if (ubatch->tree_parent) {
+            set_input_kq_mask_tree(ubatch, tree_cells, n_kv, (ggml_fp16_t *) dst->data);
+        }
     } else {
         set_input_kq_mask_impl<float>(args, (float *) dst->data, causal_attn);
+        if (ubatch->tree_parent) {
+            set_input_kq_mask_tree(ubatch, tree_cells, n_kv, (float *) dst->data);
+        }
     }
 
     //const int64_t t_end = ggml_time_us();

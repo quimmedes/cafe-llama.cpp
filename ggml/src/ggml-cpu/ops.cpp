@@ -11292,6 +11292,10 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
     const int64_t state_seq_stride = src_rows ? 0 : (int64_t) (src_state->nb[3] / sizeof(float));
     const int64_t state_row_size   = src_rows ? (int64_t) (src_state->nb[1] / sizeof(float)) : 0;
 
+    // token tree: reload the state of the parent token before each token (see ggml_gated_delta_net_set_tree)
+    const int32_t * tree_parent = dst->src[9] ? (const int32_t *) dst->src[9]->data : nullptr;
+    GGML_ASSERT(tree_parent == nullptr || (K > 1 && K >= n_tokens) || n_tokens == 1);
+
     const int64_t per_thread = S_v + (K > 1 ? S_v * S_v : 0);
     const int ith = params->ith;
 
@@ -11346,6 +11350,13 @@ static void ggml_compute_forward_gated_delta_net_one_chunk(
         float * attn_data = attn_out_base + (iv3 * n_tokens * H + iv1) * S_v;
 
         for (int64_t t = 0; t < n_tokens; t++) {
+            if (tree_parent && t > 0 && tree_parent[t] != t - 1) {
+                const int32_t p = tree_parent[t];
+                const float * s_src = p < 0 ? s_in
+                    : state_out_base + (n_tokens - 1 - p) * state_size_per_snap + (iv3 * H + iv1) * S_v * S_v;
+                memcpy(s_out, s_src, S_v * S_v * sizeof(float));
+            }
+
             const float * q_d = (const float *)((const char *)src_q->data + iq3 * nbq3 + t * nbq2 + iq1 * nbq1);
             const float * k_d = (const float *)((const char *)src_k->data + ik3 * nbk3 + t * nbk2 + ik1 * nbk1);
             const float * v_d = (const float *)((const char *)src_v->data + iv3 * nbv3 + t * nbv2 + iv1 * nbv1);

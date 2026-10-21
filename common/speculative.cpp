@@ -88,6 +88,7 @@ const std::map<std::string, common_speculative_type> common_speculative_type_fro
     {"none",          COMMON_SPECULATIVE_TYPE_NONE},
     {"draft-simple",  COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE},
     {"draft-eagle3",  COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3},
+    {"draft-eagle4",  COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE4},
     {"draft-mtp",     COMMON_SPECULATIVE_TYPE_DRAFT_MTP},
     {"draft-dflash",  COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH},
     {"draft-dspark",  COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK},
@@ -232,6 +233,10 @@ struct common_speculative_impl {
     virtual void draft(common_speculative_draft_params_vec & dparams) = 0;
 
     virtual void accept(llama_seq_id seq_id, uint16_t n_accepted, bool is_other) = 0;
+
+    virtual void accept_path(llama_seq_id seq_id, int32_t /*path_id*/, uint16_t n_accepted, bool is_other) {
+        accept(seq_id, n_accepted, is_other);
+    }
 
     // (optional) serialize/restore per-seq internal state (e.g. eagle3's deferred boundary).
     virtual bool get_state(llama_seq_id /*seq_id*/, std::vector<uint8_t> & /*data*/) const { return false; }
@@ -1209,7 +1214,11 @@ struct common_speculative_impl_draft_simple : public common_speculative_impl {
 };
 
 
-// EAGLE3 speculative decoding state
+// EAGLE3/EAGLE4 speculative decoding state
+//
+// EAGLE4 uses the same token/hidden-state protocol; its draft graph additionally
+// applies per-auxiliary-state fc norms, sliding-window attention and a normed
+// output for the next step (metadata-driven, see src/models/eagle3.cpp).
 //
 // Input of draft decoder: (This is different compared to MTP)
 //   At "pos P", the decoder takes input pair (t_{P+1}, g_P), with RoPE at P.
@@ -1265,6 +1274,32 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
     std::vector<std::vector<float>> pending_g_last;
     std::vector<llama_pos>          pending_pos_last;
 
+    int32_t n_paths = 1; // tree drafts (one sequence per path)
+    int32_t n_slots = 0; // server slots; paths for slot s map to common_speculative_path_seq()
+
+    struct path_state {
+        llama_tokens tokens;
+        common_sampler_ptr smpl;
+    };
+    std::vector<std::vector<path_state>> path_states; // [n_slots][n_paths]
+
+    // [per-slot] rows of the last verified token tree, see process()
+    struct tree_rows {
+        llama_tokens          tok;
+        std::vector<llama_pos> pos;
+        std::vector<int32_t>  parent;
+        std::vector<float>    g; // [n_rows * n_embd_dec]
+    };
+    std::vector<tree_rows> tree_verify;
+
+    // [per-slot] accepted tree chain, written to the draft memory by the next draft(): (token[k+1], g[k]) at pos[k]
+    struct chain_row {
+        llama_token        tok;
+        llama_pos          pos;
+        std::vector<float> g;
+    };
+    std::vector<std::vector<chain_row>> pending_chain;
+
     // [per-seq] snapshot of the most recent process()'s encoder output
     std::vector<std::vector<float>> verify_g;         // [n_seq][n_rows * n_embd_dec]
     std::vector<llama_pos>          verify_pos_first; // [n_seq] — pos of verify_g[seq][0]
@@ -1274,16 +1309,28 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
     std::vector<float> features_buf;
     std::vector<float> g_embd_buf;
 
-    common_speculative_impl_draft_eagle3(const common_params_speculative & params, uint32_t n_seq)
-        : common_speculative_impl(COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3, n_seq, params.draft.n_max)
+    common_speculative_impl_draft_eagle3(const common_params_speculative & params, uint32_t n_seq,
+            common_speculative_type type = COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3)
+        : common_speculative_impl(type, n_seq, params.draft.n_max)
         , params(params.draft)
     {
-        SPC_TRC("%s", "adding speculative implementation 'draft-eagle3'\n");
+        SPC_TRC("adding speculative implementation '%s'\n", common_speculative_type_to_str(type).c_str());
         SPC_TRC("- n_max=%d, n_min=%d, p_min=%f, backend_sampling=%d\n", params.draft.n_max, params.draft.n_min, params.draft.p_min, (int) params.draft.backend_sampling);
+
+        n_paths = type == COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE4 ? std::max(1, params.draft.n_paths) : 1;
+        n_slots = n_paths > 1 ? (int32_t) (n_seq / n_paths) : (int32_t) n_seq;
+        if (n_paths > 1) {
+            path_states.resize(n_slots);
+            for (auto & paths : path_states) {
+                paths.resize(n_paths);
+            }
+            tree_verify.resize(n_slots);
+            pending_chain.resize(n_slots);
+        }
 
         auto * ctx_tgt = this->params.ctx_tgt;
         auto * ctx_dft = this->params.ctx_dft;
-        GGML_ASSERT(ctx_tgt && ctx_dft && "EAGLE3 requires ctx_tgt and ctx_dft to be set");
+        GGML_ASSERT(ctx_tgt && ctx_dft && "EAGLE requires ctx_tgt and ctx_dft to be set");
 
         const llama_model * model_dft = llama_get_model(ctx_dft);
         const llama_model * model_tgt = llama_get_model(ctx_tgt);
@@ -1291,7 +1338,7 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
         target_layer_ids   = llama_model_target_layer_ids  (model_dft);
         target_layer_ids_n = llama_model_target_layer_ids_n(model_dft);
         if (target_layer_ids_n != 3) {
-            throw std::runtime_error("draft model is not eagle3 (expected 3 extract layers, got " +
+            throw std::runtime_error("draft model is not eagle (expected 3 target layers, got " +
                                      std::to_string(target_layer_ids_n) + ")");
         }
 
@@ -1478,11 +1525,44 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
         //       update pending_g_last / pending_pos_last to the last row.
         batch.clear();
 
+        // seqs whose pending tree chain is in this batch, see below
+        std::vector<llama_seq_id> chain_flushed;
+
         for (llama_seq_id seq_id = 0; seq_id < (llama_seq_id) n_seq; ++seq_id) {
             const int32_t beg = i_batch_beg[seq_id];
             const int32_t end = i_batch_end[seq_id];
             if (beg < 0 || end < 0) {
                 continue;
+            }
+
+            // token tree: keep the rows, the next draft() writes the accepted chain (see accept_path())
+            if (batch_in.tokens[beg].tree_parent >= -1 && seq_id < (llama_seq_id) tree_verify.size()) {
+                const int32_t n_rows = end - beg + 1;
+                auto & tr = tree_verify[seq_id];
+                tr.tok.resize(n_rows);
+                tr.pos.resize(n_rows);
+                tr.parent.resize(n_rows);
+                for (int32_t k = 0; k < n_rows; ++k) {
+                    const auto & t = batch_in.tokens[beg + k];
+                    tr.tok[k]    = t.id;
+                    tr.pos[k]    = t.pos[0];
+                    tr.parent[k] = t.tree_parent >= 0 ? t.tree_parent - beg : -1;
+                }
+                tr.g.assign(g_embd + (size_t) beg * n_embd_dec, g_embd + (size_t) (end + 1) * n_embd_dec);
+                continue;
+            }
+
+            // a pending tree chain continues into this batch: write it first, else it is stale
+            if (seq_id < (llama_seq_id) pending_chain.size() && !pending_chain[seq_id].empty()) {
+                const auto & chain = pending_chain[seq_id];
+                if (chain.back().pos + 1 == pending_pos_last[seq_id] && pending_pos_last[seq_id] + 1 == batch_in.tokens[beg].pos[0]) {
+                    llama_memory_seq_rm(llama_get_memory(ctx_dft), seq_id, chain[0].pos, -1);
+                    for (const auto & c : chain) {
+                        const int32_t idx = batch.add(c.tok, c.pos, seq_id, /*output=*/ false);
+                        batch.set_embd(idx, { c.g.data(), 1, (size_t) n_embd_dec });
+                    }
+                }
+                chain_flushed.push_back(seq_id);
             }
 
             // cross-ubatch bridge — complete the prior ubatch's deferred boundary.
@@ -1523,10 +1603,169 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
             }
         }
 
+        for (const llama_seq_id seq_id : chain_flushed) {
+            pending_chain[seq_id].clear();
+        }
+
         return true;
     }
 
+    // tree draft: path 0 is the greedy chain, path p > 0 leaves it at depth (p - 1) % n_max with candidate 1 + (p - 1) / n_max
+    // (if its probability is >= p_split) and then continues greedily; one decode per depth for all paths
+    void draft_paths(common_speculative_draft_params_vec & dparams) {
+        auto * ctx_dft = params.ctx_dft;
+        auto * mem     = llama_get_memory(ctx_dft);
+        const llama_model * model_dft = llama_get_model(ctx_dft);
+
+        for (llama_seq_id seq_id = 0; seq_id < n_slots; ++seq_id) {
+            auto & dp = dparams[seq_id];
+            if (!dp.drafting || dp.result_paths == nullptr || pending_pos_last[seq_id] < 0) {
+                continue;
+            }
+
+            const int32_t   n_max = dp.n_max >= 0 ? std::min(dp.n_max, params.n_max) : params.n_max;
+            const llama_pos pos0  = pending_pos_last[seq_id];
+
+            auto & paths = path_states[seq_id];
+            auto path_seq = [&](int32_t p) { return common_speculative_path_seq(n_slots, n_paths, seq_id, p); };
+
+            for (int32_t p = 0; p < n_paths; ++p) {
+                paths[p].tokens.clear();
+                if (p > 0) {
+                    llama_memory_seq_rm(mem, path_seq(p), -1, -1);
+                }
+            }
+
+            // the accepted chain of the last tree, then the boundary token
+            auto & chain = pending_chain[seq_id];
+            if (!chain.empty() && chain.back().pos + 1 != pos0) {
+                chain.clear(); // stale: the boundary moved (e.g. a checkpoint restore)
+            }
+            llama_memory_seq_rm(mem, seq_id, chain.empty() ? pos0 : chain[0].pos, -1);
+
+            batch.clear();
+            for (const auto & c : chain) {
+                const int32_t idx = batch.add(c.tok, c.pos, seq_id, false);
+                batch.set_embd(idx, { c.g.data(), 1, (size_t) n_embd_dec });
+            }
+            const int32_t i_seed = batch.add(dp.id_last, pos0, seq_id, true);
+            batch.set_embd(i_seed, { pending_g_last[seq_id].data(), 1, (size_t) n_embd_dec });
+
+            const bool ok = llama_process(ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch.get()) == 0;
+            chain.clear();
+            if (!ok) {
+                SPC_ERR("llama_process(ctx_dft) failed for the tree seed of seq %d\n", (int) seq_id);
+                continue;
+            }
+
+            common_sampler_reset(smpls[seq_id].get());
+
+            auto path_smpl = [&](int32_t p) { return p == 0 ? smpls[seq_id].get() : paths[p].smpl.get(); };
+
+            // out[p]: batch index of the row path p samples next, -1 if the path is not drafting
+            std::vector<int32_t>       out(n_paths, -1);
+            std::vector<llama_token>   next(n_paths);
+            std::vector<const float *> prenorm(n_paths);
+            out[0] = i_seed;
+
+            for (int32_t step = 0; step < n_max; ++step) {
+                std::fill(next.begin(), next.end(), LLAMA_TOKEN_NULL);
+
+                if (out[0] >= 0) {
+                    common_sampler * smpl = path_smpl(0);
+                    common_sampler_sample(smpl, ctx_dft, out[0], true);
+
+                    const auto  * cur_p = common_sampler_get_candidates(smpl, true);
+                    const float * h     = llama_get_embeddings_nextn_ith(ctx_dft, out[0]);
+
+                    // the paths that leave the chain here take a lower candidate of the same row
+                    for (int32_t p = 1; p < n_paths; ++p) {
+                        const int32_t i_cand = 1 + (p - 1) / n_max;
+                        if ((p - 1) % n_max != step || (int32_t) cur_p->size <= i_cand || cur_p->data[i_cand].p < params.p_split) {
+                            continue;
+                        }
+                        llama_memory_seq_cp(mem, seq_id, path_seq(p), -1, -1);
+                        paths[p].tokens = paths[0].tokens;
+
+                        if (!paths[p].smpl) {
+                            common_params_sampling sparams;
+                            sparams.no_perf  = false;
+                            sparams.top_k    = 10;
+                            sparams.samplers = { COMMON_SAMPLER_TYPE_TOP_K };
+                            paths[p].smpl.reset(common_sampler_init(model_dft, sparams));
+                        }
+                        common_sampler_reset(paths[p].smpl.get());
+
+                        next[p]    = cur_p->data[i_cand].id;
+                        prenorm[p] = h;
+                    }
+
+                    if (cur_p->size > 0 && cur_p->data[0].p >= params.p_min) {
+                        next[0]    = cur_p->data[0].id;
+                        prenorm[0] = h;
+                    }
+                }
+
+                for (int32_t p = 1; p < n_paths; ++p) {
+                    if (out[p] < 0) {
+                        continue;
+                    }
+                    common_sampler * smpl = path_smpl(p);
+                    common_sampler_sample(smpl, ctx_dft, out[p], true);
+
+                    const auto * cur_p = common_sampler_get_candidates(smpl, true);
+                    if (cur_p->size > 0 && cur_p->data[0].p >= params.p_min) {
+                        next[p]    = cur_p->data[0].id;
+                        prenorm[p] = llama_get_embeddings_nextn_ith(ctx_dft, out[p]);
+                    }
+                }
+
+                batch.clear();
+                for (int32_t p = 0; p < n_paths; ++p) {
+                    out[p] = -1;
+                    if (next[p] == LLAMA_TOKEN_NULL) {
+                        continue;
+                    }
+                    common_sampler_accept(path_smpl(p), next[p], true);
+                    paths[p].tokens.push_back(next[p]);
+
+                    if (step + 1 < n_max) {
+                        out[p] = batch.add(next[p], pos0 + step + 1, path_seq(p), true);
+                        batch.set_embd(out[p], { prenorm[p], 1, (size_t) n_embd_dec });
+                    }
+                }
+
+                if (batch.size() == 0) {
+                    break;
+                }
+                if (llama_process(ctx_dft, LLAMA_PROCESS_TYPE_DECODE, batch.get()) != 0) {
+                    SPC_ERR("llama_process(ctx_dft) failed for the tree step %d of seq %d\n", (int) step, (int) seq_id);
+                    break;
+                }
+            }
+
+            for (int32_t p = 1; p < n_paths; ++p) {
+                llama_memory_seq_rm(mem, path_seq(p), -1, -1);
+            }
+
+            dp.result_paths->assign(n_paths, llama_tokens{});
+            dp.result->clear();
+            if (paths[0].tokens.empty() || (int32_t) paths[0].tokens.size() < params.n_min) {
+                continue;
+            }
+            for (int32_t p = 0; p < n_paths; ++p) {
+                (*dp.result_paths)[p] = paths[p].tokens;
+            }
+            *dp.result = paths[0].tokens;
+        }
+    }
+
     void draft(common_speculative_draft_params_vec & dparams) override {
+        if (n_paths > 1) {
+            draft_paths(dparams);
+            return;
+        }
+
         auto & ctx_dft = params.ctx_dft;
 
         batch.clear();
@@ -1666,6 +1905,54 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
                     (size_t) n_embd_dec * sizeof(float));
     }
 
+    void accept_path(llama_seq_id seq_id, int32_t path_id, uint16_t n_accepted, bool is_other) override {
+        if (n_paths <= 1) {
+            accept(seq_id, n_accepted, is_other);
+            return;
+        }
+        if (seq_id < 0 || seq_id >= n_slots || path_id < 0 || path_id >= n_paths) {
+            return;
+        }
+
+        auto & tr = tree_verify[seq_id];
+        if (tr.tok.empty()) {
+            return;
+        }
+
+        // walk the accepted tokens of the path down the verified tree
+        const auto & path = path_states[seq_id][path_id].tokens;
+        std::vector<int32_t> nodes = { 0 };
+        for (size_t i = 0; i < n_accepted && i < path.size(); ++i) {
+            int32_t next = -1;
+            for (int32_t j = nodes.back() + 1; j < (int32_t) tr.tok.size(); ++j) {
+                if (tr.parent[j] == nodes.back() && tr.tok[j] == path[i]) {
+                    next = j;
+                    break;
+                }
+            }
+            if (next < 0) {
+                break;
+            }
+            nodes.push_back(next);
+        }
+
+        auto & chain = pending_chain[seq_id];
+        chain.clear();
+        for (size_t k = 0; k + 1 < nodes.size(); ++k) {
+            const float * g = tr.g.data() + (size_t) nodes[k] * n_embd_dec;
+            chain.push_back({ tr.tok[nodes[k + 1]], tr.pos[nodes[k]], std::vector<float>(g, g + n_embd_dec) });
+        }
+
+        const int32_t last = nodes.back();
+        pending_pos_last[seq_id] = tr.pos[last];
+        std::memcpy(pending_g_last[seq_id].data(), tr.g.data() + (size_t) last * n_embd_dec, (size_t) n_embd_dec * sizeof(float));
+
+        tr.tok.clear();
+        tr.pos.clear();
+        tr.parent.clear();
+        tr.g.clear();
+    }
+
     // we only need to stash the deferred boundary's g_embd row for recurrent/hybrid targets:
     // their single-position checkpoints drop it on restore
     bool need_boundary_stash() const {
@@ -1707,6 +1994,11 @@ struct common_speculative_impl_draft_eagle3 : public common_speculative_impl {
         pending_pos_last[seq_id] = pos;
         pending_g_last[seq_id].resize(n_embd_dec);
         std::memcpy(pending_g_last[seq_id].data(), data.data() + sizeof(llama_pos), (size_t) n_embd_dec * sizeof(float));
+
+        // the restored boundary replaces the one the pending tree chain ends at
+        if (seq_id < (llama_seq_id) pending_chain.size()) {
+            pending_chain[seq_id].clear();
+        }
     }
 };
 
@@ -3159,6 +3451,7 @@ static bool common_speculative_type_uses_draft_model(common_speculative_type typ
     switch (type) {
         case COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE:
         case COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3:
+        case COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE4:
         case COMMON_SPECULATIVE_TYPE_DRAFT_MTP:
         case COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH:
         case COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK:
@@ -3310,6 +3603,7 @@ std::string common_speculative_type_to_str(common_speculative_type type) {
         case COMMON_SPECULATIVE_TYPE_NONE:          return "none";
         case COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE:  return "draft-simple";
         case COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3:  return "draft-eagle3";
+        case COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE4:  return "draft-eagle4";
         case COMMON_SPECULATIVE_TYPE_DRAFT_MTP:     return "draft-mtp";
         case COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH:  return "draft-dflash";
         case COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK:  return "draft-dspark";
@@ -3366,6 +3660,14 @@ std::vector<common_speculative_type> common_speculative_types_from_gguf(const st
     }
 
     const std::string arch = gguf_get_val_str(gguf_ctx.get(), arch_id);
+    if (arch == "eagle3") {
+        SPC_INF("%s", "auto-detected speculative type 'draft-eagle3' from the draft model metadata\n");
+        return { COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3 };
+    }
+    if (arch == "eagle4") {
+        SPC_INF("%s", "auto-detected speculative type 'draft-eagle4' from the draft model metadata\n");
+        return { COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE4 };
+    }
     if (arch != "dflash") {
         const uint32_t block_count = gguf_get_val_u32(gguf_ctx.get(), gguf_find_key(gguf_ctx.get(), (arch + ".block_count").c_str()));
 
@@ -3401,6 +3703,7 @@ int32_t common_speculative_n_max(const common_params_speculative * spec) {
         switch (type) {
             case COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE:
             case COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3:
+            case COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE4:
             case COMMON_SPECULATIVE_TYPE_DRAFT_MTP:
             case COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH:
             case COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK:
@@ -3622,6 +3925,11 @@ common_speculative_init_result::common_speculative_init_result(
         cparams.ctx_type = LLAMA_CONTEXT_TYPE_MTP;
     }
 
+    // the EAGLE4 tree drafter keeps one sequence per path
+    if (params.speculative.needs_paths()) {
+        cparams.n_seq_max *= params.speculative.draft.n_paths;
+    }
+
     // the draft context holds as many tokens per sequence as the target context
     cparams.n_ctx = llama_n_ctx(ctx_tgt);
 
@@ -3723,7 +4031,7 @@ common_speculative * common_speculative_init(common_params_speculative & params,
         };
 
         // when adding a new type - update here the logic above
-        static_assert(COMMON_SPECULATIVE_TYPE_COUNT == 11);
+        static_assert(COMMON_SPECULATIVE_TYPE_COUNT == 12);
 
         // this list here defines the priority of the speculators
         // the one with highest priority are listed first
@@ -3735,6 +4043,7 @@ common_speculative * common_speculative_init(common_params_speculative & params,
 
         add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_SIMPLE);
         add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3, params.draft.ctx_dft != nullptr);
+        add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE4, params.draft.ctx_dft != nullptr);
         add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_MTP,    params.draft.ctx_dft != nullptr);
         add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_DFLASH, params.draft.ctx_dft != nullptr);
         add_config_if_enabled(COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK, params.draft.ctx_dft != nullptr);
@@ -3750,8 +4059,10 @@ common_speculative * common_speculative_init(common_params_speculative & params,
                 impls.push_back(std::make_unique<common_speculative_impl_draft_simple>(config.params, n_seq));
                 break;
             }
-            case COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3: {
-                impls.push_back(std::make_unique<common_speculative_impl_draft_eagle3>(config.params, n_seq));
+            case COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE3:
+            case COMMON_SPECULATIVE_TYPE_DRAFT_EAGLE4: {
+                impls.push_back(std::make_unique<common_speculative_impl_draft_eagle3>(
+                        config.params, n_seq, config.type));
                 break;
             }
             case COMMON_SPECULATIVE_TYPE_DRAFT_MTP: {
@@ -4055,6 +4366,40 @@ void common_speculative_accept(common_speculative * spec, llama_seq_id seq_id, u
     for (auto & impl_other : spec->impls) {
         if (impl_other.get() != impl) {
             impl_other->accept(seq_id, n_accepted, true);
+        }
+    }
+}
+
+llama_seq_id common_speculative_path_seq(uint32_t n_slots, uint32_t n_paths, llama_seq_id slot_id, uint32_t path_id) {
+    return path_id == 0 ? slot_id : (llama_seq_id) (n_slots + slot_id * (n_paths - 1) + (path_id - 1));
+}
+
+void common_speculative_accept_path(common_speculative * spec, llama_seq_id seq_id, int32_t path_id, uint16_t n_accepted) {
+    common_speculative_impl * impl = spec->impl_last[seq_id];
+
+    if (impl == nullptr) {
+        return;
+    }
+
+    {
+        common_time_meas tm(impl->t_accept_us, !impl->gen_perf);
+        if (impl->n_acc_tokens_per_pos.size() < n_accepted) {
+            impl->n_acc_tokens_per_pos.resize(n_accepted, 0);
+        }
+        for (size_t i = 0; i < n_accepted; ++i) {
+            impl->n_acc_tokens_per_pos[i]++;
+        }
+        if (n_accepted > 0) {
+            impl->n_acc_drafts++;
+            impl->n_acc_tokens += n_accepted;
+        }
+        impl->accept_path(seq_id, path_id, n_accepted, false);
+        impl->n_call_accept++;
+    }
+
+    for (auto & impl_other : spec->impls) {
+        if (impl_other.get() != impl) {
+            impl_other->accept_path(seq_id, path_id, n_accepted, true);
         }
     }
 }

@@ -9520,8 +9520,8 @@ static bool ggml_opencl_supports_op(ggml_backend_dev_t dev, const struct ggml_te
             }
         case GGML_OP_GATED_DELTA_NET:
             {
-                // rows-indexed state read (src[6]) and raw gates (op_params[1]) not implemented here
-                if (op->src[6] != NULL || ggml_get_op_params_i32(op, 1) != 0) {
+                // rows-indexed state read (src[6]), token tree (src[9]) and raw gates (op_params[1]) not implemented here
+                if (op->src[6] != NULL || op->src[9] != NULL || ggml_get_op_params_i32(op, 1) != 0) {
                     return false;
                 }
                 // Match the Vulkan backend: only F32 -> F32, S_v in {16, 32, 64, 128}.

@@ -60,6 +60,7 @@ struct llama_ubatch {
     int8_t       *  output;     // [n_tokens]         | i   | -
     int8_t       *  type;       // [n_tokens]         | i   | -     (mixed ubatch only, 0 - token, 1 - embd)
     int32_t      *  decision_order; // [n_tokens], NULL if no entry has one, see llama_batch_ext_set_decision_order()
+    int32_t      *  tree_parent;    // [n_tokens], ubatch index of the parent, -1 for a root, NULL if not a tree (see llama_batch_ext_set_tree_parent())
 
     struct data_t {
         std::vector<llama_token>    token;
@@ -74,6 +75,7 @@ struct llama_ubatch {
         std::vector<int8_t>         type;
         std::vector<int32_t>        batch_idxs;  // original batch index for each token
         std::vector<int32_t>        decision_order;
+        std::vector<int32_t>        tree_parent;
 
         std::vector<llama_seq_id> seq_id_data;
     };
@@ -116,6 +118,8 @@ struct llama_batch_ext {
         size_t       state_off = 0; // index offset in the state array
         bool         output = false; // TODO: have dedicated output flags
         int32_t      decision_order = 0; // see llama_batch_ext_set_decision_order()
+        bool         has_tree_parent = false; // see llama_batch_ext_set_tree_parent()
+        int32_t      tree_parent = -1;
         std::unordered_set<llama_seq_id> seq_ids;
         std::array<llama_pos, GGML_MROPE_SECTIONS> pos = {0, 0, 0, 0};
     };
@@ -148,6 +152,7 @@ struct llama_batch_ext {
     bool set_token_pos(int32_t idx, const llama_pos * pos_in);
     bool set_output(int32_t idx, bool output_last);
     bool set_decision_order(int32_t idx, int32_t order);
+    bool set_tree_parent(int32_t idx, int32_t parent);
 };
 
 // a helper for sanitizing, fulfilling and splitting a batch
@@ -166,6 +171,9 @@ public:
     uint32_t get_n_tokens()  const;
     uint32_t get_n_outputs() const;
     uint32_t get_n_used()    const;
+
+    // true if the batch is a token tree, see llama_batch_ext_set_tree_parent()
+    bool has_tree() const { return !tree_parent.empty(); }
 
     // the array of output indices in the order they were encountered during the ubatch splitting
     std::vector<int32_t> & get_out_ids();
@@ -232,6 +240,7 @@ private:
     std::vector<int32_t>        seq_idx;
     std::vector<int8_t>         output;
     std::vector<int32_t>        decision_order; // empty if no entry has one
+    std::vector<int32_t>        tree_parent;    // batch index of the parent (-1 for a root), empty if not a tree
 
     using pos_set_t = std::set<llama_pos>;
     using seq_cpl_t = std::vector<bool>;

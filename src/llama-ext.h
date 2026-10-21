@@ -129,6 +129,18 @@ LLAMA_API bool llama_batch_ext_set_decision_order(struct llama_batch_ext * batch
 // Label of option i of a decision model ("<arch>.decision.labels"), nullptr past the last one
 LLAMA_API const char * llama_model_decision_label(const struct llama_model * model, uint32_t i);
 
+// Token tree: entry idx sees only its ancestors, not its siblings. parent is the batch index of the parent entry, -1 for a root that continues the sequence.
+// Entries without a parent continue from the previous entry. Each parent comes before its children, a child is at parent position + 1.
+// The whole batch must be one sequence and fit in one ubatch. Check llama_tree_supported() first.
+LLAMA_API bool llama_batch_ext_set_tree_parent(struct llama_batch_ext * batch, int32_t idx, int32_t parent);
+
+// true if the context can decode token trees
+LLAMA_API bool llama_tree_supported(const struct llama_context * ctx);
+
+// After a token tree decode: keep the entries at the batch indices keep[0..n_keep) and drop the other entries from memory.
+// keep is one chain from the root, in order. Returns false if the last decode was not a tree of seq_id.
+LLAMA_API bool llama_tree_commit(struct llama_context * ctx, llama_seq_id seq_id, const int32_t * keep, int32_t n_keep);
+
 // mirrors:
 // LLAMA_API float * llama_get_embeddings(struct llama_context * ctx);
 LLAMA_API float * llama_get_embeddings_nextn(struct llama_context * ctx);

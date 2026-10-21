@@ -117,6 +117,12 @@ struct llama_memory_i {
     virtual llama_pos seq_pos_min(llama_seq_id seq_id) const = 0;
     virtual llama_pos seq_pos_max(llama_seq_id seq_id) const = 0;
 
+    // token trees, see llama_batch_ext_set_tree_parent()
+    virtual bool tree_supported() const { return false; }
+
+    // after a tree ubatch: keep the tokens at batch indices keep (one chain from the root, in order) and drop the others
+    virtual bool tree_commit(llama_seq_id /*seq_id*/, const std::vector<int32_t> & /*keep*/) { return false; }
+
     virtual std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const = 0;
 
     //

@@ -76,6 +76,10 @@ struct llama_context {
 
     llama_memory_t get_memory() const;
 
+    // token trees, see llama_batch_ext_set_tree_parent()
+    bool tree_supported() const;
+    bool tree_commit(llama_seq_id seq_id, const std::vector<int32_t> & keep);
+
     // return true if the memory was updated
     bool memory_update(bool optimize);
 

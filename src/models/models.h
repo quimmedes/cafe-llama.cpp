@@ -118,6 +118,10 @@ struct llm_build_delta_net_base : public llm_graph_context {
             int64_t              conv_channels,
             int                  il);
 
+    // token tree inputs, shared by all recurrent layers of the graph
+    llm_graph_input_tree * inp_tree = nullptr;
+    llm_graph_input_tree * build_inp_tree(int64_t d_conv);
+
     // run delta-net attention and write the new recurrent state(s) back to ssm_states_all
     // s: (head_v_dim, head_v_dim, num_v_heads, n_seqs); returns output: (head_v_dim, num_v_heads, n_seq_tokens, n_seqs)
     //

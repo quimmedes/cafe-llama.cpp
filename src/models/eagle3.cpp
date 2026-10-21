@@ -4,12 +4,12 @@ void llama_model_eagle3::load_arch_hparams(llama_model_loader & ml) {
     ml.get_key(LLM_KV_ATTENTION_LAYERNORM_RMS_EPS, hparams.f_norm_rms_eps);
 
     if (!ml.get_arr(LLM_KV_TARGET_LAYERS, target_layer_ids, false)) {
-        throw std::runtime_error("EAGLE3 model requires 'extract_layers' in GGUF metadata");
+        throw std::runtime_error(arch_name() + " model requires 'target_layers' in GGUF metadata");
     }
     if (target_layer_ids.size() != 3) {
-        throw std::runtime_error("EAGLE3 requires exactly 3 entries in 'extract_layers'");
+        throw std::runtime_error(arch_name() + " requires exactly 3 entries in 'target_layers'");
     }
-    LLAMA_LOG_INFO("%s: EAGLE3 extract_layers = [%d, %d, %d]\n", __func__,
+    LLAMA_LOG_INFO("%s: %s target_layers = [%d, %d, %d]\n", __func__, arch_name().c_str(),
             target_layer_ids[0],
             target_layer_ids[1],
             target_layer_ids[2]);
@@ -17,7 +17,7 @@ void llama_model_eagle3::load_arch_hparams(llama_model_loader & ml) {
     uint32_t n_embd_tgt = 0;
 
     ml.get_key(LLM_KV_TARGET_HIDDEN_SIZE, n_embd_tgt);
-    LLAMA_LOG_INFO("%s: EAGLE3 n_embd_tgt = %u (draft n_embd = %u)\n", __func__, n_embd_tgt, hparams.n_embd);
+    LLAMA_LOG_INFO("%s: %s n_embd_tgt = %u (draft n_embd = %u)\n", __func__, arch_name().c_str(), n_embd_tgt, hparams.n_embd);
 
     hparams.n_embd_inp_enc_impl = (uint32_t) target_layer_ids.size() * n_embd_tgt;
 
@@ -25,12 +25,31 @@ void llama_model_eagle3::load_arch_hparams(llama_model_loader & ml) {
     // compatible with Readhat eagle3 speculator model
     ml.get_key(LLM_KV_NORM_BEFORE_RESIDUAL, hparams.norm_before_residual, false);
     if (hparams.norm_before_residual) {
-        LLAMA_LOG_INFO("%s: EAGLE3gnorm_before_residual = true\n", __func__);
+        LLAMA_LOG_INFO("%s: %s norm_before_residual = true\n", __func__, arch_name().c_str());
     }
 
     // eagle3 norm_before_fc (optional, default false)
     // compatible with eagle3.1 (e.g. nvidia/gpt-oss-120b-Eagle3-v3)
     ml.get_key(LLM_KV_NORM_BEFORE_FC, hparams.norm_before_fc, false);
+
+    // eagle4: per-aux-hidden-state norm before fc and normed output for the next step
+    ml.get_key(LLM_KV_FC_NORM,     hparams.fc_norm,     false);
+    ml.get_key(LLM_KV_NORM_OUTPUT, hparams.norm_output, false);
+
+    // eagle4: the draft layer may use a sliding window. The model is one layer, so
+    // the pattern is a single entry.
+    if (ml.get_key(LLM_KV_ATTENTION_SLIDING_WINDOW, hparams.n_swa, false) && hparams.n_swa > 0) {
+        if (hparams.n_layer_all != 1) {
+            throw std::runtime_error(arch_name() + " sliding-window drafts must have 1 layer");
+        }
+        hparams.swa_type = LLAMA_SWA_TYPE_STANDARD;
+        if (!ml.get_arr(LLM_KV_ATTENTION_SLIDING_WINDOW_PATTERN, hparams.is_swa_impl)) {
+            throw std::runtime_error(arch_name() + " sliding-window drafts require 'sliding_window_pattern'");
+        }
+        hparams.rope_freq_base_train_swa  = hparams.rope_freq_base_train;
+        hparams.rope_freq_scale_train_swa = hparams.rope_freq_scale_train;
+        LLAMA_LOG_INFO("%s: %s sliding_window = %u\n", __func__, arch_name().c_str(), hparams.n_swa);
+    }
 
     type = LLM_TYPE_UNKNOWN;
 }
@@ -48,14 +67,38 @@ void llama_model_eagle3::load_arch_tensors(llama_model_loader &) {
     if (d2t_meta) {
         n_draft_vocab = d2t_meta->ne[0]; // update draft vocab size
         d2t = create_tensor(tn(LLM_TENSOR_D2T), {n_draft_vocab}, 0);
-        LLAMA_LOG_INFO("%s: EAGLE3 using d2t mapping (draft_vocab_size = %lld)\n", __func__, (long long)n_draft_vocab);
+        LLAMA_LOG_INFO("%s: %s using d2t mapping (draft_vocab_size = %lld)\n", __func__, arch_name().c_str(), (long long)n_draft_vocab);
     } else {
         d2t = nullptr; // no d2t, use default vocab size
-        LLAMA_LOG_INFO("%s: EAGLE3 without d2t - sharing same vocab_size with target (vocab_size = %lld)\n", __func__, (long long)n_draft_vocab);
+        LLAMA_LOG_INFO("%s: %s without d2t - sharing same vocab_size with target (vocab_size = %lld)\n", __func__, arch_name().c_str(), (long long)n_draft_vocab);
     }
 
     // Feature fusion layer: projects 3 target layers to draft hidden size
     fc = create_tensor(tn(LLM_TENSOR_FC, "weight"), {n_embd_inp, n_embd}, 0);
+
+    // eagle4: one RMSNorm per aux hidden state, applied before the fc projection
+    if (hparams.fc_norm) {
+        const int64_t n_embd_tgt = n_embd_inp / 3;
+        for (int i = 0; i < 3; ++i) {
+            fc_norm[i] = create_tensor(tn(LLM_TENSOR_FC_NORM, "weight", i), {n_embd_tgt}, 0);
+        }
+    }
+
+    // eagle4: low-rank candidate head. The rank comes from the factor shape, so no
+    // extra metadata is needed. The full output head stays loaded for re-scoring.
+    {
+        const std::string name = tn(LLM_TENSOR_EFFICIENT_LM_HEAD, "weight").str();
+        const ggml_tensor * meta = ml->get_tensor_meta(name.c_str());
+        if (meta) {
+            if (d2t) {
+                throw std::runtime_error(arch_name() + " cannot combine a reduced draft vocabulary with the candidate head");
+            }
+            const int64_t rank = meta->ne[0];
+            efficient_lm_head      = create_tensor(tn(LLM_TENSOR_EFFICIENT_LM_HEAD,      "weight"), {rank, n_vocab}, 0);
+            efficient_lm_head_down = create_tensor(tn(LLM_TENSOR_EFFICIENT_LM_HEAD_DOWN, "weight"), {n_embd, rank}, 0);
+            LLAMA_LOG_INFO("%s: %s low-rank candidate head rank = %lld\n", __func__, arch_name().c_str(), (long long) rank);
+        }
+    }
 
     // RMSNorm on the fused target features (input to fc), only when norm_before_fc is set.
     if (hparams.norm_before_fc) {
@@ -71,7 +114,7 @@ void llama_model_eagle3::load_arch_tensors(llama_model_loader &) {
     if (tok_embd_meta) {
         const int64_t n_target_vocab = tok_embd_meta->ne[1];
         tok_embd = create_tensor(tn(LLM_TENSOR_TOKEN_EMBD, "weight"), {n_embd, n_target_vocab}, 0);
-        LLAMA_LOG_INFO("%s: EAGLE3 using its own token_embd (vocab = %lld)\n", __func__, (long long)n_target_vocab);
+        LLAMA_LOG_INFO("%s: %s using its own token_embd (vocab = %lld)\n", __func__, arch_name().c_str(), (long long)n_target_vocab);
     }
 
     // Single decoder layer
@@ -127,6 +170,19 @@ llama_model_eagle3::graph<true>::graph(const llama_model & model, const llm_grap
 
     cur = build_inp_embd_enc();
 
+    if (hparams.fc_norm) {
+        // eagle4: normalize each aux hidden state separately, then concatenate
+        const int64_t n_embd_tgt = hparams.n_embd_inp_enc() / 3;
+        ggml_tensor * normed[3] = {};
+        for (int k = 0; k < 3; ++k) {
+            ggml_tensor * chunk = ggml_view_2d(ctx0, cur, n_embd_tgt, n_tokens, cur->nb[1],
+                    (size_t) k * n_embd_tgt * sizeof(float));
+            normed[k] = build_norm(chunk, model.fc_norm[k], NULL, LLM_NORM_RMS, -1);
+            cb(normed[k], "fc_norm", k);
+        }
+        cur = ggml_concat(ctx0, ggml_concat(ctx0, normed[0], normed[1], 0), normed[2], 0);
+    }
+
     // RMSNorm on the fused target features before fc
     if (hparams.norm_before_fc) {
         cur = build_norm(cur, model.output_norm_enc, NULL, LLM_NORM_RMS, -1);
@@ -166,7 +222,7 @@ llama_model_eagle3::graph<false>::graph(const llama_model & model, const llm_gra
         GGML_ASSERT(cparams.ctx_other != nullptr);
         const auto * model_other = llama_get_model(cparams.ctx_other);
 
-        GGML_ASSERT(model_other->tok_embd != nullptr && "EAGLE3 decoder requires token embeddings (own or from target model)");
+        GGML_ASSERT(model_other->tok_embd != nullptr && "EAGLE decoder requires token embeddings (own or from target model)");
         tok_embd = model_other->tok_embd;
     }
 
@@ -191,7 +247,13 @@ llama_model_eagle3::graph<false>::graph(const llama_model & model, const llm_gra
     // inp_pos - contains the positions
     ggml_tensor * inp_pos = build_inp_pos();
 
-    auto * inp_attn = build_attn_inp_kv();
+    auto * inp_attn       = (llm_graph_input_attn_kv *)      nullptr;
+    auto * inp_attn_iswa = (llm_graph_input_attn_kv_iswa *) nullptr;
+    if (hparams.swa_type != LLAMA_SWA_TYPE_NONE) {
+        inp_attn_iswa = build_attn_inp_kv_iswa();
+    } else {
+        inp_attn = build_attn_inp_kv();
+    }
 
     const float kq_scale = 1.0f/sqrtf(float(n_embd_head));
 
@@ -252,9 +314,15 @@ llama_model_eagle3::graph<false>::graph(const llama_model & model, const llm_gra
         cb(Qcur, "Qcur_rope", il);
         cb(Kcur, "Kcur_rope", il);
 
-        cur = build_attn(inp_attn,
-                model.layers[il].wo, NULL, nullptr,
-                Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
+        if (inp_attn_iswa) {
+            cur = build_attn(inp_attn_iswa,
+                    model.layers[il].wo, NULL, nullptr,
+                    Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
+        } else {
+            cur = build_attn(inp_attn,
+                    model.layers[il].wo, NULL, nullptr,
+                    Qcur, Kcur, Vcur, nullptr, nullptr, nullptr, kq_scale, il);
+        }
 
         // Add residual and update it
         ggml_tensor * ffn_inp = ggml_add(ctx0, cur, inpSA);
@@ -281,28 +349,41 @@ llama_model_eagle3::graph<false>::graph(const llama_model & model, const llm_gra
         inpL = cur;
     }
 
-    cur = inpL;
+    // only the output rows go to the norm and the lm_head
+    ggml_tensor * inp_out_ids = build_inp_out_ids();
+    inpL = ggml_get_rows(ctx0, inpL, inp_out_ids);
 
-    // Output prenorm state (for next token's g_embeddings in autoregressive generation)
-    ggml_set_output(cur);
-    res->t_h_nextn = cur;
-
-    cur = build_norm(cur,
+    // EAGLE-4 passes the normed output to the next draft step, EAGLE-3 the pre-norm state
+    ggml_tensor * prenorm = inpL;
+    cur = build_norm(prenorm,
             model.output_norm, NULL,
             LLM_NORM_RMS, -1);
     cb(cur, "result_norm", -1);
 
-    // lm_head - projects to draft vocabulary
-    // if the draft has no own output projection, inherit the target model's lm_head
-    auto * output = model.output;
-    if (output == nullptr) {
-        GGML_ASSERT(cparams.ctx_other != nullptr);
-        const auto * model_other = llama_get_model(cparams.ctx_other);
+    ggml_tensor * h_nextn = hparams.norm_output ? cur : prenorm;
+    ggml_set_output(h_nextn);
+    res->t_h_nextn = h_nextn;
 
-        GGML_ASSERT(model_other->output != nullptr && "EAGLE3 decoder requires an output projection (own or from target model)");
-        output = model_other->output;
+    // lm_head: the candidate head scores the vocabulary through its rank-r factors.
+    // Without the reference candidate-topk kernels the two small matmuls are slower
+    // than the full head on current backends, so this is opt-in.
+    static const bool use_candidate_head = getenv("LLAMA_EAGLE4_CANDIDATE_HEAD") != nullptr;
+    if (use_candidate_head && model.efficient_lm_head && model.efficient_lm_head_down) {
+        ggml_tensor * low = build_lora_mm(model.efficient_lm_head_down, cur);
+        cb(low, "candidate_low_rank", -1);
+        cur = build_lora_mm(model.efficient_lm_head, low);
+    } else {
+        // if the draft has no own output projection, inherit the target model's lm_head
+        auto * output = model.output;
+        if (output == nullptr) {
+            GGML_ASSERT(cparams.ctx_other != nullptr);
+            const auto * model_other = llama_get_model(cparams.ctx_other);
+
+            GGML_ASSERT(model_other->output != nullptr && "EAGLE decoder requires an output projection (own or from target model)");
+            output = model_other->output;
+        }
+        cur = build_lora_mm(output, cur);
     }
-    cur = build_lora_mm(output, cur);
 
     if (model.d2t) {
         const int64_t n_draft_vocab = cur->ne[0];

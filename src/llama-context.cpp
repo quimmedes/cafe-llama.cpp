@@ -292,7 +292,7 @@ llama_context::llama_context(
         cparams.ctx_other = params.ctx_other;
     }
 
-    if (model.arch == LLM_ARCH_EAGLE3 || model.arch == LLM_ARCH_DFLASH) {
+    if (model.arch == LLM_ARCH_EAGLE3 || model.arch == LLM_ARCH_EAGLE4 || model.arch == LLM_ARCH_DFLASH) {
         if (model.tok_embd == nullptr || model.output == nullptr) {
             if (params.ctx_other == nullptr) {
                 throw std::runtime_error(model.arch_name() + " requires ctx_other to be set (this warning is normal during memory fitting)");
@@ -1166,6 +1166,21 @@ uint32_t llama_context::n_threads_batch() const {
 
 llama_memory_t llama_context::get_memory() const {
     return memory.get();
+}
+
+bool llama_context::tree_supported() const {
+    if (!memory || !memory->tree_supported() || !cparams.causal_attn) {
+        return false;
+    }
+    // the recurrent tree path (conv windows and GDN parents) is in llm_build_delta_net_base
+    if (llm_arch_is_recurrent(model.arch) || llm_arch_is_hybrid(model.arch)) {
+        return model.arch == LLM_ARCH_QWEN35 || model.arch == LLM_ARCH_QWEN35MOE || model.arch == LLM_ARCH_QWEN3NEXT;
+    }
+    return true;
+}
+
+bool llama_context::tree_commit(llama_seq_id seq_id, const std::vector<int32_t> & keep) {
+    return memory && memory->tree_commit(seq_id, keep);
 }
 
 bool llama_context::memory_update(bool optimize) {
@@ -2321,6 +2336,22 @@ int llama_context::decode(const llama_batch_ext & batch_inp) {
         if (n_outputs_all != n_tokens_all) {
             LLAMA_LOG_ERROR("%s: pooled embedding requires that all tokens are output (n_outputs_all = %d, n_tokens_all = %d)\n",
                     __func__, n_outputs_all, n_tokens_all);
+            return -1;
+        }
+    }
+
+    if (balloc->has_tree()) {
+        if (!tree_supported()) {
+            LLAMA_LOG_ERROR("%s: token trees are not supported by this context\n", __func__);
+            return -1;
+        }
+        if (n_tokens_all > cparams.n_ubatch) {
+            LLAMA_LOG_ERROR("%s: a token tree must fit in one ubatch (n_tokens = %u, n_ubatch = %u)\n", __func__, n_tokens_all, cparams.n_ubatch);
+            return -1;
+        }
+        // the recurrent state of every tree token is kept as a rollback snapshot
+        if ((llm_arch_is_recurrent(model.arch) || llm_arch_is_hybrid(model.arch)) && n_tokens_all > cparams.n_rs_seq + 1) {
+            LLAMA_LOG_ERROR("%s: a token tree of %u tokens needs n_rs_seq >= %u (have %u)\n", __func__, n_tokens_all, n_tokens_all - 1, cparams.n_rs_seq);
             return -1;
         }
     }
@@ -4709,6 +4740,17 @@ uint32_t llama_n_seq_max(const llama_context * ctx) {
 
 uint32_t llama_n_rs_seq(const llama_context * ctx) {
     return ctx->get_cparams().n_rs_seq;
+}
+
+bool llama_tree_supported(const llama_context * ctx) {
+    return ctx->tree_supported();
+}
+
+bool llama_tree_commit(llama_context * ctx, llama_seq_id seq_id, const int32_t * keep, int32_t n_keep) {
+    if (keep == nullptr || n_keep <= 0) {
+        return false;
+    }
+    return ctx->tree_commit(seq_id, std::vector<int32_t>(keep, keep + n_keep));
 }
 
 const llama_model * llama_get_model(const llama_context * ctx) {

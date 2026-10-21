@@ -1519,7 +1519,7 @@ static bool ggml_backend_et_device_supports_op(ggml_backend_dev_t dev, const ggm
             // F32, S_v must be multiple of 8 for vectorization
             // q, k, v may be row-contiguous with strided higher dimensions.
             // g, beta, state stay contiguous.
-            if (op->type == GGML_TYPE_F32 && op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&  // q
+            if (op->type == GGML_TYPE_F32 && op->src[9] == nullptr && op->src[0] && op->src[0]->type == GGML_TYPE_F32 &&  // q, no token tree
                 op->src[1] && op->src[1]->type == GGML_TYPE_F32 &&                               // k
                 op->src[2] && op->src[2]->type == GGML_TYPE_F32 &&                               // v
                 op->src[3] && op->src[3]->type == GGML_TYPE_F32 &&                               // g

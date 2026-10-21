@@ -1176,6 +1176,89 @@ static void test_mtp_embd_width(testing & t) {
     });
 }
 
+static void test_tree(testing & t) {
+    llama_vocab vocab;
+
+    // root at 10, two children at 11, one grandchild under the second child
+    auto build_tree = [](batch_builder & bb) {
+        bb.add(10, {0}, true);
+        bb.add(11, {0}, true);
+        bb.add(11, {0}, true);
+        bb.add(12, {0}, true);
+        GGML_ASSERT(bb.b.set_tree_parent(0, -1));
+        GGML_ASSERT(bb.b.set_tree_parent(1, 0));
+        GGML_ASSERT(bb.b.set_tree_parent(2, 0));
+        GGML_ASSERT(bb.b.set_tree_parent(3, 2));
+    };
+
+    t.test("parents_reach_the_ubatch", [&](testing & t) {
+        batch_builder bb;
+        build_tree(bb);
+
+        llama_batch_allocr ba(1);
+        t.assert_true(ba.init(bb.b, vocab, false));
+        t.assert_true(ba.has_tree());
+
+        const llama_ubatch ub = ba.split_simple(64);
+        t.assert_equal(4u, ub.n_tokens);
+        t.assert_true("tree parents set", ub.tree_parent != nullptr);
+        const int32_t expected[4] = { -1, 0, 0, 2 };
+        for (int i = 0; i < 4; ++i) {
+            t.assert_equal(expected[i], ub.tree_parent[i]);
+        }
+    });
+
+    t.test("unset_entries_continue_the_chain", [&](testing & t) {
+        batch_builder bb;
+        for (int i = 0; i < 3; ++i) {
+            bb.add(5 + i, {0}, true);
+        }
+        GGML_ASSERT(bb.b.set_tree_parent(0, -1));
+
+        llama_batch_allocr ba(1);
+        t.assert_true(ba.init(bb.b, vocab, false));
+
+        const llama_ubatch ub = ba.split_simple(64);
+        t.assert_equal(-1, ub.tree_parent[0]);
+        t.assert_equal(0,  ub.tree_parent[1]);
+        t.assert_equal(1,  ub.tree_parent[2]);
+    });
+
+    t.test("plain_batch_has_no_tree", [&](testing & t) {
+        batch_builder bb;
+        bb.add(0, {0}, true);
+
+        llama_batch_allocr ba(1);
+        t.assert_true(ba.init(bb.b, vocab, false));
+        t.assert_true(!ba.has_tree());
+        t.assert_true(ba.split_simple(64).tree_parent == nullptr);
+    });
+
+    t.test("rejects_invalid_trees", [&](testing & t) {
+        llama_batch_allocr ba(1);
+
+        {
+            batch_builder bb;
+            build_tree(bb);
+            t.assert_true("set_tree_parent refuses a later parent", !bb.b.set_tree_parent(1, 2));
+            bb.b.tokens[1].tree_parent = 2; // poke to reach the init() check
+            t.assert_true("parent after child", !ba.init(bb.b, vocab, false));
+        }
+        {
+            batch_builder bb;
+            build_tree(bb);
+            bb.b.tokens[3].seq_ids = { 1 };
+            t.assert_true("two sequences", !ba.init(bb.b, vocab, false));
+        }
+        {
+            batch_builder bb;
+            build_tree(bb);
+            bb.b.tokens[3].pos[0] = 13;
+            t.assert_true("child not at parent position + 1", !ba.init(bb.b, vocab, false));
+        }
+    });
+}
+
 int main(int argc, char ** argv) {
     testing t;
 
@@ -1199,6 +1282,7 @@ int main(int argc, char ** argv) {
     t.test("keep_tail",      test_keep_tail);
     t.test("mrope",          test_mrope);
     t.test("mtp_embd_width", test_mtp_embd_width);
+    t.test("tree",           test_tree);
 
     return t.summary();
 }

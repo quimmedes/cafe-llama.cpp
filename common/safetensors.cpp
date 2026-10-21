@@ -2620,6 +2620,9 @@ static void st_add_meta_nemotron(st_loader & L, gguf_context * meta, const json 
     add_u32("expert_group_used_count",           get_u32({ "n_group_used" }, 1));
     gguf_set_val_bool(meta, (a + ".expert_weights_norm").c_str(), get_bool({ "norm_topk_prob" }, false));
     add_f32("expert_weights_scale", get_f32({ "routed_scaling_factor" }, 1.0f));
+    if (const uint32_t latent = get_u32({ "moe_latent_size" }, 0); latent > 0) {
+        add_u32("moe_latent_size", latent);
+    }
 
     add_u32("ssm.conv_kernel",     get_u32({ "conv_kernel" }, 0));
     add_u32("ssm.state_size",      get_u32({ "ssm_state_size" }, 0));
@@ -2716,6 +2719,8 @@ static bool st_map_tensor_nemotron(const std::string & name, int64_t ssm_groups,
         { "mixer.o_proj.weight",                   "attn_output.weight",    ST_ROLE_WEIGHT, 0, 0 },
         { "mixer.shared_experts.up_proj.weight",   "ffn_up_shexp.weight",   ST_ROLE_WEIGHT, 0, 0 },
         { "mixer.shared_experts.down_proj.weight", "ffn_down_shexp.weight", ST_ROLE_WEIGHT, 0, 0 },
+        { "mixer.fc1_latent_proj.weight",          "ffn_latent_down.weight", ST_ROLE_WEIGHT, 0, 0 },
+        { "mixer.fc2_latent_proj.weight",          "ffn_latent_up.weight",   ST_ROLE_WEIGHT, 0, 0 },
     };
 
     for (const auto & e : entries) {
@@ -3857,12 +3862,31 @@ struct llama_model * common_safetensors_load_model(const std::string & path, con
         const bool gemma4 = !native_qwen && (model_type == "gemma4_unified" || model_type == "gemma4");
         const bool lfm2 = model_type == "lfm2" || model_type == "lfm2_moe";
         // the nemotron-h family nests its text configuration in llm_config, its values win over the top level
-        const bool nemotron = !native_qwen && !gemma4 && model_type.rfind("NemotronH", 0) == 0;
+        const bool nemotron = !native_qwen && !gemma4 && (model_type.rfind("NemotronH", 0) == 0 || model_type == "nemotron_h_omni");
         json cfg_text = cfg;
         if (nemotron && cfg.contains("llm_config") && cfg.at("llm_config").is_object()) {
             for (const auto & [key, value] : cfg.at("llm_config").items()) {
                 cfg_text[key] = value;
             }
+        }
+        // newer configs list the block kinds in layers_block_type instead of the pattern string
+        if (nemotron && !st_json_set(cfg_text, "hybrid_override_pattern") && cfg_text.contains("layers_block_type") &&
+                cfg_text.at("layers_block_type").is_array()) {
+            std::string pattern;
+            for (const auto & v : cfg_text.at("layers_block_type")) {
+                const std::string t = v.get<std::string>();
+                if (t == "mamba" || t == "linear_attention") {
+                    pattern += 'M';
+                } else if (t == "moe") {
+                    pattern += 'E';
+                } else if (t == "attention" || t == "full_attention") {
+                    pattern += '*';
+                } else {
+                    throw std::runtime_error("unsupported nemotron-h block type: " + t);
+                }
+            }
+            cfg_text["hybrid_override_pattern"] = pattern;
+            cfg_text["num_hidden_layers"]       = pattern.size();
         }
         const st_generic_arch * generic = (native_qwen || gemma4 || nemotron || lfm2) ? nullptr : st_generic_lookup(cfg);
         // xing4.0 is a deepseek style MLA + MoE model with mHC residual streams, driven by config keys
