@@ -6,9 +6,6 @@
 
 #include <vector>
 
-// FIXME temporary function for better error messages
-bool llama_model_saver_supports_arch(llm_arch arch);
-
 // exported for common/safetensors.cpp, which converts safetensors checkpoints to GGUF
 struct LLAMA_API llama_model_saver {
     struct gguf_context * gguf_ctx = nullptr;
@@ -45,5 +42,4 @@ struct LLAMA_API llama_model_saver {
     void add_tensors_from_model();
 
     void save(const std::string & path_model);
-    void save(FILE * file);
 };

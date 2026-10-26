@@ -611,6 +611,10 @@ struct llama_layer {
     struct ggml_tensor * indexer_kpool_gate = nullptr;
     struct ggml_tensor * indexer_kpool_ape  = nullptr;
 
+    // deepseek41
+    struct ggml_tensor * engram_kv   = nullptr;
+    struct ggml_tensor * engram_gate = nullptr; // q_weight*k_weight folded
+
     // MSA
     struct ggml_tensor * index_q_proj = nullptr;
     struct ggml_tensor * index_k_proj = nullptr;
@@ -625,12 +629,10 @@ struct llama_layer {
     struct ggml_tensor * hc_ffn_down    = nullptr;
     struct ggml_tensor * hc_ffn_up      = nullptr;
     struct ggml_tensor * hc_ffn_inject  = nullptr;
-
-    // Engram (n-gram keyed lookup table) for DeepSeek-V4.1
-    struct ggml_tensor * engram_embd    = nullptr;
-    struct ggml_tensor * engram_k       = nullptr;
-    struct ggml_tensor * engram_q       = nullptr;
-    struct ggml_tensor * engram_wkv     = nullptr;
+    struct ggml_tensor * hc_attn_down_inject = nullptr; // [hc_attn_down | hc_attn_inject] in one weight
+    struct ggml_tensor * hc_ffn_down_inject  = nullptr; // [hc_ffn_down | hc_ffn_inject] in one weight
+    struct ggml_tensor * wqkv_z              = nullptr; // [wqkv | wqkv_gate] in one weight
+    struct ggml_tensor * ssm_beta_alpha_cat  = nullptr; // [ssm_beta | ssm_alpha] in one weight, unlike the grouped ssm_beta_alpha
 
     struct ggml_tensor * ple_key        = nullptr;
     struct ggml_tensor * ple_value      = nullptr;
@@ -738,6 +740,9 @@ struct llama_model {
     std::vector<std::string> classifier_labels;
     std::vector<std::string> decision_labels;
 
+    // deepseek41 Engram: token id -> id of its normalized form, hashed into the n-grams
+    std::vector<int32_t> engram_token_map;
+
     struct ggml_tensor * tok_embd   = nullptr;
     struct ggml_tensor * type_embd  = nullptr;
     struct ggml_tensor * pos_embd   = nullptr;
@@ -791,8 +796,9 @@ struct llama_model {
     struct ggml_tensor * per_layer_proj_norm  = nullptr;
 
     // eagle3 / dflash feature fusion layer
-    struct ggml_tensor * fc   = nullptr;
-    struct ggml_tensor * fc_s = nullptr;
+    struct ggml_tensor * fc      = nullptr;
+    struct ggml_tensor * fc_s    = nullptr;
+    struct ggml_tensor * fc_in_s = nullptr;
     struct ggml_tensor * fc_norm[3] = { nullptr, nullptr, nullptr }; // eagle4
     struct ggml_tensor * efficient_lm_head      = nullptr; // eagle4 low-rank candidate head [rank, n_vocab]
     struct ggml_tensor * efficient_lm_head_down = nullptr; // eagle4 candidate head projection [n_embd, rank]
@@ -924,6 +930,7 @@ struct llama_model {
 
     uint32_t n_gpu_layers() const;
     llama_split_mode split_mode() const;
+    bool no_alloc() const;
 
     std::map<ggml_backend_buffer_type_t, size_t> memory_breakdown() const;
 

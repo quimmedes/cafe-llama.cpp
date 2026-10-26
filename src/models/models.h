@@ -9,39 +9,6 @@
 #include <map>
 
 class llama_memory_hybrid_idx_context;
-class llama_dsv4_comp_state;
-struct dsv41_rope_cfg;
-
-// The compressor state of a DeepSeek-V4 style compressed stream, as the graph sees it.
-struct dsv4_state_tensors {
-    ggml_tensor * kv;
-    ggml_tensor * score;
-};
-
-// Shared by the DeepSeek-V4 and V4.1 graphs, which run the same compressed stream machinery.
-float dsv4_rope_attn_factor(float freq_scale, float ext_factor);
-
-ggml_tensor * dsv4_view_2d(
-        ggml_context * ctx,
-        ggml_tensor  * t,
-        int64_t        ne0,
-        int64_t        ne1,
-        int64_t        i0);
-
-dsv4_state_tensors dsv4_build_state_restore(
-        ggml_context * ctx,
-        const llm_graph_input_dsv4::comp_input & inp,
-        const llama_dsv4_comp_state * state,
-        int32_t il);
-
-dsv4_state_tensors dsv4_build_state_snapshot(
-        ggml_context * ctx,
-        const llm_graph_input_dsv4::comp_input & inp,
-        const llama_dsv4_comp_state * state,
-        ggml_tensor * source_kv,
-        ggml_tensor * source_score,
-        int32_t il);
-
 // ref: https://github.com/ggml-org/llama.cpp/pull/28068
 static inline ggml_tensor * build_gdn_l2_norm(ggml_context * ctx, ggml_tensor * x, float eps) {
     const float n = x->ne[0];
@@ -665,6 +632,21 @@ struct llama_model_qwen2moe : public llama_model_base {
 };
 
 
+struct llama_model_sensenova_u1 : public llama_model_base {
+    llama_model_sensenova_u1(const struct llama_model_params & params) : llama_model_base(params) {}
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+
+    float rope_freq_base_spatial = 10000.0f;
+
+    struct graph : public llm_graph_context {
+        graph(const llama_model_sensenova_u1 & model, const llm_graph_params & params);
+    };
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};
+
+
 struct llama_model_qwen3 : public llama_model_base {
     llama_model_qwen3(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;
@@ -735,6 +717,19 @@ struct llama_model_dspark : public llama_model_base {
 
 struct llama_model_qwen3moe : public llama_model_base {
     llama_model_qwen3moe(const struct llama_model_params & params) : llama_model_base(params) {}
+    void load_arch_hparams(llama_model_loader & ml) override;
+    void load_arch_tensors(llama_model_loader & ml) override;
+
+    struct graph : public llm_graph_context {
+        graph(const llama_model & model, const llm_graph_params & params);
+    };
+
+    std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
+};
+
+
+struct llama_model_flint : public llama_model_base {
+    llama_model_flint(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
 
@@ -1371,6 +1366,15 @@ struct llama_model_dots3note : public llama_model_base {
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
 
+// YaRN attention factor that cancels ggml's rope mscale (the DeepSeek-V4 reference applies none)
+static inline float dsv4_rope_attn_factor(float freq_scale, float ext_factor) {
+    if (ext_factor == 0.0f) {
+        return 1.0f;
+    }
+
+    return 1.0f / (1.0f + 0.1f*logf(1.0f/freq_scale));
+}
+
 struct llama_model_deepseek4 : public llama_model_base {
     llama_model_deepseek4(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;
@@ -1379,16 +1383,6 @@ struct llama_model_deepseek4 : public llama_model_base {
     struct graph : public llm_graph_context {
         graph(const llm_graph_params & params) : llm_graph_context(params) {}
         graph(const llama_model & model, const llm_graph_params & params);
-
-        void build_hc_mixes(
-                ggml_tensor *  x,
-                ggml_tensor *  hc_fn,
-                ggml_tensor *  hc_scale,
-                ggml_tensor *  hc_base,
-                ggml_tensor ** pre,
-                ggml_tensor ** post,
-                ggml_tensor ** comb,
-                int il) const;
 
         // collapse the hc streams with per-stream weights
         ggml_tensor * build_hc_pre(
@@ -1399,14 +1393,33 @@ struct llama_model_deepseek4 : public llama_model_base {
         // mean over the hyper-connection streams: [n_embd, hc, n_tokens] -> [n_embd, n_tokens]
         ggml_tensor * build_hc_mean(ggml_tensor * x) const;
 
-        // returns the collapsed input and fills the post / comb weights
-        ggml_tensor * build_hc_pre(
+        // all outputs of the hc mix builders:
+        //   build_hc_pre   - cur is the collapsed input, post / comb feed build_hc_post
+        //   build_hc_mixes - pre is the pre weights, post / comb feed build_hc_post
+        struct hc_pre {
+            ggml_tensor * cur;
+            ggml_tensor * post;
+            ggml_tensor * comb;
+        };
+
+        struct hc_mixes {
+            ggml_tensor * pre;
+            ggml_tensor * post;
+            ggml_tensor * comb;
+        };
+
+        hc_pre build_hc_pre(
                 ggml_tensor * x,
                 ggml_tensor * hc_fn,
                 ggml_tensor * hc_scale,
                 ggml_tensor * hc_base,
-                ggml_tensor ** post,
-                ggml_tensor ** comb,
+                int il) const;
+
+        hc_mixes build_hc_mixes(
+                ggml_tensor * x,
+                ggml_tensor * hc_fn,
+                ggml_tensor * hc_scale,
+                ggml_tensor * hc_base,
                 int il) const;
 
         ggml_tensor * build_hc_post(
@@ -1454,11 +1467,9 @@ struct llama_model_deepseek4 : public llama_model_base {
                 ggml_tensor * state_read_idxs,
                 ggml_tensor * comp_pos,
                 ggml_tensor * norm,
-                int64_t ratio,
                 int64_t n_embd_head,
                 const char * name,
-                int il,
-                ggml_tensor ** pre_rope = nullptr) const;
+                int il) const;
 
         ggml_tensor * build_overlap_compressed_kv_from_state(
                 ggml_tensor * kv_state,
@@ -1525,68 +1536,48 @@ struct llama_model_deepseek4 : public llama_model_base {
 };
 
 
-// DeepSeek-V4.1. Same machinery as V4, minus the hash layers, the MTP block and the learned
-// hyper-connection head, plus the engram n-gram tables. See src/models/deepseek41.cpp.
 struct llama_model_deepseek41 : public llama_model_deepseek4 {
     llama_model_deepseek41(const struct llama_model_params & params) : llama_model_deepseek4(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
 
-    // engram hash constants, read from the file
-    // these live here rather than in hparams because the token map alone is half a megabyte
-    uint32_t engram_n_layer = 0;
-    uint32_t engram_pad_id  = 0;   // already through the token map, as the reference stores it
-
-    std::vector<uint64_t> engram_multipliers; // [engram_n_layer][engram_max_ngram_size]
-    std::vector<uint64_t> engram_primes;      // [engram_n_layer][engram_max_ngram_size - 1][engram_n_head]
-    std::vector<uint64_t> engram_offsets;     // same layout as engram_primes
-    std::vector<int32_t>  engram_token_map;   // [n_vocab], folds case and accents together
-
-    // The shared stream layer roles live in hparams as dsv41_kv_source and friends, because the
-    // KV cache needs them to alias a reader's storage onto its source's. See load_arch_tensors.
-
-    // position of layer il in the engram constants, or -1 if that layer has no engram
+    // Engram: the hash constants are hparams.ple_* (one module per Engram layer), hashed on the host (ggml has no int64 mul/xor/mod)
     int engram_index(int il) const;
+
+    void engram_hash(int e, const llama_ubatch & ubatch, const std::vector<llama_token> & prev, std::vector<int32_t> & out) const;
 
     struct graph : public llama_model_deepseek4::graph {
         graph(const llama_model & model, const llm_graph_params & params);
-
-        // gather the n-gram rows of layer il: [engram_key_length * n_hash_cols, n_tokens]
-        ggml_tensor * build_inp_engram(
-                const llama_model & model,
-                int il);
+        // helpers only (no graph built): base of graph_dsv41
+        explicit graph(const llm_graph_params & params) : llama_model_deepseek4::graph(params) {}
 
         ggml_tensor * build_engram(
-                const llama_model & model,
+                const llama_model_deepseek41 & model,
                 ggml_tensor * x,
-                ggml_tensor * emb,
+                ggml_tensor * rows,
+                ggml_tensor * keep,
                 int il) const;
 
-        struct dsv41_rope_cfg rope_cfg(int il) const;
-
-        ggml_tensor * build_attention_tail(
-                const llama_model & model,
-                ggml_tensor * out,
-                ggml_tensor * inp_pos,
-                int64_t nt,
-                int il) const;
-
-        // which compressed positions this layer's queries attend to
-        ggml_tensor * build_indexer_top_k(
-                const llama_model & model,
-                llm_graph_input_dsv4 * inp_dsv4,
-                const llm_graph_input_dsv4::comp_input & inp_comp,
-                ggml_tensor * qr,
-                ggml_tensor * cur,
-                ggml_tensor * inp_pos,
-                int il) const;
-
-        ggml_tensor * build_attention_v41(
-                const llama_model & model,
+        ggml_tensor * build_attention41(
+                const llama_model_deepseek41 & model,
                 llm_graph_input_dsv4 * inp_dsv4,
                 ggml_tensor * cur,
                 ggml_tensor * inp_pos,
-                int il) const;
+                ggml_tensor * cand_pin,
+                int il);
+
+        std::vector<ggml_tensor *> topk_of; // top-k of each index source layer
+        std::vector<ggml_tensor *> comp_row_of; // [n_layer] new compressed rows of each kv source (for mirrors)
+        ggml_tensor * cand_sel    = nullptr; // candidate blocks of the candidate source layer
+        int64_t       cand_n_comp = 0;       // compressed rows the candidate source scored
+
+        // sparse path (LLAMA_DSV41_SPARSE=0 disables): fused indexer, FA bounded to window + top-k, decode gather
+        bool sparse = true;
+        // gather path, shared by layers with the same top-k: selected K rows per (storage layer, top-k source),
+        // the sorted top-k and the mask per top-k source (one input copy per split)
+        std::map<std::pair<int32_t, int32_t>, ggml_tensor *> gather_k_of;
+        std::map<int32_t, ggml_tensor *> gather_sel_of;
+        std::map<int32_t, ggml_tensor *> gather_mask_of;
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
@@ -1632,7 +1623,6 @@ struct llama_model_xing4_0 : public llama_model_base {
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
 };
-
 
 struct llama_model_deepseek2ocr : public llama_model_base {
     llama_model_deepseek2ocr(const struct llama_model_params & params) : llama_model_base(params) {}
@@ -1691,6 +1681,11 @@ struct llama_model_dflash : public llama_model_base {
 
     struct graph_dsv4 : public llama_model_deepseek4::graph {
         graph_dsv4(const llama_model & model, const llm_graph_params & params);
+    };
+
+    // DeepSeek-V4.1 DSpark: single-pass mHC (lagged pre-mix, no hc_head), no per-head q norm
+    struct graph_dsv41 : public llama_model_deepseek41::graph {
+        graph_dsv41(const llama_model & model, const llm_graph_params & params);
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;
@@ -2353,12 +2348,16 @@ struct llama_model_hy_v4 : public llama_model_base {
         // iHC (independent Hyper-Connections): pre reduces the hc streams to one and returns the
         // per-stream post gates, post writes the sublayer output back into the streams, head
         // collapses the streams before the final norm.
-        ggml_tensor * build_hc_pre(
+        struct hc_pre {
+            ggml_tensor * cur;   // the collapsed stream
+            ggml_tensor * post;  // per-stream post gates, feeds build_hc_post
+        };
+
+        hc_pre build_hc_pre(
                 ggml_tensor * x,
                 ggml_tensor * hc_fn,
                 ggml_tensor * hc_scale,
                 ggml_tensor * hc_base,
-                ggml_tensor ** post,
                 int il) const;
 
         ggml_tensor * build_hc_post(
@@ -2391,12 +2390,18 @@ struct llama_model_hy_v4 : public llama_model_base {
                 ggml_tensor * inp_pos,
                 int il) const;
 
-        ggml_tensor * build_attention_dsa(
+        // the attention output and the top-k to carry to the following "shared" layers
+        struct attn_dsa {
+            ggml_tensor * cur;
+            ggml_tensor * top_k;
+        };
+
+        attn_dsa build_attention_dsa(
                 const llama_model & model,
                 llm_graph_input_attn_k_dsa * inp_attn_dsa,
                 ggml_tensor * cur,
                 ggml_tensor * inp_pos,
-                ggml_tensor ** last_top_k,
+                ggml_tensor * last_top_k,
                 float kq_scale,
                 int il) const;
     };
@@ -2826,13 +2831,18 @@ struct llama_model_qwen4exp : public llama_model_base {
             llm_build_delta_net_base(params), model(model) {}
 
         // HC replaces every layer norm: residual is [n_embd, hc, n_tokens]
-        ggml_tensor * build_hc_mix(
+        struct hc_mix {
+            ggml_tensor * cur;     // the mixed [n_embd, T] stream
+            ggml_tensor * inject;  // [hc, T] scatter weights, null when the inject weights are null
+        };
+
+        hc_mix build_hc_mix(
                     ggml_tensor * x,
                     ggml_tensor * w_norm,
                     ggml_tensor * w_down,
                     ggml_tensor * w_up,
                     ggml_tensor * w_inject,
-                    ggml_tensor ** inject,
+                    ggml_tensor * w_down_inject, // [w_down | w_inject] in one weight, can be null
                             int   il);
 
         ggml_tensor * build_hc_combine(
@@ -3068,14 +3078,18 @@ struct llama_model_glm5_next : public llama_model_base {
         // mean over the hyper-connection streams: [n_embd, hc, n_tokens] -> [n_embd, n_tokens]
         ggml_tensor * build_hc_mean(ggml_tensor * x) const;
 
-        // returns the collapsed input and fills the post / comb weights
-        ggml_tensor * build_hc_pre(
+        // all outputs of the hc mix builder: cur is the collapsed input, post / comb feed build_hc_post
+        struct hc_pre {
+            ggml_tensor * cur;
+            ggml_tensor * post;
+            ggml_tensor * comb;
+        };
+
+        hc_pre build_hc_pre(
                 ggml_tensor * x,
                 ggml_tensor * hc_fn,
                 ggml_tensor * hc_scale,
                 ggml_tensor * hc_base,
-                ggml_tensor ** post,
-                ggml_tensor ** comb,
                 int il) const;
 
         ggml_tensor * build_hc_post(
@@ -3101,9 +3115,16 @@ struct llama_model_glm5_next : public llama_model_base {
         ggml_tensor * build_kpool_select(ggml_tensor * cur, ggml_tensor * qr, ggml_tensor * kq_mask, const llama_layer & layer,
                                          const llama_memory_hybrid_idx_context * mctx_hyb, llm_graph_input_kpool * inp_kpool, int il);
 
-        ggml_tensor * build_dsa_layer(ggml_tensor * cur, const llama_layer & layer,
-                                      const llama_memory_hybrid_idx_context * mctx_hyb, llm_graph_input_attn_k * inp_attn,
-                                      llm_graph_input_kpool * inp_kpool, ggml_tensor ** prev_sel, int il);
+        // attention output (cur) and the selection to carry to the next shared layer (sel)
+        struct dsa_out {
+            ggml_tensor * cur;
+            ggml_tensor * sel;
+        };
+
+        dsa_out build_dsa_layer(ggml_tensor * cur, const llama_layer & layer,
+                                const llama_memory_hybrid_idx_context * mctx_hyb, llm_graph_input_attn_k * inp_attn,
+                                llm_graph_input_kpool * inp_kpool, ggml_tensor * prev_sel, int il);
+
     };
 
     // the NextN / MTP draft head: one DSA block appended after the trunk

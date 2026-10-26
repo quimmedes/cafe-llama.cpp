@@ -222,6 +222,7 @@ class Keys:
         VALUE_SCALE                  = "{arch}.attention.value_scale"
         COMPRESS_RATIOS              = "{arch}.attention.compress_ratios"
         COMPRESS_ROPE_FREQ_BASE      = "{arch}.attention.compress_rope_freq_base"
+        KV_SOURCE_LAYERS             = "{arch}.attention.kv_source_layers"
         TEMPERATURE_LENGTH           = "{arch}.attention.temperature_length"
         KEY_LENGTH_MLA               = "{arch}.attention.key_length_mla"
         VALUE_LENGTH_MLA             = "{arch}.attention.value_length_mla"
@@ -247,6 +248,10 @@ class Keys:
             TYPES      = "{arch}.attention.indexer.types"
             KPOOL             = "{arch}.attention.indexer.kpool"              # GLM5-Next
             KPOOL_SELECT_TAIL = "{arch}.attention.indexer.kpool_select_tail"  # GLM5-Next
+            SOURCE_LAYERS          = "{arch}.attention.indexer.source_layers"
+            CANDIDATE_SOURCE_LAYER = "{arch}.attention.indexer.candidate_source_layer"
+            CANDIDATE_TOP_K_BLOCKS = "{arch}.attention.indexer.candidate_top_k_blocks"
+            CANDIDATE_BLOCK_SIZE   = "{arch}.attention.indexer.candidate_block_size"
             INDEX_SHARE_MTP   = "{arch}.attention.indexer.index_share_mtp"    # GLM5-Next
 
     class HyperConnection:
@@ -257,17 +262,12 @@ class Keys:
         MAGNITUDE            = "{arch}.hyper_connection.magnitude"
         # absent means the mix projection is full rank (DeepSeek-V4 behaviour)
         LOW_RANK             = "{arch}.hyper_connection.low_rank"
+        # single-pass mHC: each sublayer collapses with the previous pre-mix (DeepSeek-V4.1)
+        SINGLE_PASS          = "{arch}.hyper_connection.single_pass"
 
-    class Engram:
-        LAYER_IDS      = "{arch}.engram.layer_ids"
-        HEAD_COUNT     = "{arch}.engram.head_count"
-        KEY_LENGTH     = "{arch}.engram.key_length"
-        MAX_NGRAM_SIZE = "{arch}.engram.max_ngram_size"
-        MULTIPLIERS    = "{arch}.engram.multipliers"
-        PRIMES         = "{arch}.engram.primes"
-        OFFSETS        = "{arch}.engram.offsets"
-        TOKEN_MAP      = "{arch}.engram.token_map"
-        PAD_ID         = "{arch}.engram.pad_id"
+    class Engram:  # deepseek41; the table uses the PerLayerEmbedding keys
+        PAD_TOKEN_ID          = "{arch}.engram.pad_token_id"
+        TOKEN_MAP             = "{arch}.engram.token_map"
 
     class PerLayerEmbedding:
         LAYERS             = "{arch}.ple.layers"
@@ -286,6 +286,7 @@ class Keys:
         DIMENSION_SECTIONS        = "{arch}.rope.dimension_sections"
         SECTION_ORDER             = "{arch}.rope.section_order"
         FREQ_BASE                 = "{arch}.rope.freq_base"
+        FREQ_BASE_SPATIAL         = "{arch}.rope.freq_base_spatial"
         FREQ_BASE_SWA             = "{arch}.rope.freq_base_swa"
         SCALING_TYPE              = "{arch}.rope.scaling.type"
         SCALING_FACTOR            = "{arch}.rope.scaling.factor"
@@ -393,6 +394,7 @@ class Keys:
         DNA_AUTO_TAGS        = "tokenizer.ggml.dna_auto_tags"
         ADD_PREFIX           = "tokenizer.ggml.add_space_prefix"
         REMOVE_EXTRA_WS      = "tokenizer.ggml.remove_extra_whitespaces"
+        CLEAN_SPACES         = "tokenizer.ggml.clean_spaces"
         PRECOMPILED_CHARSMAP = "tokenizer.ggml.precompiled_charsmap"
         SUPPRESS_TOKENS      = "tokenizer.ggml.suppress_tokens"
         HF_JSON              = "tokenizer.huggingface.json"
@@ -404,6 +406,8 @@ class Keys:
         NORMALIZER_NFC           = "tokenizer.ggml.normalizer.nfc"
         NORMALIZER_LOWERCASE     = "tokenizer.ggml.normalizer.lowercase"
         NORMALIZER_STRIP_ACCENTS = "tokenizer.ggml.normalizer.strip_accents"
+        # Metaspace constants
+        METASPACE_PREPEND_SCHEME = "tokenizer.ggml.metaspace.prepend_scheme"
         # FIM/Infill special tokens constants
         FIM_PRE_ID           = "tokenizer.ggml.fim_pre_token_id"
         FIM_SUF_ID           = "tokenizer.ggml.fim_suf_token_id"
@@ -596,8 +600,10 @@ class MODEL_ARCH(IntEnum):
     QWEN2            = auto()
     QWEN2MOE         = auto()
     QWEN2VL          = auto()
+    SENSENOVA_U1     = auto()
     QWEN3            = auto()
     QWEN3MOE         = auto()
+    FLINT            = auto()
     QWEN3NEXT        = auto()
     HRM_TEXT         = auto()
     BEAM             = auto()
@@ -932,6 +938,10 @@ class MODEL_TENSOR(IntEnum):
     HC_FFN_DOWN          = auto() # qwen4exp
     HC_FFN_UP            = auto() # qwen4exp
     HC_FFN_INJECT        = auto() # qwen4exp
+    HC_ATTN_DOWN_INJECT  = auto() # qwen4exp, [hc_attn_down | hc_attn_inject]
+    HC_FFN_DOWN_INJECT   = auto() # qwen4exp, [hc_ffn_down | hc_ffn_inject]
+    ATTN_QKV_GATE        = auto() # qwen4exp, [attn_qkv | attn_gate]
+    SSM_BETA_ALPHA_CAT   = auto() # qwen4exp, [ssm_beta | ssm_alpha], unlike the grouped qwen3next ssm_ba
     PLE_KEY              = auto() # qwen4exp
     PLE_VALUE            = auto() # qwen4exp
     PLE_NORM_KEY         = auto() # qwen4exp
@@ -1019,10 +1029,6 @@ class MODEL_TENSOR(IntEnum):
     VISEXP_DOWN          = auto()
     VISEXP_UP            = auto()
     INDEXER_K_NORM       = auto()
-    ENGRAM_EMBD            = auto()
-    ENGRAM_K               = auto()
-    ENGRAM_Q               = auto()
-    ENGRAM_WKV             = auto()
     INDEXER_PROJ         = auto()
     INDEXER_ATTN_K       = auto()
     INDEXER_ATTN_Q_B     = auto()
@@ -1300,6 +1306,11 @@ class MODEL_TENSOR(IntEnum):
     A_GEN_WAV_SEANET_RES_CONV1 = auto()
     A_GEN_WAV_SEANET_RES_CONV2 = auto()
     A_GEN_WAV_SEANET_SCALE_CONV = auto() # strided upsample convtr
+    # soprano: Vocos decoder, the ConvNeXt blocks reuse A_GEN_WAV_UP_*
+    A_GEN_WAV_INPUT                = auto()
+    A_GEN_WAV_NORM                 = auto()
+    A_GEN_WAV_OUTPUT_NORM          = auto()
+    A_GEN_WAV_OUTPUT               = auto()
     A_MMPROJ              = auto()
     A_MMPROJ_FC           = auto()
     A_MM_NORM_PRE         = auto()
@@ -1349,6 +1360,8 @@ class MODEL_TENSOR(IntEnum):
     DSPARK_MARKOV_W1       = auto()  # markov head: prev-token embed
     DSPARK_MARKOV_W2       = auto()  # markov head: bias projection
     DSPARK_CONF_PROJ       = auto()  # confidence head
+    ENGRAM_KV              = auto()
+    ENGRAM_GATE            = auto()
     DFLASH_ATTN_CONV_BASE  = auto()
     DFLASH_ATTN_CONV_PROJ  = auto()
     DFLASH_FFN_CONV_BASE   = auto()
@@ -1441,7 +1454,9 @@ MODEL_ARCH_NAMES: dict[MODEL_ARCH, str] = {
     MODEL_ARCH.QWEN2:            "qwen2",
     MODEL_ARCH.QWEN2MOE:         "qwen2moe",
     MODEL_ARCH.QWEN2VL:          "qwen2vl",
+    MODEL_ARCH.SENSENOVA_U1:     "sensenova_u1",
     MODEL_ARCH.QWEN3:            "qwen3",
+    MODEL_ARCH.FLINT:            "flint",
     MODEL_ARCH.QWEN3MOE:         "qwen3moe",
     MODEL_ARCH.QWEN3NEXT:        "qwen3next",
     MODEL_ARCH.HRM_TEXT:         "hrm_text",
@@ -1776,6 +1791,10 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.HC_FFN_DOWN:               "blk.{bid}.hc_ffn_down",          # qwen4exp
     MODEL_TENSOR.HC_FFN_UP:                 "blk.{bid}.hc_ffn_up",            # qwen4exp
     MODEL_TENSOR.HC_FFN_INJECT:             "blk.{bid}.hc_ffn_inject",        # qwen4exp
+    MODEL_TENSOR.HC_ATTN_DOWN_INJECT:       "blk.{bid}.hc_attn_down_inject",  # qwen4exp
+    MODEL_TENSOR.HC_FFN_DOWN_INJECT:        "blk.{bid}.hc_ffn_down_inject",   # qwen4exp
+    MODEL_TENSOR.ATTN_QKV_GATE:             "blk.{bid}.attn_qkv_gate",        # qwen4exp
+    MODEL_TENSOR.SSM_BETA_ALPHA_CAT:        "blk.{bid}.ssm_beta_alpha",       # qwen4exp
     MODEL_TENSOR.PLE_KEY:                   "blk.{bid}.ple_key",              # qwen4exp
     MODEL_TENSOR.PLE_VALUE:                 "blk.{bid}.ple_value",            # qwen4exp
     MODEL_TENSOR.PLE_NORM_KEY:              "blk.{bid}.ple_norm_key",         # qwen4exp
@@ -1863,10 +1882,6 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.VISEXP_DOWN:               "blk.{bid}.vis_down",
     MODEL_TENSOR.VISEXP_UP:                 "blk.{bid}.vis_up",
     MODEL_TENSOR.INDEXER_K_NORM:            "blk.{bid}.indexer.k_norm",
-    MODEL_TENSOR.ENGRAM_EMBD:               "blk.{bid}.engram_embd",
-    MODEL_TENSOR.ENGRAM_K:                  "blk.{bid}.engram_k",
-    MODEL_TENSOR.ENGRAM_Q:                  "blk.{bid}.engram_q",
-    MODEL_TENSOR.ENGRAM_WKV:                "blk.{bid}.engram_wkv",
     MODEL_TENSOR.INDEXER_PROJ:              "blk.{bid}.indexer.proj",
     MODEL_TENSOR.INDEXER_ATTN_K:            "blk.{bid}.indexer.attn_k",
     MODEL_TENSOR.INDEXER_ATTN_Q_B:          "blk.{bid}.indexer.attn_q_b",
@@ -2138,6 +2153,10 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.A_GEN_WAV_SEANET_RES_CONV1: "a.gen.wav.seanet.blk.{bid}.res_conv1",
     MODEL_TENSOR.A_GEN_WAV_SEANET_RES_CONV2: "a.gen.wav.seanet.blk.{bid}.res_conv2",
     MODEL_TENSOR.A_GEN_WAV_SEANET_SCALE_CONV: "a.gen.wav.seanet.blk.{bid}.scale_conv",
+    MODEL_TENSOR.A_GEN_WAV_INPUT:           "a.gen.wav.input",
+    MODEL_TENSOR.A_GEN_WAV_NORM:            "a.gen.wav.norm",
+    MODEL_TENSOR.A_GEN_WAV_OUTPUT_NORM:     "a.gen.wav.output_norm",
+    MODEL_TENSOR.A_GEN_WAV_OUTPUT:          "a.gen.wav.output",
     MODEL_TENSOR.A_MMPROJ:                  "mm.a.mlp.{bid}",
     MODEL_TENSOR.A_MMPROJ_FC:               "mm.a.fc",
     MODEL_TENSOR.A_MM_NORM_PRE:             "mm.a.norm_pre",
@@ -2225,6 +2244,8 @@ TENSOR_NAMES: dict[MODEL_TENSOR, str] = {
     MODEL_TENSOR.DFLY_HC_DOWN:              "hidden_correction.down",
     MODEL_TENSOR.DSPARK_MARKOV_W2:          "markov_w2",
     MODEL_TENSOR.DSPARK_CONF_PROJ:          "conf_proj",
+    MODEL_TENSOR.ENGRAM_KV:                 "blk.{bid}.engram_kv",
+    MODEL_TENSOR.ENGRAM_GATE:               "blk.{bid}.engram_gate",
     MODEL_TENSOR.DFLASH_ATTN_CONV_BASE:     "blk.{bid}.attn_conv_base",
     MODEL_TENSOR.DFLASH_ATTN_CONV_PROJ:     "blk.{bid}.attn_conv_proj",
     MODEL_TENSOR.DFLASH_FFN_CONV_BASE:      "blk.{bid}.ffn_conv_base",
@@ -2532,6 +2553,10 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.A_GEN_WAV_SEANET_RES_CONV1,
         MODEL_TENSOR.A_GEN_WAV_SEANET_RES_CONV2,
         MODEL_TENSOR.A_GEN_WAV_SEANET_SCALE_CONV,
+        MODEL_TENSOR.A_GEN_WAV_INPUT,
+        MODEL_TENSOR.A_GEN_WAV_NORM,
+        MODEL_TENSOR.A_GEN_WAV_OUTPUT_NORM,
+        MODEL_TENSOR.A_GEN_WAV_OUTPUT,
         MODEL_TENSOR.A_ENC_CONV_NORM_MEAN,
         MODEL_TENSOR.A_ENC_CONV_NORM_VAR,
         MODEL_TENSOR.A_ENC_MEL_FILTERS,
@@ -2994,6 +3019,24 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_DOWN_SHEXP,
         MODEL_TENSOR.FFN_UP_SHEXP,
     ],
+    MODEL_ARCH.SENSENOVA_U1: [
+        MODEL_TENSOR.TOKEN_EMBD,
+        MODEL_TENSOR.OUTPUT_NORM,
+        MODEL_TENSOR.OUTPUT,
+        MODEL_TENSOR.ROPE_FREQS,
+        MODEL_TENSOR.ATTN_NORM,
+        MODEL_TENSOR.ATTN_QKV,
+        MODEL_TENSOR.ATTN_Q,
+        MODEL_TENSOR.ATTN_Q_NORM,
+        MODEL_TENSOR.ATTN_K,
+        MODEL_TENSOR.ATTN_K_NORM,
+        MODEL_TENSOR.ATTN_V,
+        MODEL_TENSOR.ATTN_OUT,
+        MODEL_TENSOR.FFN_NORM,
+        MODEL_TENSOR.FFN_GATE,
+        MODEL_TENSOR.FFN_DOWN,
+        MODEL_TENSOR.FFN_UP,
+    ],
     MODEL_ARCH.QWEN3: [
         MODEL_TENSOR.TOKEN_EMBD,
         MODEL_TENSOR.OUTPUT_NORM,
@@ -3030,6 +3073,33 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.FFN_GATE_EXP,
         MODEL_TENSOR.FFN_DOWN_EXP,
         MODEL_TENSOR.FFN_UP_EXP,
+    ],
+
+    MODEL_ARCH.FLINT: [
+        MODEL_TENSOR.TOKEN_EMBD,
+        MODEL_TENSOR.OUTPUT_NORM,
+        MODEL_TENSOR.OUTPUT,
+        MODEL_TENSOR.ATTN_NORM,
+        MODEL_TENSOR.ATTN_QKV,
+        MODEL_TENSOR.ATTN_Q,
+        MODEL_TENSOR.ATTN_Q_NORM,
+        MODEL_TENSOR.ATTN_K,
+        MODEL_TENSOR.ATTN_K_NORM,
+        MODEL_TENSOR.ATTN_V,
+        MODEL_TENSOR.ATTN_OUT,
+        MODEL_TENSOR.FFN_NORM,
+        MODEL_TENSOR.FFN_GATE_INP,
+        MODEL_TENSOR.FFN_GATE_EXP,
+        MODEL_TENSOR.FFN_DOWN_EXP,
+        MODEL_TENSOR.FFN_UP_EXP,
+        MODEL_TENSOR.ATTN_SINKS,
+        MODEL_TENSOR.FFN_GATE,
+        MODEL_TENSOR.FFN_UP,
+        MODEL_TENSOR.FFN_DOWN,
+        MODEL_TENSOR.FFN_GATE_SHEXP,
+        MODEL_TENSOR.FFN_UP_SHEXP,
+        MODEL_TENSOR.FFN_DOWN_SHEXP,
+        MODEL_TENSOR.FFN_EXP_PROBS_B,
     ],
     MODEL_ARCH.QWEN3NEXT: [
         MODEL_TENSOR.TOKEN_EMBD,
@@ -3331,6 +3401,10 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.HC_FFN_DOWN,
         MODEL_TENSOR.HC_FFN_UP,
         MODEL_TENSOR.HC_FFN_INJECT,
+        MODEL_TENSOR.HC_ATTN_DOWN_INJECT,
+        MODEL_TENSOR.HC_FFN_DOWN_INJECT,
+        MODEL_TENSOR.ATTN_QKV_GATE,
+        MODEL_TENSOR.SSM_BETA_ALPHA_CAT,
         # full attention layers: ATTN_Q holds [q|gate] interleaved per head
         MODEL_TENSOR.ATTN_Q,
         MODEL_TENSOR.ATTN_Q_NORM,
@@ -4397,47 +4471,6 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD,
         MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM,
     ],
-    MODEL_ARCH.DEEPSEEK41: [
-        MODEL_TENSOR.TOKEN_EMBD,
-        MODEL_TENSOR.OUTPUT,
-        MODEL_TENSOR.OUTPUT_NORM,
-        MODEL_TENSOR.ATTN_NORM,
-        MODEL_TENSOR.ATTN_SINKS,
-        MODEL_TENSOR.FFN_GATE_INP,
-        MODEL_TENSOR.FFN_NORM,
-        MODEL_TENSOR.FFN_GATE_EXP,
-        MODEL_TENSOR.FFN_DOWN_EXP,
-        MODEL_TENSOR.FFN_UP_EXP,
-        MODEL_TENSOR.FFN_GATE_SHEXP,
-        MODEL_TENSOR.FFN_DOWN_SHEXP,
-        MODEL_TENSOR.FFN_UP_SHEXP,
-        MODEL_TENSOR.FFN_EXP_PROBS_B,
-        MODEL_TENSOR.FFN_EXP_PROBS_B_VL,
-        MODEL_TENSOR.ATTN_Q_A,
-        MODEL_TENSOR.ATTN_Q_B,
-        MODEL_TENSOR.ATTN_Q_A_NORM,
-        MODEL_TENSOR.ATTN_KV_NORM,
-        MODEL_TENSOR.ATTN_KV,
-        MODEL_TENSOR.ATTN_OUT_A,
-        MODEL_TENSOR.ATTN_OUT_B,
-        MODEL_TENSOR.HC_ATTN_FN,
-        MODEL_TENSOR.HC_ATTN_BASE,
-        MODEL_TENSOR.HC_ATTN_SCALE,
-        MODEL_TENSOR.HC_FFN_FN,
-        MODEL_TENSOR.HC_FFN_BASE,
-        MODEL_TENSOR.HC_FFN_SCALE,
-        MODEL_TENSOR.ATTN_COMPRESSOR_WKV,
-        MODEL_TENSOR.ATTN_COMPRESSOR_WGATE,
-        MODEL_TENSOR.ATTN_COMPRESSOR_NORM,
-        MODEL_TENSOR.INDEXER_K_NORM,
-        MODEL_TENSOR.ENGRAM_EMBD,
-        MODEL_TENSOR.ENGRAM_K,
-        MODEL_TENSOR.ENGRAM_Q,
-        MODEL_TENSOR.ENGRAM_WKV,
-        MODEL_TENSOR.INDEXER_PROJ,
-        MODEL_TENSOR.INDEXER_ATTN_K,
-        MODEL_TENSOR.INDEXER_ATTN_Q_B,
-    ],
     MODEL_ARCH.DEEPSEEK4: [
         MODEL_TENSOR.TOKEN_EMBD,
         MODEL_TENSOR.OUTPUT_NORM,
@@ -4487,6 +4520,46 @@ MODEL_TENSORS: dict[MODEL_ARCH, list[MODEL_TENSOR]] = {
         MODEL_TENSOR.NEXTN_HNORM,
         MODEL_TENSOR.NEXTN_SHARED_HEAD_HEAD,
         MODEL_TENSOR.NEXTN_SHARED_HEAD_NORM,
+    ],
+    MODEL_ARCH.DEEPSEEK41: [
+        MODEL_TENSOR.TOKEN_EMBD,
+        MODEL_TENSOR.OUTPUT_NORM,
+        MODEL_TENSOR.OUTPUT,
+        MODEL_TENSOR.ATTN_NORM,
+        MODEL_TENSOR.ATTN_SINKS,
+        MODEL_TENSOR.ATTN_Q_A,
+        MODEL_TENSOR.ATTN_Q_B,
+        MODEL_TENSOR.ATTN_Q_A_NORM,
+        MODEL_TENSOR.ATTN_KV,
+        MODEL_TENSOR.ATTN_KV_NORM,
+        MODEL_TENSOR.ATTN_OUT_A,
+        MODEL_TENSOR.ATTN_OUT_B,
+        MODEL_TENSOR.HC_ATTN_FN,
+        MODEL_TENSOR.HC_ATTN_BASE,
+        MODEL_TENSOR.HC_ATTN_SCALE,
+        MODEL_TENSOR.HC_FFN_FN,
+        MODEL_TENSOR.HC_FFN_BASE,
+        MODEL_TENSOR.HC_FFN_SCALE,
+        MODEL_TENSOR.ATTN_COMPRESSOR_WKV,
+        MODEL_TENSOR.ATTN_COMPRESSOR_WGATE,
+        MODEL_TENSOR.ATTN_COMPRESSOR_NORM,
+        MODEL_TENSOR.INDEXER_ATTN_K,
+        MODEL_TENSOR.INDEXER_K_NORM,
+        MODEL_TENSOR.INDEXER_ATTN_Q_B,
+        MODEL_TENSOR.INDEXER_PROJ,
+        MODEL_TENSOR.PER_LAYER_TOKEN_EMBD,
+        MODEL_TENSOR.ENGRAM_KV,
+        MODEL_TENSOR.ENGRAM_GATE,
+        MODEL_TENSOR.FFN_GATE_INP,
+        MODEL_TENSOR.FFN_EXP_PROBS_B,
+        MODEL_TENSOR.FFN_EXP_PROBS_B_VL,
+        MODEL_TENSOR.FFN_NORM,
+        MODEL_TENSOR.FFN_GATE_EXP,
+        MODEL_TENSOR.FFN_DOWN_EXP,
+        MODEL_TENSOR.FFN_UP_EXP,
+        MODEL_TENSOR.FFN_GATE_SHEXP,
+        MODEL_TENSOR.FFN_DOWN_SHEXP,
+        MODEL_TENSOR.FFN_UP_SHEXP,
     ],
     MODEL_ARCH.ERNIE4_5_MOE: [
         MODEL_TENSOR.TOKEN_EMBD,
@@ -6614,6 +6687,7 @@ class VisionProjectorType:
     DEEPSEEKOCR = "deepseekocr"
     DEEPSEEKOCR2 = "deepseekocr2"
     DEEPSEEK4V = "deepseek4v"
+    DEEPSEEK41V = "deepseek41v"
     LFM2A = "lfm2a" # audio
     MUSIC_FLAMINGO = "musicflamingo" # audio
     GLM4V = "glm4v"
@@ -6625,11 +6699,13 @@ class VisionProjectorType:
     QWEN3TTS_GEN = "qwen3tts_gen" # audio generation: code_predictor
     POCKETTTS_SPKENC = "pockettts_spkenc" # audio: mimi encoder as voice-prompt encoder
     POCKETTTS_GEN = "pockettts_gen" # audio generation: flow-matching decoder + mimi decoder
+    SOPRANO = "soprano" # audio generation: Vocos decoder
     HUNYUANVL      = "hunyuanvl"
     PARAKEET       = "parakeet"  # audio
     MINIMAXM3      = "minimax_m3"
     MINICPMV4_6    = "minicpmv4_6"
     MINICPMV4_7    = "minicpmv4_7"
+    MINICPM_OCR_1_0 = "minicpm_ocr_1_0"
     GRANITE_SPEECH = "granite_speech"  # audio
     MIMOVL         = "mimovl"
     MIMO_AUDIO     = "mimo_audio"
@@ -6718,6 +6794,7 @@ KEY_ATTENTION_LAYERNORM_RMS_EPS = Keys.Attention.LAYERNORM_RMS_EPS
 # RoPE
 KEY_ROPE_DIMENSION_COUNT           = Keys.Rope.DIMENSION_COUNT
 KEY_ROPE_FREQ_BASE                 = Keys.Rope.FREQ_BASE
+KEY_ROPE_FREQ_BASE_SPATIAL         = Keys.Rope.FREQ_BASE_SPATIAL
 KEY_ROPE_SCALING_TYPE              = Keys.Rope.SCALING_TYPE
 KEY_ROPE_SCALING_FACTOR            = Keys.Rope.SCALING_FACTOR
 KEY_ROPE_SCALING_ORIG_CTX_LEN      = Keys.Rope.SCALING_ORIG_CTX_LEN

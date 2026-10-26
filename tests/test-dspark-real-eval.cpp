@@ -460,7 +460,7 @@ int main(int argc, char ** argv) {
         if (use_chat_template) {
             common_chat_templates_inputs cinputs;
             if (ps.messages.empty()) {
-                cinputs.messages.push_back({ "user", ps.text, {}, {}, "", "", "" });
+                cinputs.messages.push_back({ "user", ps.text, {}, {}, "", "", "", "" });
             } else {
                 cinputs.messages = ps.messages;
             }

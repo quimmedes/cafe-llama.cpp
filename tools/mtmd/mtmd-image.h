@@ -31,6 +31,7 @@ struct mtmd_image_preprocessor {
     const clip_hparams & hparams;
 
     mtmd_image_preprocessor(const clip_ctx * ctx): hparams(*clip_get_hparams(ctx)) {}
+    mtmd_image_preprocessor(const clip_hparams & hparams): hparams(hparams) {}
 
     virtual ~mtmd_image_preprocessor() = default;
     virtual mtmd_image_preproc_out preprocess(const clip_image_u8 & img) const = 0;
@@ -59,6 +60,7 @@ struct mtmd_image_preprocessor {
  */
 struct mtmd_image_preprocessor_llava_uhd : mtmd_image_preprocessor {
     mtmd_image_preprocessor_llava_uhd(const clip_ctx * ctx) : mtmd_image_preprocessor(ctx) {}
+    mtmd_image_preprocessor_llava_uhd(const clip_hparams & hparams) : mtmd_image_preprocessor(hparams) {}
     mtmd_image_preproc_out preprocess(const clip_image_u8 & img) const override;
 
     struct slice_coordinates {
@@ -164,6 +166,15 @@ private:
     static void safe_resize(int height, int width, int & best_height, int & best_width, int p, int r, int max_n_token);
 };
 
+// ref: inference/image_processor.py in the HF repo (DeepSeek-V4.1-Flash): plan_image_grid / load_image
+struct mtmd_image_preprocessor_deepseek41v : mtmd_image_preprocessor {
+    mtmd_image_preprocessor_deepseek41v(const clip_ctx * ctx) : mtmd_image_preprocessor(ctx) {}
+    mtmd_image_preproc_out preprocess(const clip_image_u8 & img) const override;
+    // target pixel size (multiples of patch_size) for an image of the given size, exposed for tests
+    static void plan_grid(int width, int height, int p, int r, int max_n_token, int min_pixels,
+                          int & best_width, int & best_height);
+};
+
 // custom llava-uhd slicing logic for MiniCPM-V
 struct mtmd_image_preprocessor_minicpmv : mtmd_image_preprocessor_llava_uhd {
     using mtmd_image_preprocessor_llava_uhd::mtmd_image_preprocessor_llava_uhd;
@@ -187,6 +198,17 @@ protected:
         }
         const int lo = static_cast<int>(fl);
         return (lo % 2 == 0) ? lo : lo + 1;
+    }
+};
+
+// MiniCPM-OCR 1.0: find_best_resize aligns to patch_size * n_merge (28 in 4x).
+struct mtmd_image_preprocessor_minicpm_ocr_1_0 : mtmd_image_preprocessor_minicpmv {
+    using mtmd_image_preprocessor_minicpmv::mtmd_image_preprocessor_minicpmv;
+
+protected:
+    int get_slice_align() const override {
+        const int merge = hparams.n_merge > 0 ? hparams.n_merge : 2;
+        return hparams.patch_size * merge;
     }
 };
 

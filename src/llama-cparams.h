@@ -64,6 +64,8 @@ struct llama_cparams {
     bool fused_xing4_0_hc_comb;
     bool fused_xing4_0_hc_post;
     bool auto_fxing4_0;
+    bool fused_top_k_mask;   // use fused top-k sparse attention mask
+    bool auto_ftkm;
     bool no_perf;
     bool warmup;             // TODO: remove [TAG_LLAMA_GRAPH_NO_WARMUP]
     bool op_offload;
