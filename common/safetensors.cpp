@@ -1525,8 +1525,8 @@ static void st_emit_nvfp4(const st_loader & L, const st_plan & p, uint8_t * out)
 
 // the fp8 weights of a checkpoint keep their codes, the emitter only adds the scale of every block of 128 values
 static void st_emit_f8_native(const st_loader & L, const st_plan & p, uint8_t * out) {
-    const int64_t qk    = ggml_blck_size(GGML_TYPE_F8_E4M3);
-    const size_t  block_bytes = ggml_type_size(GGML_TYPE_F8_E4M3);
+    const int64_t qk    = ggml_blck_size(GGML_TYPE_F8_E4M3_B128);
+    const size_t  block_bytes = ggml_type_size(GGML_TYPE_F8_E4M3_B128);
     const int64_t nrows = p.ne[1];
     const int64_t ncols = p.ne[0];
 
@@ -3689,7 +3689,7 @@ static void st_build_plans(st_loader & L, gguf_context * meta, const fs::path & 
             if (ref.dtype == ST_DT_F8 && L.fp8_native) {
                 // keep the weights of the checkpoint in fp8, no requantization
                 plan->f8_native = 1;
-                plan->type      = GGML_TYPE_F8_E4M3;
+                plan->type      = GGML_TYPE_F8_E4M3_B128;
             } else {
                 plan->type = m.role == ST_ROLE_F32 ? GGML_TYPE_F32 :
                              ref.dtype == ST_DT_F8  ? L.fp8_type : st_ggml_type(ref.dtype);
