@@ -864,6 +864,11 @@ llama_model_loader::llama_model_loader(
         llm_kv = LLM_KV(llm_arch_from_string(arch_name));
     }
 
+    // Unsloth looped Inkling 2 GGUFs keep the inkling2 name and add the loop keys
+    if (llm_kv.arch == LLM_ARCH_INKLING2 && gguf_find_key(metadata, llm_kv(LLM_KV_LOOP_CORE_START).c_str()) >= 0) {
+        llm_kv = LLM_KV(LLM_ARCH_INKLING2_LOOP);
+    }
+
     // aliased arch names keep their own prefix in the metadata keys
     if (llm_kv.arch != LLM_ARCH_UNKNOWN && arch_name != llm_arch_name(llm_kv.arch)) {
         llm_kv.prefix = arch_name.c_str();

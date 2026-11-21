@@ -2608,6 +2608,11 @@ struct llama_model_inkling2_loop : public llama_model_inkling2 {
     uint32_t gate_rank  = 0;
     bool     varying    = false; // trained for a varying number of passes
 
+    // Unsloth GGUFs: block_count and the layer arrays count the layer visits, and the message queries of all core layers are in two tensors
+    bool visit_indexed = false;
+    ggml_tensor * loop_res_query    = nullptr; // rows 2i, 2i + 1: q and ffn queries of core layer i
+    ggml_tensor * loop_kv_res_query = nullptr; // rows 2i, 2i + 1: k and v queries of core layer i
+
     // indexed by physical layer - core_start
     std::vector<loop_layer> loop_layers;
 
