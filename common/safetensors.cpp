@@ -2090,11 +2090,11 @@ static fs::path st_checkpoint_dir(const std::string & path);
 static void st_add_meta_agnes(gguf_context * meta, const json & cfg, const std::string & model_name);
 static void st_build_plans_agnes(st_loader & L, gguf_context * meta, const fs::path & dir, const json & cfg, enum st_mode mode);
 
-struct llama_model * common_model_load_from_file(const std::string & path, const std::string & safetensors_outtype, const struct llama_model_params & params, bool mtp_only) {
-    if (common_safetensors_is_checkpoint(path)) {
-        return common_safetensors_load_model(path, safetensors_outtype, params, mtp_only ? ST_MODE_MTP : ST_MODE_MODEL);
+struct llama_model * common_model_load_from_file(const std::vector<std::string> & paths, const std::string & safetensors_outtype, const struct llama_model_params & params, bool mtp_only) {
+    if (paths.size() == 1 && common_safetensors_is_checkpoint(paths[0])) {
+        return common_safetensors_load_model(paths[0], safetensors_outtype, params, mtp_only ? ST_MODE_MTP : ST_MODE_MODEL);
     }
-    return llama_model_load_from_file(path.c_str(), params);
+    return common_model_load(paths, params);
 }
 
 bool common_safetensors_has_mtp_head(const std::string & path) {

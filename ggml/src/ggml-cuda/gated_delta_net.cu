@@ -410,7 +410,7 @@ static void ggml_cuda_op_gated_delta_net_impl(
     ggml_cuda_pool_alloc<float> g_exp_alloc(ctx.pool());
     bool g_precomputed = false;
     if (!kda && !raw && S_v == 128 && n_tokens >= 32 &&
-            ggml_cuda_info().devices[ggml_cuda_get_device()].cc == GGML_CUDA_CC_DGX_SPARK) {
+            ggml_cuda_info().devices[ggml_cuda_get_device()].cc == GGML_CUDA_CC_GB10) {
         const int64_t n_g = ggml_nelements(src_g);
         g_exp_alloc.alloc(n_g);
         const int block = 256;

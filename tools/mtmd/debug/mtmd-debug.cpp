@@ -81,7 +81,7 @@ int main(int argc, char ** argv) {
     llama_init = common_init_from_params(params);
     {
         auto * model = llama_init->model();
-        const char * clip_path = params.mmproj.path.c_str();
+        const char * mmproj_path = params.mmproj.path.c_str();
         mtmd_context_params mparams = mtmd_context_params_default();
         mparams.use_gpu          = params.mmproj_use_gpu;
         mparams.device           = params.mmproj_device;
@@ -97,12 +97,12 @@ int main(int argc, char ** argv) {
             mparams.cb_eval = common_debug_cb_eval;
         }
         std::unique_ptr<common_mmproj_source, void (*)(common_mmproj_source *)> mmproj_src(
-                common_mmproj_source_create(clip_path), &common_mmproj_source_free);
+                common_mmproj_source_create(mmproj_path), &common_mmproj_source_free);
         ctx_mtmd.reset(mmproj_src
-                ? mtmd_init_from_source(mmproj_src->metadata, &mmproj_src->source, clip_path, model, mparams)
-                : mtmd_init_from_file(clip_path, model, mparams));
+                ? mtmd_init_from_source(mmproj_src->metadata, &mmproj_src->source, mmproj_path, model, mparams)
+                : mtmd_init_from_file(mmproj_path, model, mparams));
         if (!ctx_mtmd.get()) {
-            LOG_ERR("Failed to load vision model from %s\n", clip_path);
+            LOG_ERR("Failed to load vision model from %s\n", mmproj_path);
             exit(1);
         }
     }

@@ -1576,11 +1576,11 @@ static __global__ void __launch_bounds__(nt) k_set_rows_turbo3_tcq(
     }
     if (sid < 32) {
         float v = cost[sid];
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 16);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 8);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 4);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 2);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 1);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 16);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 8);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 4);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 2);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 1);
         if (sid == 0) cost[0] = v;
     }
     __syncthreads();
@@ -1597,7 +1597,7 @@ static __global__ void __launch_bounds__(nt) k_set_rows_turbo3_tcq(
         const int lane = sid & 31;
 #pragma unroll
         for (int h = 1; h < 32; h <<= 1) {
-            const float other = __shfl_xor_sync(0xFFFFFFFFULL, v, h);
+            const float other = __shfl_xor_sync(GGML_CUDA_FULL_THREAD_MASK, v, h);
             v = (lane & h) ? (other - v) : (v + other);
         }
         x[sid] = v;
@@ -1698,8 +1698,8 @@ static __global__ void __launch_bounds__(nt) k_set_rows_turbo3_tcq(
         }
         #pragma unroll
         for (int offset = 16; offset > 0; offset >>= 1) {
-            float other_cost = __shfl_xor_sync(0xFFFFFFFFULL, my_cost, offset);
-            int other_idx = __shfl_xor_sync(0xFFFFFFFFULL, my_idx, offset);
+            float other_cost = __shfl_xor_sync(GGML_CUDA_FULL_THREAD_MASK, my_cost, offset);
+            int other_idx = __shfl_xor_sync(GGML_CUDA_FULL_THREAD_MASK, my_idx, offset);
             if (other_cost < my_cost) { my_cost = other_cost; my_idx = other_idx; }
         }
         if (sid % 32 == 0) {
@@ -1714,8 +1714,8 @@ static __global__ void __launch_bounds__(nt) k_set_rows_turbo3_tcq(
         int best_idx = (sid < NWARPS) ? warp_min_idx[sid] : 0;
 #pragma unroll
         for (int offset = 16; offset > 0; offset >>= 1) {
-            float other_cost = __shfl_down_sync(0xFFFFFFFFULL, best, offset);
-            int other_idx = __shfl_down_sync(0xFFFFFFFFULL, best_idx, offset);
+            float other_cost = __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, best, offset);
+            int other_idx = __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, best_idx, offset);
             if (other_cost < best) {
                 best = other_cost;
                 best_idx = other_idx;
@@ -1773,11 +1773,11 @@ static __global__ void __launch_bounds__(nt) k_set_rows_turbo3_tcq(
     }
     if (sid < 32) {
         float v = cost[sid];
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 16);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 8);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 4);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 2);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 1);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 16);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 8);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 4);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 2);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 1);
         if (sid == 0) cost[0] = v;
     }
     __syncthreads();
@@ -2028,11 +2028,11 @@ static __global__ void __launch_bounds__(256, 3) k_set_rows_turbo2_tcq(
     }
     if (sid < 32) {
         float v = cost[sid];
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 16);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 8);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 4);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 2);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 1);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 16);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 8);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 4);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 2);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 1);
         if (sid == 0) cost[0] = v;
     }
     __syncthreads();
@@ -2049,7 +2049,7 @@ static __global__ void __launch_bounds__(256, 3) k_set_rows_turbo2_tcq(
         const int lane = sid & 31;
 #pragma unroll
         for (int h = 1; h < 32; h <<= 1) {
-            const float other = __shfl_xor_sync(0xFFFFFFFFULL, v, h);
+            const float other = __shfl_xor_sync(GGML_CUDA_FULL_THREAD_MASK, v, h);
             v = (lane & h) ? (other - v) : (v + other);
         }
         x[sid] = v;
@@ -2126,8 +2126,8 @@ static __global__ void __launch_bounds__(256, 3) k_set_rows_turbo2_tcq(
         int my_idx = sid;
         #pragma unroll
         for (int offset = 16; offset > 0; offset >>= 1) {
-            float other_cost = __shfl_xor_sync(0xFFFFFFFFULL, my_cost, offset);
-            int other_idx = __shfl_xor_sync(0xFFFFFFFFULL, my_idx, offset);
+            float other_cost = __shfl_xor_sync(GGML_CUDA_FULL_THREAD_MASK, my_cost, offset);
+            int other_idx = __shfl_xor_sync(GGML_CUDA_FULL_THREAD_MASK, my_idx, offset);
             if (other_cost < my_cost) { my_cost = other_cost; my_idx = other_idx; }
         }
         if (sid % 32 == 0) {
@@ -2141,8 +2141,8 @@ static __global__ void __launch_bounds__(256, 3) k_set_rows_turbo2_tcq(
         int best_idx = (sid < 8) ? warp_min_idx[sid] : 0;
 #pragma unroll
         for (int offset = 16; offset > 0; offset >>= 1) {
-            float other_cost = __shfl_down_sync(0xFFFFFFFFULL, best, offset);
-            int other_idx = __shfl_down_sync(0xFFFFFFFFULL, best_idx, offset);
+            float other_cost = __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, best, offset);
+            int other_idx = __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, best_idx, offset);
             if (other_cost < best) {
                 best = other_cost;
                 best_idx = other_idx;
@@ -2200,11 +2200,11 @@ static __global__ void __launch_bounds__(256, 3) k_set_rows_turbo2_tcq(
     }
     if (sid < 32) {
         float v = cost[sid];
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 16);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 8);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 4);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 2);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 1);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 16);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 8);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 4);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 2);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 1);
         if (sid == 0) cost[0] = v;
     }
     __syncthreads();
@@ -2439,11 +2439,11 @@ static __global__ void __launch_bounds__(256, 3) k_set_rows_turbo1_tcq(
     }
     if (sid < 32) {
         float v = cost[sid];
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 16);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 8);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 4);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 2);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 1);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 16);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 8);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 4);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 2);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 1);
         if (sid == 0) cost[0] = v;
     }
     __syncthreads();
@@ -2459,7 +2459,7 @@ static __global__ void __launch_bounds__(256, 3) k_set_rows_turbo1_tcq(
         const int lane = sid & 31;
 #pragma unroll
         for (int h = 1; h < 32; h <<= 1) {
-            const float other = __shfl_xor_sync(0xFFFFFFFFULL, v, h);
+            const float other = __shfl_xor_sync(GGML_CUDA_FULL_THREAD_MASK, v, h);
             v = (lane & h) ? (other - v) : (v + other);
         }
         x[sid] = v;
@@ -2528,8 +2528,8 @@ static __global__ void __launch_bounds__(256, 3) k_set_rows_turbo1_tcq(
         int my_idx = sid;
         #pragma unroll
         for (int offset = 16; offset > 0; offset >>= 1) {
-            float other_cost = __shfl_xor_sync(0xFFFFFFFFULL, my_cost, offset);
-            int other_idx = __shfl_xor_sync(0xFFFFFFFFULL, my_idx, offset);
+            float other_cost = __shfl_xor_sync(GGML_CUDA_FULL_THREAD_MASK, my_cost, offset);
+            int other_idx = __shfl_xor_sync(GGML_CUDA_FULL_THREAD_MASK, my_idx, offset);
             if (other_cost < my_cost) { my_cost = other_cost; my_idx = other_idx; }
         }
         if (sid % 32 == 0) {
@@ -2543,8 +2543,8 @@ static __global__ void __launch_bounds__(256, 3) k_set_rows_turbo1_tcq(
         int best_idx = (sid < 8) ? warp_min_idx[sid] : 0;
 #pragma unroll
         for (int offset = 16; offset > 0; offset >>= 1) {
-            float other_cost = __shfl_down_sync(0xFFFFFFFFULL, best, offset);
-            int other_idx = __shfl_down_sync(0xFFFFFFFFULL, best_idx, offset);
+            float other_cost = __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, best, offset);
+            int other_idx = __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, best_idx, offset);
             if (other_cost < best) { best = other_cost; best_idx = other_idx; }
         }
         if (sid == 0) shared_initial_state = best_idx;
@@ -2589,11 +2589,11 @@ static __global__ void __launch_bounds__(256, 3) k_set_rows_turbo1_tcq(
     }
     if (sid < 32) {
         float v = cost[sid];
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 16);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 8);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 4);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 2);
-        v += __shfl_down_sync(0xFFFFFFFFULL, v, 1);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 16);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 8);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 4);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 2);
+        v += __shfl_down_sync(GGML_CUDA_FULL_THREAD_MASK, v, 1);
         if (sid == 0) cost[0] = v;
     }
     __syncthreads();

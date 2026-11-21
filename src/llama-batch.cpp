@@ -59,8 +59,14 @@ bool llama_batch_allocr::init(
     int32_t n_embd_only = 0;
     int32_t n_both      = 0;
 
-    const bool has_state = batch_inp.tokens[0].has_state;
-    const bool has_row   = batch_inp.tokens[0].embd_row >= 0;
+    const bool has_state     = batch_inp.tokens[0].has_state;
+    const bool has_row       = batch_inp.tokens[0].embd_row >= 0;
+    const bool has_state_row = batch_inp.tokens[0].state_row >= 0;
+
+    if (has_state && has_state_row) {
+        LLAMA_LOG_ERROR("%s: the entries have a state embedding and a state row\n", __func__);
+        return false;
+    }
 
     for (int32_t i = 0; i < n_tok; ++i) {
         const bool is_tok = batch_inp.tokens[i].id != LLAMA_TOKEN_NULL;
@@ -84,6 +90,11 @@ bool llama_batch_allocr::init(
 
         if (batch_inp.tokens[i].has_state != has_state) {
             LLAMA_LOG_ERROR("%s: all entries in the batch must have the same state embedding presence\n", __func__);
+            return false;
+        }
+
+        if ((batch_inp.tokens[i].state_row >= 0) != has_state_row) {
+            LLAMA_LOG_ERROR("%s: all entries in the batch must have the same state row presence\n", __func__);
             return false;
         }
 
@@ -154,6 +165,13 @@ bool llama_batch_allocr::init(
         embd_row_vec.resize(n_tok);
         for (int32_t i = 0; i < n_tok; ++i) {
             embd_row_vec[i] = batch_inp.tokens[i].embd_row;
+        }
+    }
+
+    if (has_state_row) {
+        state_row_vec.resize(n_tok);
+        for (int32_t i = 0; i < n_tok; ++i) {
+            state_row_vec[i] = batch_inp.tokens[i].state_row;
         }
     }
 
@@ -240,6 +258,10 @@ bool llama_batch_allocr::init(
         if (batch_inp.tokens[i].decision_order != 0) {
             decision_order.resize(n_tok, 0);
             decision_order[i] = batch_inp.tokens[i].decision_order;
+        }
+        if (batch_inp.tokens[i].decision_group != 0) {
+            decision_group.resize(n_tok, 0);
+            decision_group[i] = batch_inp.tokens[i].decision_group;
         }
     }
 
@@ -364,6 +386,7 @@ bool llama_batch_allocr::init(
             /*.type         =*/ is_embd_vec.empty() ? nullptr : is_embd_vec.data(),
             /*.decision_order =*/ decision_order.empty() ? nullptr : decision_order.data(),
             /*.tree_parent  =*/ tree_parent.empty() ? nullptr : tree_parent.data(),
+            /*.decision_group =*/ decision_group.empty() ? nullptr : decision_group.data(),
             /*.data         =*/ {},
         };
 
@@ -591,6 +614,7 @@ llama_ubatch llama_batch_allocr::ubatch_reserve(uint32_t n_seq_tokens, uint32_t 
         /*.type         =*/ nullptr,
         /*.decision_order =*/ nullptr,
         /*.tree_parent  =*/ nullptr,
+        /*.decision_group =*/ nullptr,
         /*.data         =*/ std::move(udata),
     };
 
@@ -891,6 +915,7 @@ void llama_batch_allocr::clear() {
     is_embd_vec .clear();
     state_vec   .clear();
     embd_row_vec.clear();
+    state_row_vec.clear();
     seq_id_data .clear();
     pos         .clear();
     n_seq_id    .clear();
@@ -899,6 +924,7 @@ void llama_batch_allocr::clear() {
     output      .clear();
     decision_order.clear();
     tree_parent.clear();
+    decision_group.clear();
 
     for (auto & cur : seq_pos) {
         cur.clear();
@@ -936,6 +962,7 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
     const bool use_embd  = batch.embd  && !(mixed_batch && n_embd_rows == 0);
     const bool has_state = !state_vec.empty();
     const bool has_row   = !embd_row_vec.empty();
+    const bool has_srow  = !state_row_vec.empty();
 
     const int64_t n_embd_all  = use_embd  ? (int64_t) n_tokens*n_embd       : 0;
     const int64_t n_state_all = has_state ? (int64_t) n_tokens*n_embd_state : 0;
@@ -945,6 +972,7 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
     udata->embd      .resize(n_embd_all);
     udata->embd_state.resize(n_state_all);
     udata->embd_row  .resize(has_row ? n_tokens : 0);
+    udata->embd_state_row.resize(has_srow ? n_tokens : 0);
     udata->pos       .resize(n_pos_all);
     udata->n_seq_id  .resize(n_tokens);
     udata->seq_id    .resize(n_tokens);
@@ -954,6 +982,7 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
     udata->type      .resize(mixed ? n_tokens : 0);
     udata->decision_order.resize(decision_order.empty() ? 0 : n_tokens);
     udata->tree_parent.resize(tree_parent.empty() ? 0 : n_tokens);
+    udata->decision_group.resize(decision_group.empty() ? 0 : n_tokens);
 
     udata->batch_idxs = idxs;
     udata->seq_id_data.reserve(n_tokens);
@@ -981,6 +1010,10 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
             udata->embd_row[i] = embd_row_vec[idxs[i]];
         }
 
+        if (has_srow) {
+            udata->embd_state_row[i] = state_row_vec[idxs[i]];
+        }
+
         for (size_t j = 0; j < (size_t)n_pos_per_embd; ++j) {
             udata->pos[j*n_tokens + i] = batch.pos[j*batch.n_tokens + idxs[i]];
         }
@@ -990,6 +1023,9 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
 
         if (!decision_order.empty()) {
             udata->decision_order[i] = decision_order[idxs[i]];
+        }
+        if (!decision_group.empty()) {
+            udata->decision_group[i] = decision_group[idxs[i]];
         }
 
         // the whole tree is in this ubatch, see llama_context::decode()
@@ -1049,6 +1085,7 @@ llama_ubatch llama_batch_allocr::ubatch_add(const std::vector<int32_t> & idxs, u
         /*.type         =*/ mixed ? udata->type.data() : nullptr,
         /*.decision_order =*/ udata->decision_order.empty() ? nullptr : udata->decision_order.data(),
         /*.tree_parent  =*/ udata->tree_parent.empty() ? nullptr : udata->tree_parent.data(),
+        /*.decision_group =*/ udata->decision_group.empty() ? nullptr : udata->decision_group.data(),
         /*.data         =*/ std::move(udata),
     };
 
@@ -1398,6 +1435,23 @@ bool llama_batch_ext::set_token_embd_row(int32_t idx, int32_t row) {
     return true;
 }
 
+bool llama_batch_ext::set_token_state_row(int32_t idx, int32_t row) {
+    if (idx < 0 || idx >= (int32_t) tokens.size() || row < 0) {
+        return false;
+    }
+
+    token & t = tokens[idx];
+
+    if (t.has_state || t.state_row >= 0) {
+        LLAMA_LOG_ERROR("%s: entry %d already has a state embedding or a state row\n", __func__, idx);
+        return false;
+    }
+
+    t.state_row = row;
+
+    return true;
+}
+
 bool llama_batch_ext::set_token_pos(int32_t idx, const llama_pos * pos_in) {
     if (idx < 0 || idx >= (int32_t) tokens.size()) {
         return false;
@@ -1438,6 +1492,14 @@ bool llama_batch_ext::set_tree_parent(int32_t idx, int32_t parent) {
     }
     tokens[idx].has_tree_parent = true;
     tokens[idx].tree_parent     = parent;
+    return true;
+}
+
+bool llama_batch_ext::set_decision_group(int32_t idx, int32_t group) {
+    if (idx < 0 || idx >= (int32_t) tokens.size() || group < 0) {
+        return false;
+    }
+    tokens[idx].decision_group = group;
     return true;
 }
 
@@ -1508,6 +1570,10 @@ bool llama_batch_ext_set_embd_state(llama_batch_ext * batch, int32_t idx, llama_
     return batch->set_token_state(idx, embd);
 }
 
+bool llama_batch_ext_set_embd_state_row(llama_batch_ext * batch, int32_t idx, int32_t row) {
+    return batch->set_token_state_row(idx, row);
+}
+
 bool llama_batch_ext_set_output_embd(llama_batch_ext * batch, int32_t idx, bool value) {
     return batch->set_output(idx, value);
 }
@@ -1522,6 +1588,10 @@ bool llama_batch_ext_set_decision_order(llama_batch_ext * batch, int32_t idx, ll
 
 bool llama_batch_ext_set_tree_parent(llama_batch_ext * batch, int32_t idx, int32_t parent) {
     return batch->set_tree_parent(idx, parent);
+}
+
+bool llama_batch_ext_set_decision_group(llama_batch_ext * batch, int32_t idx, int32_t group) {
+    return batch->set_decision_group(idx, group);
 }
 
 // llama_batch_compat

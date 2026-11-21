@@ -120,6 +120,10 @@ struct mtmd_cli_context {
         init_vision_context(params);
 
         mtmd_cap = mtmd_helper_get_capabilities(model, ctx_vision.get());
+        if (mtmd_cap.audio_duplex) {
+            LOG_ERR("Full duplex models only run in llama-server, see the /v1/realtime endpoint\n");
+            exit(1);
+        }
         // a realtime transcription model has no chat, it streams the audio below
         if (!mtmd_cap.chat && !mtmd_cap.audio_stream) {
             LOG_ERR("Model does not support chat mode\n");
@@ -153,7 +157,7 @@ struct mtmd_cli_context {
     }
 
     void init_vision_context(common_params & params) {
-        const char * clip_path = params.mmproj.path.c_str();
+        const char * mmproj_path = params.mmproj.path.c_str();
         mtmd_context_params mparams = mtmd_context_params_default();
         mparams.use_gpu          = params.mmproj_use_gpu;
         mparams.device           = params.mmproj_device;
@@ -166,7 +170,7 @@ struct mtmd_cli_context {
         {
             // non-causal models need the whole image in one ubatch
             const int n_ubatch = llama_n_ubatch(lctx);
-            auto mem = mtmd_get_memory_usage(clip_path, mparams);
+            auto mem = mtmd_get_memory_usage(mmproj_path, mparams);
             if (mem.use_non_causal && mem.image_max_tokens > n_ubatch) {
                 LOG_WRN("%s: cap image_max_tokens (original=%d) to n_ubatch (%d) because model needs non-causal attention on image\n", __func__, mem.image_max_tokens, n_ubatch);
                 LOG_WRN("%s: increase n_ubatch (-ub) to increase vision token budget\n", __func__);
@@ -179,12 +183,12 @@ struct mtmd_cli_context {
             mparams.cb_eval = common_debug_cb_eval;
         }
         std::unique_ptr<common_mmproj_source, void (*)(common_mmproj_source *)> mmproj_src(
-                common_mmproj_source_create(clip_path), &common_mmproj_source_free);
+                common_mmproj_source_create(mmproj_path), &common_mmproj_source_free);
         ctx_vision.reset(mmproj_src
-                ? mtmd_init_from_source(mmproj_src->metadata, &mmproj_src->source, clip_path, model, mparams)
-                : mtmd_init_from_file(clip_path, model, mparams));
+                ? mtmd_init_from_source(mmproj_src->metadata, &mmproj_src->source, mmproj_path, model, mparams)
+                : mtmd_init_from_file(mmproj_path, model, mparams));
         if (!ctx_vision.get()) {
-            LOG_ERR("Failed to load vision model from %s\n", clip_path);
+            LOG_ERR("Failed to load vision model from %s\n", mmproj_path);
             exit(1);
         }
 

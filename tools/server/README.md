@@ -2,7 +2,7 @@
 
 Fast, lightweight, pure C/C++ HTTP server based on [httplib](https://github.com/yhirose/cpp-httplib), [nlohmann::json](https://github.com/nlohmann/json) and **llama.cpp**.
 
-Set of LLM REST APIs and a web UI to interact with llama.cpp.
+Set of LLM REST APIs and Llama Chat, a built-in chat app, to interact with llama.cpp.
 
 **Features:**
  * LLM inference of F16 and quantized models on GPU and CPU
@@ -17,7 +17,7 @@ Set of LLM REST APIs and a web UI to interact with llama.cpp.
  * Prefilling of assistant messages similar to the Claude API
  * [Function calling](../../docs/function-calling.md) / tool use for ~any model
  * Speculative decoding
- * Easy-to-use web UI
+ * Llama Chat, an easy-to-use built-in chat app
 
 For the full list of features, please refer to [server's changelog](https://github.com/ggml-org/llama.cpp/issues/9291)
 
@@ -68,22 +68,40 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `-kvo, --kv-offload, -nkvo, --no-kv-offload` | whether to enable KV cache offloading (default: enabled)<br/>(env: LLAMA_ARG_KV_OFFLOAD) |
 | `--repack, -nr, --no-repack` | whether to enable weight repacking (default: enabled)<br/>(env: LLAMA_ARG_REPACK) |
 | `--no-host` | bypass host buffer allowing extra buffers to be used<br/>(env: LLAMA_ARG_NO_HOST) |
-| `-ctk, --cache-type-k TYPE` | KV cache data type for K<br/>allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1, turbo4, turbo2, turbo3<br/>(default: f16)<br/>(env: LLAMA_ARG_CACHE_TYPE_K) |
-| `-ctv, --cache-type-v TYPE` | KV cache data type for V<br/>allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1, turbo4, turbo2, turbo3<br/>(default: f16)<br/>(env: LLAMA_ARG_CACHE_TYPE_V) |
-| `-dt, --defrag-thold N` | KV cache defragmentation threshold (DEPRECATED)<br/>(env: LLAMA_ARG_DEFRAG_THOLD) |
+| `-ctk, --cache-type-k TYPE` | KV cache data type for K<br/>allowed values: f32, f16, bf16, f8_e4m3, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1, turbo4, turbo2, turbo3<br/>(default: f16)<br/>(env: LLAMA_ARG_CACHE_TYPE_K) |
+| `-ctv, --cache-type-v TYPE` | KV cache data type for V<br/>allowed values: f32, f16, bf16, f8_e4m3, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1, turbo4, turbo2, turbo3<br/>(default: f16)<br/>(env: LLAMA_ARG_CACHE_TYPE_V) |
+| `--kv-mean-center FNAME` | path to a K-cache mean-centering bias file (GGUF), generated with tools/kv-mean-center<br/>subtracts a fixed per-(head,channel) bias from K before it is quantized into the cache;<br/>requires --cache-type-k q4_0 (see docs/kv-mean-center.md)<br/>(env: LLAMA_ARG_KV_MEAN_CENTER) |
 | `--rpc SERVERS` | comma-separated list of RPC servers (host:port)<br/>(env: LLAMA_ARG_RPC) |
 | `-lm, --load-mode MODE` | model loading mode (default: auto)<br/>- auto: mmap, unless a device does not support it<br/>- none: no special loading mode<br/>- mmap: memory-map model (if mmap disabled, slower load but may reduce pageouts if not using mlock)<br/>- mlock: force system to keep model in RAM rather than swapping or compressing<br/>- mmap+mlock: mmap + force system to keep model in RAM rather than swapping or compressing<br/>- dio: use DirectIO if available<br/><br/>(env: LLAMA_ARG_LOAD_MODE) |
 | `-lzm, --lazy-mode MODE` | on-demand reading of certain tensors, for example per-layer embeddings (default: auto)<br/>- on: read the rows of such tensors from disk on demand instead of keeping them resident (requires mmap)<br/>- auto: on, but only for tensors larger than 4 GiB<br/>- off: always keep them resident<br/>(env: LLAMA_ARG_LAZY_MODE) |
+| `--ngram, --load-ngram, --no-ngram, --no-load-ngram, --disable-ngram` | whether to load Qwen4 internal N-gram embedding table and PLE layers (default: enabled)<br/>(env: LLAMA_ARG_LOAD_NGRAM) |
+| `--ngram-ssd, --offload-ngram-ssd, --no-ngram-ssd, --no-offload-ngram-ssd` | exclusively offload Qwen4 internal N-gram embedding table to SSD (default: disabled)<br/>(env: LLAMA_ARG_NGRAM_SSD) |
+| `-ssd, --ssd-streaming, --no-ssd-streaming` | stream non-active routed experts from disk, keep a bounded resident cache (default: disabled)<br/>(env: LLAMA_ARG_SSD_STREAMING) |
+| `--ssd-streaming-cache-experts N` | size of the resident routed-expert cache while streaming from disk:<br/>- an integer sets the number of expert slots<br/>- a byte budget such as 32GB sets the size in bytes<br/>- when omitted the budget is computed automatically<br/><br/>(env: LLAMA_ARG_SSD_STREAMING_CACHE_EXPERTS) |
+| `-nssd, --ssd-n-streaming N` | stream the MoE expert weights of the first N layers from disk (implies --ssd-streaming)<br/>(analogous to --n-cpu-moe, but the destination is SSD instead of RAM)<br/>(env: LLAMA_ARG_SSD_N_STREAMING) |
+| `--ssd-expert-advice ADVICE` | madvise() advice for the streamed expert ranges: random, sequential, normal or willneed<br/>(default: random; sequential/normal let the kernel read ahead across an expert's rows)<br/>(env: LLAMA_ARG_SSD_EXPERT_ADVICE) |
+| `--ssd-warm-dense, --no-ssd-warm-dense` | sequentially warm the dense (non-streamed) parts of the model files into the page cache after load (default: disabled)<br/>(env: LLAMA_ARG_SSD_WARM_DENSE) |
+| `--ssd-direct, --no-ssd-direct` | read streamed expert slices with O_DIRECT, bypassing the page cache (default: disabled)<br/>(env: LLAMA_ARG_SSD_DIRECT) |
+| `--ssd-io-threads N` | number of parallel I/O lanes used to read streamed experts from disk (0 = serial, default: 0)<br/>(env: LLAMA_ARG_SSD_IO_THREADS) |
+| `--ssd-cache-mb N` | resident expert cache budget in MiB for streamed experts (0 = shared full-tensor slots, default: 0)<br/>(env: LLAMA_ARG_SSD_CACHE_MB) |
+| `--ssd-release-mmap, --no-ssd-release-mmap` | release the model mapping for streamed expert files after binding (default: disabled)<br/>(env: LLAMA_ARG_SSD_RELEASE_MMAP) |
+| `--ssd-predict, --no-ssd-predict` | predict and hot-load active routed experts to keep them resident in memory (default: disabled)<br/>(env: LLAMA_ARG_SSD_PREDICT) |
 | `--numa TYPE` | attempt optimizations that help on some NUMA systems<br/>- distribute: spread execution evenly over all nodes<br/>- isolate: only spawn threads on CPUs on the node that execution started on<br/>- numactl: use the CPU map provided by numactl<br/>if run without this previously, it is recommended to drop the system page cache before using this<br/>see https://github.com/ggml-org/llama.cpp/issues/1437<br/>(env: LLAMA_ARG_NUMA) |
 | `-dev, --device <dev1,dev2,..>` | comma-separated list of devices to use for offloading (none = don't offload)<br/>use --list-devices to see a list of available devices<br/>(env: LLAMA_ARG_DEVICE) |
 | `--list-devices` | print list of available devices and exit |
 | `-ot, --override-tensor <tensor name pattern>=<buffer type>,...` | override tensor buffer type<br/>(env: LLAMA_ARG_OVERRIDE_TENSOR) |
 | `-cmoe, --cpu-moe` | keep all Mixture of Experts (MoE) weights in the CPU<br/>(env: LLAMA_ARG_CPU_MOE) |
 | `-ncmoe, --n-cpu-moe N` | keep the Mixture of Experts (MoE) weights of the first N layers in the CPU<br/>(env: LLAMA_ARG_N_CPU_MOE) |
-| `-ssd, --ssd-streaming, --no-ssd-streaming` | stream non-active routed experts from disk, keep a bounded resident cache (default: disabled)<br/>(env: LLAMA_ARG_SSD_STREAMING) |
-| `-nssd, --ssd-n-streaming N` | stream the MoE expert weights of the first N layers from disk (implies --ssd-streaming)<br/>(analogous to --n-cpu-moe, but the destination is SSD instead of RAM)<br/>(env: LLAMA_ARG_SSD_N_STREAMING) |
 | `--moe-cache-mib N` | GPU cache size in MiB for the MoE experts kept in the CPU. with multiple GPUs, it is split among them like the layers (--tensor-split) (default: 0, disabled)<br/>(env: LLAMA_ARG_MOE_CACHE_MIB) |
+| `--moe-cache-cpu-share F` | share of the MoE cache misses that the CPU computes from the host experts instead of uploading them to the GPU once the cache is full, from 0 to 1 (default: 0.00)<br/>(env: LLAMA_ARG_MOE_CACHE_CPU_SHARE) |
 | `-ncffn, --n-cpu-ffn N` | keep the dense FFN weights of the first N layers in the CPU<br/>(dense models; for MoE expert weights use --n-cpu-moe)<br/>(env: LLAMA_ARG_N_CPU_FFN) |
+| `-hmoe, --host-moe` | keep all Mixture of Experts (MoE) weights in pinned host memory (e.g. CUDA_Host)<br/>(env: LLAMA_ARG_HOST_MOE) |
+| `-nhmoe, --n-host-moe N` | keep the Mixture of Experts (MoE) weights of the first N layers in pinned host memory<br/>(env: LLAMA_ARG_N_HOST_MOE) |
+| `--pipeline-parallel, --no-pipeline-parallel` | overlap host->device weight/activation DMA streaming with GPU kernels, pairs with --host-moe (default: disabled)<br/>(env: LLAMA_ARG_PIPELINE_PARALLEL) |
+| `--moe-cache MODE` | adaptively cache the hottest CPU-resident MoE experts in spare VRAM (default: auto; auto = automatic budget without weight repacking; on = forced cache mode; off/0 = disabled; N = VRAM budget in MiB per device)<br/>(env: LLAMA_ARG_MOE_CACHE) |
+| `--moe-cache-profile, --no-moe-cache-profile` | persist a versioned per-model expert heatmap in the llama.cpp cache directory and use it for bounded expert prewarming (default: enabled)<br/>(env: LLAMA_ARG_MOE_CACHE_PROFILE) |
+| `--moe-cache-profile-path FILE` | path to an expert heatmap profile file for bounded expert prewarming<br/>(env: LLAMA_ARG_MOE_CACHE_PROFILE_PATH) |
+| `--moe-cache-expert-parallel N` | split cached MoE expert rows across devices (default: 0 = disabled; auto = provider policy; N = device fanout)<br/>(env: LLAMA_ARG_MOE_CACHE_EXPERT_PARALLEL) |
 | `-ngl, --gpu-layers, --n-gpu-layers N` | max. number of layers to store in VRAM, either an exact number, 'auto', or 'all' (default: auto)<br/>(env: LLAMA_ARG_N_GPU_LAYERS) |
 | `-sm, --split-mode {none,layer,row,tensor}` | how to split the model across multiple GPUs, one of:<br/>- none: use one GPU only<br/>- layer (default): split layers and KV across GPUs (pipelined)<br/>- row: split weight across GPUs by rows (parallelized)<br/>- tensor: split weights and KV across GPUs (parallelized, EXPERIMENTAL)<br/>(env: LLAMA_ARG_SPLIT_MODE) |
 | `-ts, --tensor-split N0,N1,N2,...` | fraction of the model to offload to each GPU, comma-separated list of proportions, e.g. 3,1<br/>(env: LLAMA_ARG_TENSOR_SPLIT) |
@@ -100,6 +118,9 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--control-vector-scaled FNAME:SCALE,...` | add a control vector with user defined scaling SCALE<br/>note: use comma-separated values (format: FNAME:SCALE,...) |
 | `--control-vector-layer-range START END` | layer range to apply the control vector(s) to, start and end inclusive |
 | `-m, --model FNAME` | model path to load<br/>(env: LLAMA_ARG_MODEL) |
+| `--safetensors-native` | keep the fp8 weights of a safetensors checkpoint in fp8 instead of requantizing them<br/>same as --safetensors-outtype native |
+| `--safetensors-outtype TYPE` | storage type for the quantized weights of a safetensors checkpoint<br/>supported values: auto, native, f16, bf16, q8_0, q4_0<br/>auto keeps FP8 weights at 8 bits and packed int4 weights at 4 bits<br/>native keeps the fp8 weights exactly as the checkpoint stores them<br/>(env: LLAMA_ARG_SAFETENSORS_OUTTYPE) |
+| `--ple, --shard FNAME,...` | extra GGUF shards for the model, comma separated; may be given more than once<br/>paths may live anywhere, including on different drives; --ple is an alias for --shard<br/>(env: LLAMA_ARG_SHARD) |
 | `-mu, --model-url MODEL_URL` | model download url (default: unused)<br/>(env: LLAMA_ARG_MODEL_URL) |
 | `-dr, --docker-repo [<repo>/]<model>[:quant]` | Docker Hub model repository. repo is optional, default to ai/. quant is optional, default to :latest.<br/>example: gemma3<br/>(default: unused)<br/>(env: LLAMA_ARG_DOCKER_REPO) |
 | `-hf, -hfr, --hf-repo <user>/<model>[:quant]` | Hugging Face model repository; quant is optional, case-insensitive, default to Q4_K_M, or falls back to the first file in the repo if Q4_K_M doesn't exist.<br/>mmproj is also downloaded automatically if available. to disable, add --no-mmproj<br/>example: ggml-org/GLM-4.7-Flash-GGUF:Q4_K_M<br/>(default: unused)<br/>(env: LLAMA_ARG_HF_REPO) |
@@ -114,8 +135,8 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `-lv, --verbosity, --log-verbosity N` | Set the verbosity threshold. Messages with a higher verbosity will be ignored. Values:<br/> - 0: generic output<br/> - 1: error<br/> - 2: warning<br/> - 3: info<br/> - 4: trace (more info)<br/> - 5: debug<br/>(default: 3)<br/><br/>(env: LLAMA_ARG_LOG_VERBOSITY) |
 | `--log-prefix, --no-log-prefix` | Enable prefix in log messages<br/>(env: LLAMA_ARG_LOG_PREFIX) |
 | `--log-timestamps, --no-log-timestamps` | Enable timestamps in log messages<br/>(env: LLAMA_ARG_LOG_TIMESTAMPS) |
-| `--spec-draft-type-k, -ctkd, --cache-type-k-draft TYPE` | KV cache data type for K for the draft model<br/>allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1, turbo4, turbo2, turbo3<br/>(default: f16)<br/>(env: LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K) |
-| `--spec-draft-type-v, -ctvd, --cache-type-v-draft TYPE` | KV cache data type for V for the draft model<br/>allowed values: f32, f16, bf16, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1, turbo4, turbo2, turbo3<br/>(default: f16)<br/>(env: LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V) |
+| `--spec-draft-type-k, -ctkd, --cache-type-k-draft TYPE` | KV cache data type for K for the draft model<br/>allowed values: f32, f16, bf16, f8_e4m3, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1, turbo4, turbo2, turbo3<br/>(default: f16)<br/>(env: LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_K) |
+| `--spec-draft-type-v, -ctvd, --cache-type-v-draft TYPE` | KV cache data type for V for the draft model<br/>allowed values: f32, f16, bf16, f8_e4m3, q8_0, q4_0, q4_1, iq4_nl, q5_0, q5_1, turbo4, turbo2, turbo3<br/>(default: f16)<br/>(env: LLAMA_ARG_SPEC_DRAFT_CACHE_TYPE_V) |
 
 
 ### Sampling params
@@ -196,20 +217,22 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--port PORT` | port to listen (default: 9931)<br/>(env: LLAMA_ARG_PORT) |
 | `--reuse-port` | allow multiple sockets to bind to the same port (default: disabled)<br/>(env: LLAMA_ARG_REUSE_PORT) |
 | `--path PATH` | path to serve static files from (default: )<br/>(env: LLAMA_ARG_STATIC_PATH) |
-| `--cors-origins ORIGINS` | comma-separated list of allowed origins for CORS (default: *)<br/>if set to special value 'localhost', reflect the Origin header only if it is localhost<br/>(env: LLAMA_ARG_CORS_ORIGINS) |
+| `--cors-origins ORIGINS` | comma-separated list of allowed origins for CORS (default: *)<br/>if set to special value 'localhost', only allow same-origin requests (e.g. the built-in UI)<br/>(env: LLAMA_ARG_CORS_ORIGINS) |
 | `--cors-methods METHODS` | comma-separated list of allowed methods for CORS (default: GET, POST, DELETE, OPTIONS)<br/>(env: LLAMA_ARG_CORS_METHODS) |
 | `--cors-headers HEADERS` | comma-separated list of allowed headers for CORS (default: *)<br/>(env: LLAMA_ARG_CORS_HEADERS) |
 | `--cors-credentials, --no-cors-credentials` | whether to allow credentials for CORS (default: enabled)<br/>note: if this is enabled and --cors-origins is set to * (default), the Origin header will be echoed back, and credentials will always be allowed<br/>(env: LLAMA_ARG_CORS_CREDENTIALS) |
 | `--api-prefix PREFIX` | prefix path the server serves from, without the trailing slash (default: )<br/>(env: LLAMA_ARG_API_PREFIX) |
 | `--ui-config, --webui-config JSON` | JSON that provides default UI settings (overrides UI defaults)<br/>(env: LLAMA_ARG_UI_CONFIG) |
 | `--ui-config-file, --webui-config-file PATH` | JSON file that provides default UI settings (overrides UI defaults)<br/>(env: LLAMA_ARG_UI_CONFIG_FILE) |
-| `--ui-mcp-proxy, --webui-mcp-proxy, --no-ui-mcp-proxy, --no-webui-mcp-proxy` | experimental: whether to enable MCP CORS proxy - do not enable in untrusted environments (default: disabled)<br/>(env: LLAMA_ARG_UI_MCP_PROXY) |
+| `--ui-mcp-proxy, --webui-mcp-proxy, --no-ui-mcp-proxy, --no-webui-mcp-proxy` | experimental: whether to enable MCP CORS proxy, for Llama Chat to reach public MCP servers without CORS headers; local and private addresses are refused unless --ui-mcp-proxy-allow-private-urls is set - do not enable in untrusted environments (default: disabled)<br/>note: for security reasons, this will limit --cors-origins to localhost by default<br/>(env: LLAMA_ARG_UI_MCP_PROXY) |
+| `--ui-mcp-proxy-allow-private-urls` | allow the MCP CORS proxy to reach local or private addresses (e.g. MCP servers on localhost or LAN) - anyone who can reach the proxy can then reach your local network (default: disabled, only public addresses)<br/>note: only has effect with --ui-mcp-proxy<br/>(env: LLAMA_ARG_UI_MCP_PROXY_ALLOW_PRIVATE_URLS) |
 | `--tools TOOL1,TOOL2,...` | experimental: whether to enable built-in tools for AI agents - do not enable in untrusted environments (default: no tools)<br/>specify "all" to enable all tools<br/>available tools: read_file, file_glob_search, grep_search, exec_shell_command, write_file, edit_file, get_info<br/>note: for security reasons, this will limit --cors-origins to localhost by default<br/>(env: LLAMA_ARG_TOOLS) |
 | `--tools-runtime OPTION` | experimental: run tools in a separate runtime environment (default: none, use host environment)<br/>available options:<br/>  'docker:<image>', 'podman:<image>': spin up a new container and reuse it for all invocations, clean up on server exit<br/>  'docker-container:<id>', 'podman-container:<id>': use an existing container by ID, won't stop on server exit<br/>  'ssh:<target>': run tools on a remote POSIX host over SSH, key-based auth and a trusted host key are required<br/><br/>(env: LLAMA_ARG_TOOLS_RUNTIME) |
+| `--allow-unauthenticated-tools` | allow server tools, MCP servers or MCP proxy on a non-loopback address without an API key - only for trusted networks (default: disabled)<br/>(env: LLAMA_ARG_ALLOW_UNAUTHENTICATED_TOOLS) |
 | `--mcp-servers-config PATH` | experimental: path to JSON file with MCP server definitions (Cursor-compatible format) - do not enable in untrusted environments (default: none)<br/>note: for security reasons, this will limit --cors-origins to localhost by default<br/>(env: LLAMA_ARG_MCP_SERVERS_CONFIG) |
 | `--mcp-servers-json JSON` | experimental: inline JSON with MCP server definitions (Cursor-compatible format) - do not enable in untrusted environments (default: none)<br/>note: for security reasons, this will limit --cors-origins to localhost by default<br/>(env: LLAMA_ARG_MCP_SERVERS_JSON) |
 | `-ag, --agent, -no-ag, --no-agent` | whether to enable CORS proxy and all built-in tools - do not enable in untrusted environments (default: disabled)<br/>note: for security reasons, this will limit --cors-origins to localhost by default<br/>(env: LLAMA_ARG_AGENT) |
-| `--ui, --webui, --no-ui, --no-webui` | whether to enable the Web UI (default: enabled)<br/>(env: LLAMA_ARG_UI) |
+| `--ui, --webui, --no-ui, --no-webui` | whether to enable Llama Chat, the built-in chat app (default: enabled)<br/>(env: LLAMA_ARG_UI) |
 | `--connect` | (experimental) open a peer-to-peer tunnel for server using llama-connect (default: disabled)<br/>(env: LLAMA_ARG_CONNECT) |
 | `--connect-code CODE` | manually specify a 40-character code for --connect (default: generate a new one for each run)<br/>(env: LLAMA_ARG_CONNECT_CODE) |
 | `--embedding, --embeddings` | restrict to only support embedding use case; use only with dedicated embedding models (default: disabled)<br/>(env: LLAMA_ARG_EMBEDDINGS) |
@@ -229,6 +252,7 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--slots, --no-slots` | expose slots monitoring endpoint (default: enabled)<br/>(env: LLAMA_ARG_ENDPOINT_SLOTS) |
 | `--slot-save-path PATH` | path to save slot kv cache (default: disabled)<br/>(env: LLAMA_ARG_SLOT_SAVE_PATH) |
 | `--media-path PATH` | directory for loading local media files; files can be accessed via file:// URLs using relative paths (default: disabled) |
+| `--media-allow-private-urls` | allow http(s) media URLs (e.g. image_url) that point to local or private addresses (default: disabled, only public addresses)<br/>(env: LLAMA_ARG_MEDIA_ALLOW_PRIVATE_URLS) |
 | `--models-dir PATH` | directory containing models for the router server (default: disabled)<br/>(env: LLAMA_ARG_MODELS_DIR) |
 | `--models-preset PATH` | path to INI file containing model presets for the router server (default: disabled)<br/>(env: LLAMA_ARG_MODELS_PRESET) |
 | `--models-max N` | for router server, maximum number of models to load simultaneously (default: 4, 0 = unlimited)<br/>(env: LLAMA_ARG_MODELS_MAX) |
@@ -240,7 +264,7 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--reasoning-effort LEVEL` | reasoning effort level given to the chat template: 'default' to keep the template default,<br/>or a level such as 'minimal', 'low', 'medium', 'high', 'xhigh' or 'max' (default: default)<br/>(env: LLAMA_ARG_REASONING_EFFORT) |
 | `--reasoning-budget N` | token budget for thinking: -1 for unrestricted, 0 for immediate end, N>0 for token budget (default: -1)<br/>(env: LLAMA_ARG_THINK_BUDGET) |
 | `--reasoning-budget-message MESSAGE` | message injected before the end-of-thinking tag when reasoning budget is exhausted (default: none)<br/>(env: LLAMA_ARG_THINK_BUDGET_MESSAGE) |
-| `--reasoning-preserve, --no-reasoning-preserve` | preserve reasoning trace in the full history, not just the last assistant message (default: template default)<br/>compatible with certain templates having 'supports_preserve_reasoning' capability<br/>example: https://docs.z.ai/guides/capabilities/thinking-mode#preserved-thinking<br/>(env: LLAMA_ARG_REASONING_PRESERVE) |
+| `--reasoning-preserve, --no-reasoning-preserve` | preserve reasoning trace in the full history, not just the last assistant message (default: enabled)<br/>compatible with certain templates having 'supports_preserve_reasoning' capability<br/>example: https://docs.z.ai/guides/capabilities/thinking-mode#preserved-thinking<br/>(env: LLAMA_ARG_REASONING_PRESERVE) |
 | `--chat-template JINJA_TEMPLATE` | set custom jinja chat template (default: template taken from model's metadata)<br/>if suffix/prefix are specified, template will be disabled<br/>only commonly used templates are accepted (unless --jinja is set before this flag):<br/>list of built-in templates:<br/>bailing, bailing-think, bailing2, chatglm3, chatglm4, chatml, command-r, deepseek, deepseek-ocr, deepseek2, deepseek3, exaone-moe, exaone3, exaone4, falcon3, gemma, gigachat, glmedge, gpt-oss, granite, granite-4.0, granite-4.1, grok-2, hunyuan-dense, hunyuan-moe, hunyuan-vl, kimi-k2, llama2, llama2-sys, llama2-sys-bos, llama2-sys-strip, llama3, llama4, megrez, minicpm, mistral-v1, mistral-v3, mistral-v3-tekken, mistral-v7, mistral-v7-tekken, monarch, openchat, orion, pangu-embedded, phi3, phi4, rwkv-world, seed_oss, smolvlm, solar-open, vicuna, vicuna-orca, yandex, zephyr<br/>(env: LLAMA_ARG_CHAT_TEMPLATE) |
 | `--chat-template-file JINJA_TEMPLATE_FILE` | set custom jinja chat template file (default: template taken from model's metadata)<br/>if suffix/prefix are specified, template will be disabled<br/>only commonly used templates are accepted (unless --jinja is set before this flag):<br/>list of built-in templates:<br/>bailing, bailing-think, bailing2, chatglm3, chatglm4, chatml, command-r, deepseek, deepseek-ocr, deepseek2, deepseek3, exaone-moe, exaone3, exaone4, falcon3, gemma, gigachat, glmedge, gpt-oss, granite, granite-4.0, granite-4.1, grok-2, hunyuan-dense, hunyuan-moe, hunyuan-vl, kimi-k2, llama2, llama2-sys, llama2-sys-bos, llama2-sys-strip, llama3, llama4, megrez, minicpm, mistral-v1, mistral-v3, mistral-v3-tekken, mistral-v7, mistral-v7-tekken, monarch, openchat, orion, pangu-embedded, phi3, phi4, rwkv-world, seed_oss, smolvlm, solar-open, vicuna, vicuna-orca, yandex, zephyr<br/>(env: LLAMA_ARG_CHAT_TEMPLATE_FILE) |
 | `--skip-chat-parsing, --no-skip-chat-parsing` | force a pure content parser, even if a Jinja template is specified; model will output everything in the content section, including any reasoning and/or tool calls (default: disabled)<br/>(env: LLAMA_ARG_SKIP_CHAT_PARSING) |
@@ -264,6 +288,8 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--spec-draft-override-tensor, -otd, --override-tensor-draft <tensor name pattern>=<buffer type>,...` | override tensor buffer type for draft model |
 | `--spec-draft-cpu-moe, -cmoed, --cpu-moe-draft` | keep all Mixture of Experts (MoE) weights in the CPU for the draft model<br/>(env: LLAMA_ARG_SPEC_DRAFT_CPU_MOE) |
 | `--spec-draft-n-cpu-moe, --spec-draft-ncmoe, -ncmoed, --n-cpu-moe-draft N` | keep the Mixture of Experts (MoE) weights of the first N layers in the CPU for the draft model<br/>(env: LLAMA_ARG_SPEC_DRAFT_N_CPU_MOE) |
+| `--spec-draft-host-moe, -hmoed, --host-moe-draft` | keep all Mixture of Experts (MoE) weights in pinned host memory for the draft model<br/>(env: LLAMA_ARG_SPEC_DRAFT_HOST_MOE) |
+| `--spec-draft-n-host-moe, --spec-draft-nhmoe, -nhmoed, --n-host-moe-draft N` | keep the Mixture of Experts (MoE) weights of the first N layers in pinned host memory for the draft model<br/>(env: LLAMA_ARG_SPEC_DRAFT_N_HOST_MOE) |
 | `--spec-draft-n-max N` | number of tokens to draft for speculative decoding (default: 3)<br/>(env: LLAMA_ARG_SPEC_DRAFT_N_MAX) |
 | `--spec-draft-n-paths N` | number of EAGLE-4 draft paths, merged into one token tree and verified in one target pass (default: 1, 1 = chain)<br/>(env: LLAMA_ARG_SPEC_DRAFT_N_PATHS) |
 | `--spec-draft-n-min N` | minimum number of draft tokens to use for speculative decoding (default: 0)<br/>(env: LLAMA_ARG_SPEC_DRAFT_N_MIN) |
@@ -272,12 +298,14 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--spec-synth-rates P0,P1,...` | comma-separated unconditional per-position synthetic acceptance probabilities (benchmarking only)<br/>(env: LLAMA_ARG_SPEC_SYNTH_RATES) |
 | `--spec-draft-p-split, --draft-p-split P` | speculative decoding split probability (default: 0.10)<br/>(env: LLAMA_ARG_SPEC_DRAFT_P_SPLIT) |
 | `--spec-draft-p-min, --draft-p-min P` | minimum speculative decoding probability (greedy) (default: 0.00)<br/>(env: LLAMA_ARG_SPEC_DRAFT_P_MIN) |
+| `--spec-adaptive, --no-spec-adaptive` | adapt the draft length to the measured per-position acceptance (default: disabled)<br/>(env: LLAMA_ARG_SPEC_ADAPTIVE) |
+| `--spec-adaptive-decay P` | EMA weight for the adaptive draft acceptance (default: 0.10)<br/>(env: LLAMA_ARG_SPEC_ADAPTIVE_DECAY) |
 | `--spec-draft-backend-sampling, --no-spec-draft-backend-sampling` | offload draft sampling to the backend (default: enabled)<br/>(env: LLAMA_ARG_SPEC_DRAFT_BACKEND_SAMPLING) |
 | `--spec-draft-sampling {greedy,probabilistic}` | how the draft is sampled: greedy takes its argmax, probabilistic samples it and has the target verify by rejection sampling (default: greedy)<br/>(env: LLAMA_ARG_SPEC_DRAFT_SAMPLING) |
 | `--spec-draft-device, -devd, --device-draft <dev1,dev2,..>` | comma-separated list of devices to use for offloading the draft model (none = don't offload, default: follows --device)<br/>use --list-devices to see a list of available devices |
 | `--spec-draft-ngl, -ngld, --gpu-layers-draft, --n-gpu-layers-draft N` | max. number of draft model layers to store in VRAM, either an exact number, 'auto', or 'all' (default: auto)<br/>(env: LLAMA_ARG_N_GPU_LAYERS_DRAFT) |
 | `--spec-draft-model, -md, --model-draft FNAME` | draft model for speculative decoding (default: unused)<br/>(env: LLAMA_ARG_SPEC_DRAFT_MODEL) |
-| `--spec-type none,draft-simple,draft-eagle3,draft-mtp,draft-dflash,draft-dspark,ngram-simple,ngram-map-k,ngram-map-k4v,ngram-mod,ngram-cache` | comma-separated list of types of speculative decoding to use (default: none)<br/><br/>(env: LLAMA_ARG_SPEC_TYPE) |
+| `--spec-type none,draft-simple,draft-eagle3,draft-eagle4,draft-mtp,draft-dflash,draft-dspark,draft-dflash2,draft-lilicorr,ngram-simple,ngram-map-k,ngram-map-k4v,ngram-mod,ngram-cache` | comma-separated list of types of speculative decoding to use (default: none)<br/><br/>(env: LLAMA_ARG_SPEC_TYPE) |
 | `--spec-ngram-mod-n-min N` | minimum number of ngram tokens to use for ngram-based speculative decoding (default: 48) |
 | `--spec-ngram-mod-n-max N` | maximum number of ngram tokens to use for ngram-based speculative decoding (default: 64) |
 | `--spec-ngram-mod-n-match N` | ngram-mod lookup length (default: 24) |
@@ -295,6 +323,8 @@ For the full list of features, please refer to [server's changelog](https://gith
 | `--spec-ngram-size-n N` | the argument has been removed. use the respective --spec-ngram-*-size-n or --spec-ngram-mod-n-match |
 | `--spec-ngram-size-m N` | the argument has been removed. use the respective --spec-ngram-*-size-m |
 | `--spec-ngram-min-hits N` | the argument has been removed. use the respective --spec-ngram-*-min-hits |
+| `--tts-lang FNAME` | language (ISO 639-1) for audio generation<br/>see docs/multimodal/tts.md for per-model usage notes |
+| `--tts-voice VOICE` | voice for audio generation (model-dependent)<br/>see docs/multimodal/tts.md for per-model usage notes |
 | `--embd-gemma-default` | use default EmbeddingGemma model (note: can download weights from the internet) |
 | `--fim-qwen-1.5b-default` | use default Qwen 2.5 Coder 1.5B (note: can download weights from the internet) |
 | `--fim-qwen-3b-default` | use default Qwen 2.5 Coder 3B (note: can download weights from the internet) |
@@ -355,7 +385,7 @@ For more details, please refer to [multimodal documentation](../../docs/multimod
 
 ### Server tools support
 
-The server includes a set of server tools that enable the LLM to access the local file system directly from the Web UI.
+The server includes a set of server tools that enable the LLM to access the local file system directly from Llama Chat.
 
 To use this feature, start the server with `--tools all`. You can also enable only specific tools by passing a comma-separated list: `--tools name1,name2,...`. Run `--help` for the full list of available tool names.
 
@@ -387,11 +417,11 @@ The same JSON can be passed inline with `--mcp-servers-json`. Each entry under `
 | `cwd` | working directory of the child process |
 | `timeout_ms` | per-tool-call timeout (default: 30000) |
 
-Every server is spawned once at startup to list its tools, then stopped, and respawned on demand when one of its tools is called. Tools are exposed as `<server>_<tool>` alongside the built-in ones: they show up in the Web UI and in `GET /tools`, and the model calls them like any other tool. A name colliding with an already registered tool is skipped. This is independent of `--tools`, MCP servers can be the only tools available.
+Every server is spawned once at startup to list its tools, then stopped, and respawned on demand when one of its tools is called. Tools are exposed as `<server>_<tool>` alongside the built-in ones: they show up in Llama Chat and in `GET /tools`, and the model calls them like any other tool. A name colliding with an already registered tool is skipped. This is independent of `--tools`, MCP servers can be the only tools available.
 
 The child process runs with the same privileges as the server, so only declare commands you trust. As with `--tools`, `--cors-origins` then defaults to `localhost`.
 
-Note: `--ui-mcp-proxy` is unrelated, it only lets the Web UI reach remote MCP servers from the browser.
+Note: `--ui-mcp-proxy` is unrelated, it only lets Llama Chat reach public MCP servers that do not send CORS headers. By default it refuses local and private addresses (loopback, LAN, link-local); either connect to those from Llama Chat directly (the MCP server must send CORS headers), or add `--ui-mcp-proxy-allow-private-urls`.
 
 Any server written against the [MCP specification](https://modelcontextprotocol.io) works as is, whether it uses an official SDK or not: the transport is one JSON-RPC message per line on stdio, so a script wrapping an existing program is a valid server too.
 
@@ -852,7 +882,7 @@ Causal decoder rerankers (e.g. `Qwen3-VL-Reranker`) have no such limitation.
 
 ### POST `/tts`: Generate speech audio from text
 
-Returns raw audio bytes (`audio/wav` by default) rather than JSON. For more info, see [tts/README.md](../tts/README.md)
+Returns raw audio bytes (`audio/wav` by default) rather than JSON. For the list of supported models and their params, see [docs/multimodal/tts.md](../../docs/multimodal/tts.md)
 
 *Options:*
 
@@ -860,19 +890,33 @@ Returns raw audio bytes (`audio/wav` by default) rather than JSON. For more info
 
 `lang`: Language code for the utterance (model-dependent, e.g. `en`, `zh`). Optional.
 
+`raw_prompt`: If `true`, `input` is passed to the model as is, without the text preprocessing of the model's `tts` chat template (prompt format, text normalization, text to phonemes). For example, a Kokoro model then takes a phoneme string. Default: `false`
+
 `voice`: Voice for the utterance, one of the `voices` listed by `GET /props` (model-dependent, e.g. `female` or `male` for LFM3-Audio). Optional: a model with predefined voices speaks with the first of them when neither `voice` nor `speaker_ref` is given. It rejects any other name, and a predefined voice cannot be combined with `speaker_ref`.
 
 `speaker_ref_b64`: Base64-encoded reference audio to clone the speaker's voice. Optional. Alternatively, upload the reference audio as a `speaker_ref` file field via `multipart/form-data` (see example below) - if both are provided, the uploaded file takes precedence. Rejected when the model has no voice encoder (e.g. Pocket TTS without voice cloning).
 
-`top_k`, `top_p`: Sampling params for the acoustic code predictor. Optional, model-dependent defaults apply.
+`speaker_ref_text`: Transcript of the reference audio, put in the prompt by some models (e.g. Fish Audio S2 Pro, Qwen3-TTS). Optional.
+
+`top_k`, `top_p`: Sampling params for both the backbone sampler and the acoustic code predictor. Optional, `0` or absent keeps the server `--top-k`/`--top-p` for the backbone and the model defaults for the code predictor.
+
+`temperature`: Temperature for the backbone sampler and the audio frames, for models that support it. `0` is greedy sampling. Optional, absent keeps the server `--temp` for the backbone and the model defaults for the audio.
 
 `repeat_penalty`: Repetition penalty applied to the backbone sampler over the whole generation (default `1.05`). Without this, the backbone can loop and re-generate the same utterance.
 
 `seed`: RNG seed for both the backbone sampler and the codec/vocoder (`-1` = random, the default). Set to a fixed value for reproducible output.
 
-`n_predict`: Max number of audio frames to generate. Defaults to `512`; generation normally stops earlier once the model emits an end-of-speech token.
+`speed`: Speaking speed relative to a typical pace, `> 0` (default `1.0`, the model's own pace). Only for models that support it, others reject a value other than `1.0` with a 400 error.
 
-`response_format`: `wav` (default) or `pcm` (raw `float32` little-endian mono samples, no header; the response `Content-Type` carries the sample rate, e.g. `audio/pcm;rate=24000;encoding=float;bits=32`).
+`loudness`: Target loudness in LUFS, `< 0` (default `0.0`, the model's own loudness). Only for models that support it, others reject a value other than `0.0` with a 400 error.
+
+`cfg_scale`: Classifier-free guidance scale of the audio codes, `> 0`, `1.0` disables it (default `0.0`, the model's own). Only for models that support it (YuE2, MiniMax Music 3), others reject a value other than `0.0` with a 400 error.
+
+`flow_steps`: Steps of the flow-matching ODE solver, `1` to `1024` (default `0`, the model's own). Fewer steps are faster and the audio is less accurate. Only for models that support it (YuE2, MiniMax Music 3), others reject a value other than `0` with a 400 error.
+
+`n_predict`: Max number of audio frames to generate. Defaults to the limit of the model (`512` for most models); generation normally stops earlier once the model emits an end-of-speech token.
+
+`response_format`: `wav` (default), `pcm` (raw `float32` little-endian samples, no header, channels interleaved; the response `Content-Type` carries the sample rate and, for stereo models, the channel count, e.g. `audio/pcm;rate=24000;encoding=float;bits=32`) or `pcm16` (same, as signed 16-bit samples, e.g. `audio/pcm;rate=24000;encoding=signed-int;bits=16`).
 
 `stream`: If `true`, the response is streamed as audio becomes available instead of waiting for the full generation to finish. WAV streaming writes an RFC-noncompliant header with an unknown (`0xFFFFFFFF`) size field, since the final length isn't known up front; most players and decoders (ffmpeg, VLC, ...) handle this by reading until EOF.
 
@@ -1023,7 +1067,7 @@ By default, it is read-only. To make POST request to change global properties, y
 - `voices` - the predefined voices of an audio generation model, to pass as `voice` to `/tts`. Only present when the model has some (e.g. LFM3-Audio, Pocket TTS without voice cloning)
 - `model_path` - the path to model file (same with `-m` argument)
 - `chat_template` - the model's original Jinja2 prompt template
-- `chat_template_caps` - capabilities of the chat template (see `common/jinja/caps.h` for more info), `reasoning_effort_levels` lists the `reasoning_effort` values the template renders distinctly, from lowest to highest
+- `chat_template_caps` - capabilities of the chat template (see `common/jinja/caps.h` for more info), `reasoning_effort_levels` lists the `reasoning_effort` values the template renders distinctly, from lowest to highest, and `reasoning_effort_rejected` the ones it raises on, which are answered with a 400
 - `modalities` - the list of supported modalities
 - `is_sleeping` - sleeping status, see [Sleeping on idle](#sleeping-on-idle)
 
@@ -1446,7 +1490,7 @@ Given a ChatML-formatted json description in `messages`, it returns the predicte
 
 See [OpenAI Chat Completions API documentation](https://platform.openai.com/docs/api-reference/chat). llama.cpp `/completion`-specific features such as `mirostat` are also supported.
 
-The `response_format` parameter supports both plain JSON output (e.g. `{"type": "json_object"}`) and schema-constrained JSON (e.g. `{"type": "json_object", "schema": {"type": "string", "minLength": 10, "maxLength": 100}}` or `{"type": "json_schema", "schema": {"properties": { "name": { "title": "Name",  "type": "string" }, "date": { "title": "Date",  "type": "string" }, "participants": { "items": {"type: "string" }, "title": "Participants",  "type": "string" } } } }`), similar to other OpenAI-inspired API providers.
+The `response_format` parameter supports both plain JSON output (e.g. `{"type": "json_object"}`) and schema-constrained JSON (e.g. `{"type": "json_object", "schema": {"type": "string", "minLength": 10, "maxLength": 100}}` or `{"type": "json_schema", "schema": {"properties": { "name": { "title": "Name",  "type": "string" }, "date": { "title": "Date",  "type": "string" }, "participants": { "items": {"type: "string" }, "title": "Participants",  "type": "string" } } } }`), similar to other OpenAI-inspired API providers. The OpenAI wrapper form `{"type": "json_schema", "json_schema": {"name": ..., "strict": ..., "schema": {...}}}` is also accepted.
 
 `chat_template_kwargs`: Allows sending additional parameters to the json templating system. For example: `{"enable_thinking": false}`
 
@@ -1596,11 +1640,11 @@ Models that write the text while they listen use this endpoint: Voxtral Realtime
 
 Live ASR models can also hold a conversation, so they transcribe live only in sessions opened with `/v1/realtime?intent=transcription`, as OpenAI transcription sessions are; other sessions are a [realtime conversation](#realtime-conversation).
 
-Audio must be PCM16, mono, at the model sample rate. The sample rate is returned in `session.created` as `audio.input.format.rate`. Each `input_audio_buffer.append` carries a base64-encoded chunk of PCM16 samples.
+Audio must be PCM16, mono. By default it is at the model sample rate, returned in `session.created` as `audio.input.format.rate`. A client can send another rate (8000 to 192000 Hz) by setting `audio.input.format.rate` with `session.update`, the server then resamples it. Each `input_audio_buffer.append` carries a base64-encoded chunk of PCM16 samples.
 
 *Client events:*
 
-- `session.update`: accepted for compatibility, the server replies with `session.updated`
+- `session.update`: only `audio.input.format.rate` is used, the server replies with `session.updated`
 - `input_audio_buffer.append`: `audio` holds base64 PCM16 samples
 - `input_audio_buffer.commit`: flushes the audio received so far, so the words still held back by the model's delay are produced. The server replies with `input_audio_buffer.committed` and starts a new item. With `"final": true`, the input ends instead and the last item is completed once the stream drains.
 - `input_audio_buffer.clear`: accepted for compatibility, audio already sent cannot be discarded
@@ -1619,16 +1663,16 @@ Note that words held back by the model's delay at the time of a commit are attri
 
 #### Realtime conversation
 
-Models that answer after the audio, like LFM3-Audio and LFM3-Omni, hold a conversation on the same endpoint (with an `asr` template, unless the session is opened with `?intent=transcription`). The audio is prefilled as it arrives, so the response starts right after the last chunk. Audio input is PCM16 mono at the model sample rate (`audio.input.format.rate` of `session.created`), audio output is PCM16 mono at `audio.output.format.rate`.
+Models that answer after the audio, like LFM3-Audio and LFM3-Omni, hold a conversation on the same endpoint (with an `asr` template, unless the session is opened with `?intent=transcription`). The audio is prefilled as it arrives, so the response starts right after the last chunk. Audio input is PCM16 mono, by default at the model sample rate (`audio.input.format.rate` of `session.created`); another rate set with `session.update` is resampled by the server. Audio output is PCM16 mono at `audio.output.format.rate`.
 
 `session.type` selects the session, it can be changed with `session.update` before the first audio or message:
 
 - `realtime` (default): a conversation, every response stays in context for the next turns
-- `transcription`: each committed audio buffer is transcribed on its own, `audio.input.transcription.language` picks the language
+- `transcription`: each committed audio buffer is transcribed on its own, `audio.input.transcription.language` picks the language and `audio.input.transcription.prompt` replaces the default instruction (`Transcribe audio to text`) as the `prompt` of `/v1/audio/transcriptions` does; the prompt can change between utterances
 
 *Client events:*
 
-- `session.update`: `type`, `instructions` (the system prompt, before the first audio or message), `output_modalities`, `max_output_tokens` (an integer or `"inf"`, the default), `tools` (functions with `name`, `description` and `parameters`, before the first audio or message) and `tool_choice` (`"auto"`, the default, `"none"` or `"required"`)
+- `session.update`: `type`, `audio.input.format.rate` (8000 to 192000 Hz), `instructions` (the system prompt, before the first audio or message), `output_modalities`, `max_output_tokens` (an integer or `"inf"`, the default), `tools` (functions with `name`, `description` and `parameters`, before the first audio or message) and `tool_choice` (`"auto"`, the default, `"none"` or `"required"`)
 - `input_audio_buffer.append`: `audio` holds base64 PCM16 samples
 - `input_audio_buffer.commit`: ends the audio of the user turn, in a transcription session the transcript follows
 - `conversation.item.create`: a user message with `input_text` content, or a `function_call_output` with the `call_id` and `output` of a tool call of the last response
@@ -1650,7 +1694,38 @@ LFM3-Omni is not trained to reason, run it with `--reasoning off` so that its tu
 
 Tools go into the system prompt with the chat template, and the tool calls are parsed as in `/v1/chat/completions`. The client runs the calls of a response, sends their results as `function_call_output` items, then asks for the next response.
 
-See [examples/realtime_client.py](../../examples/realtime_client.py) for a client with the `openai` library.
+#### Full duplex
+
+Full duplex models, like Hibiki (French to English speech translation), speak while they listen on the same endpoint. There are no turns: the first `input_audio_buffer.append` opens a response, then every 80 ms of input audio gives 80 ms of output audio (`response.output_audio.delta`) and the text of the translation (`response.output_text.delta`). `response.cancel` ends the response with `response.done`, the next audio opens another one. Audio input and output are PCM16 mono, as for a realtime conversation.
+
+The model attends to the last 120 s of the stream, so the context of each slot only needs to hold that window (1500 frames for Hibiki, `-c` divided by `-np`). The model is trained on streams no longer than its window, so once the window is full the first frames of the stream stay in context and the oldest frames after them are dropped, 20 s at a time. This keeps Hibiki-1B going on long streams; Hibiki-2B still degrades after about 2 minutes, as the reference implementation does, cancel the response between long segments of speech. `input_audio_buffer.commit`, `conversation.item.create` and `response.create` are rejected. The text and the audio are sampled with the settings of the model, the text settings can be overridden with the server sampling options.
+
+### POST `/v1/audio/speech`: OpenAI-compatible Speech API
+
+Generates speech from text, for models that can generate audio. The request is converted to a [`/tts`](#post-tts-generate-speech-audio-from-text) request, so the `/tts` options such as `lang`, `seed` or `speaker_ref_b64` can also be used.
+
+*Options:*
+
+`input`: The text to speak.
+
+`voice`: One of the `voices` listed by `GET /props`, as a name or as `{"id": "..."}`. OpenAI voice names such as `alloy` are not mapped: a model with predefined voices rejects them.
+
+`response_format`: `wav` or `pcm` (raw signed 16-bit little-endian mono samples, no header). Defaults to `wav`, unlike the `mp3` of the OpenAI API. Other formats are rejected. The sample rate is the one of the model and is not resampled to the 24 kHz of the OpenAI API, the response `Content-Type` carries it.
+
+`stream_format`: `audio` streams the response as it becomes available, see `stream` in `/tts` for the WAV header it writes. `sse` is rejected. The response is not streamed when omitted.
+
+`speed`: Speaking speed, see `speed` in `/tts`. Only models that support it accept a value other than `1.0`. `loudness`, `cfg_scale`, `flow_steps`, `lang` and `raw_prompt` of `/tts` can be used as well.
+
+`instructions`: Ignored.
+
+*Examples:*
+
+```shell
+curl http://127.0.0.1:8080/v1/audio/speech \
+    -H "Content-Type: application/json" \
+    -d '{"model": "tts", "input": "Hello, this is a test."}' \
+    -o output.wav
+```
 
 ### POST `/v1/responses`: OpenAI-compatible Responses API
 
@@ -1890,11 +1965,11 @@ Follows the [TypeSafe API](https://docs.typesafe.ai/api), streaming is not suppo
   - `score`: An array of 2 to 10 level descriptions, lowest level first.
   - `noul`: Optional. An object with the descriptions of `true` and `false`.
 
-The questions of a request are answered independently, an answer does not depend on the other questions. The exception is clef: it reads all the questions in one prompt and decides them jointly.
+The questions of a request are answered independently, an answer does not depend on the other questions. The exceptions are clef, which reads all the questions in one prompt and decides them jointly, and lfm3-d1 and lfm3-d1-omni, which read up to 16 questions after the state in one pass, as the models were trained (requests with a spoken question read one question per pass).
 
 The number of options of a `choice` question is limited by the model, for example: 52 for openjev, 255 for granite-switch, laya, clef, pplx-decider, vllm-decision2, vllm-d3, lfm2-d1, lfm2-d1-omni and h2o-lightning, 2 for openbmb-minicpm-ocr-jev. For laya, long questions and options are truncated to the token budget the model was trained with.
 
-For laya, clef, vllm-d3 and lfm2-d1-omni, the whole prompt is evaluated in one batch: it must fit in `--ubatch-size`. An lfm2-d1-omni prompt is cut to 16384 tokens. For vllm-decision2, the options of a question and the end of the prompt must fit in one batch. An h2o-lightning state longer than 32000 tokens keeps its first and last 16000 tokens. A server that runs clef only serves this endpoint, text generation is not available. A decision model that is also a text model, such as granite-switch, serves both and reports `["text", "decisions"]`.
+For laya, clef, vllm-d3, lfm2-d1-omni, lfm3-d1 and lfm3-d1-omni, the whole prompt is evaluated in one batch: it must fit in `--ubatch-size`. An lfm2-d1-omni prompt is cut to 16384 tokens. For vllm-decision2, the options of a question and the end of the prompt must fit in one batch. An h2o-lightning state longer than 32000 tokens keeps its first and last 16000 tokens. A server that runs clef only serves this endpoint, text generation is not available. A decision model that is also a text model, such as granite-switch, serves both and reports `["text", "decisions"]`.
 
 openbmb-minicpm-ocr-jev answers one fixed question: is an OCR text, rendered as an image, consistent with the original image? `state` is the OCR text, as a string, special tokens written in it are escaped. `files` (or `images`) has exactly 2 images: the original, then the rendered one, both are required. The request has one question and no `instructions`: the task is part of the prompt of the model, so a request that sends one is rejected. It is either a `choice` with the `criteria` `{"0": null, "1": null}`, where `1` means consistent, or a `noul` without `criteria`, which returns the probability of `1`. The model has no LM head, so text generation is not available.
 
@@ -2011,7 +2086,7 @@ An invalid request returns the error `400`. A model that is not a decision model
 
 ## Server tools
 
-The server exposes a REST API under `/tools` that allows the Web UI to call server tools. This endpoint is intended to be used internally by the Web UI and subject to change or to be removed in the future.
+The server exposes a REST API under `/tools` that allows Llama Chat to call server tools. This endpoint is intended to be used internally by Llama Chat and subject to change or to be removed in the future.
 
 **Please do NOT use this endpoint in a downstream application**
 
@@ -2479,7 +2554,7 @@ To pause a download, send an event to `/models/unload`: it keeps its partial fil
 Download procedure:
 - Send POST request to `/models`
 - Subscribe to `/models/sse` for updates
-- On downloading completed, you will receive either `download_finished` or `download_failed` event
+- On downloading completed, you will receive either `download_finished` or `download_failed` event. A download that stopped because a client paused or cancelled it fails with `{"stopped": true}` as its data
 - Call GET `/models` to trigger model list update. If the download success, you should see the new model in the list
 
 Payload:
@@ -2610,9 +2685,9 @@ Apart from error types supported by OAI, we also have custom types that are spec
 }
 ```
 
-### Custom default Web UI preferences
+### Custom default Llama Chat preferences
 
-You can specify default preferences for the web UI using `--ui-config <JSON config>` or `--ui-config-file <path to JSON config>`. For example, you can disable pasting long text as attachments and enable rendering Markdown in user messages with this command:
+You can specify default preferences for Llama Chat using `--ui-config <JSON config>` or `--ui-config-file <path to JSON config>`. For example, you can disable pasting long text as attachments and enable rendering Markdown in user messages with this command:
 
 ```bash
 ./llama-server -m model.gguf --ui-config '{"pasteLongTextToFileLen": 0, "renderUserContentAsMarkdown": true}'

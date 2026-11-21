@@ -227,6 +227,23 @@ struct llama_layer_shortconv {
     struct ggml_tensor * out_proj = nullptr;
 };
 
+struct llama_layer_zaya1 {
+    struct ggml_tensor * cca_conv_grp   = nullptr;
+    struct ggml_tensor * cca_conv_grp_b = nullptr;
+    struct ggml_tensor * cca_temp       = nullptr;
+
+    struct ggml_tensor * attn_res_hs = nullptr;
+    struct ggml_tensor * ffn_res_hs  = nullptr;
+
+    struct ggml_tensor * router_eda     = nullptr;
+    struct ggml_tensor * router_norm    = nullptr;
+    struct ggml_tensor * router_fc1     = nullptr;
+    struct ggml_tensor * router_fc1_b   = nullptr;
+    struct ggml_tensor * router_fc2     = nullptr;
+    struct ggml_tensor * router_fc2_b   = nullptr;
+    struct ggml_tensor * router_out     = nullptr;
+};
+
 struct llama_layer_nextn {
     struct ggml_tensor * eh_proj               = nullptr;
     struct ggml_tensor * eh_proj_s             = nullptr;
@@ -292,6 +309,8 @@ struct llama_layer {
     struct ggml_tensor * wq        = nullptr;
     struct ggml_tensor * wk        = nullptr;
     struct ggml_tensor * wv        = nullptr;
+    struct ggml_tensor * k_cache_s = nullptr;
+    struct ggml_tensor * v_cache_s = nullptr;
     struct ggml_tensor * wo        = nullptr;
     struct ggml_tensor * wqkv      = nullptr;
     struct ggml_tensor * wg        = nullptr;
@@ -382,6 +401,9 @@ struct llama_layer {
     struct ggml_tensor * attn_resid_beta  = nullptr;
     struct ggml_tensor * ffn_resid_alpha  = nullptr;
     struct ggml_tensor * ffn_resid_beta   = nullptr;
+
+    // value residual mix
+    struct ggml_tensor * attn_vres_lambda = nullptr;
 
     // ff shared expert (shexp)
     struct ggml_tensor * ffn_gate_inp_shexp = nullptr;
@@ -668,17 +690,39 @@ struct llama_layer {
     // limite
     struct ggml_tensor * attn_ve_gate     = nullptr;
     struct ggml_tensor * attn_xsa_alpha   = nullptr;
-    struct ggml_tensor * attn_resid_scale = nullptr;
-    struct ggml_tensor * ffn_resid_scale  = nullptr;
+    struct ggml_tensor * attn_resid_scale   = nullptr;
+    struct ggml_tensor * attn_resid_scale_b = nullptr;
+    struct ggml_tensor * ffn_resid_scale    = nullptr;
+    struct ggml_tensor * ffn_resid_scale_b  = nullptr;
     struct ggml_tensor * mudd_down        = nullptr;
     struct ggml_tensor * mudd_up          = nullptr;
     struct ggml_tensor * mudd_up_b        = nullptr;
+
+    // inkling2
+    struct ggml_tensor * attn_rel         = nullptr;
+    struct ggml_tensor * attn_rel_bias    = nullptr;
+    struct ggml_tensor * attn_q_clip      = nullptr;
+    struct ggml_tensor * attn_rel_clip    = nullptr;
+    struct ggml_tensor * attn_sink_proj   = nullptr;
+    struct ggml_tensor * attn_q_inp_norm  = nullptr;
+    struct ggml_tensor * attn_k_inp_norm  = nullptr;
+    struct ggml_tensor * attn_v_inp_norm  = nullptr;
+    struct ggml_tensor * attn_k_conv      = nullptr;
+    struct ggml_tensor * attn_v_conv      = nullptr;
+    struct ggml_tensor * attn_k_conv_proj = nullptr;
+    struct ggml_tensor * attn_v_conv_proj = nullptr;
+    struct ggml_tensor * attn_post_conv   = nullptr;
+    struct ggml_tensor * attn_res_query   = nullptr;
+    struct ggml_tensor * ffn_post_conv    = nullptr;
+    struct ggml_tensor * ffn_res_query    = nullptr;
 
     struct llama_layer_posnet posnet;
 
     struct llama_layer_convnext convnext;
 
     struct llama_layer_shortconv shortconv;
+
+    struct llama_layer_zaya1 zaya1;
 
     struct llama_layer_nextn nextn;
 
@@ -699,14 +743,19 @@ struct llama_meta_device_get_split_state_userdata {
 struct ggml_backend_meta_split_state llama_meta_device_get_split_state(const struct ggml_tensor * tensor, void * userdata);
 
 struct llama_prec_policy {
-    // the key is the weight tensor `res->src[0]`, stores the recommended accumulation type of the op (unused for now)
-    // TODO: migrate ad-hoc ggml_prec_set_acc() calls to this container + update apply() to use it
+    // the key is the weight tensor `res->src[0]`, stores the recommended accumulation type of the op
     std::unordered_map<const ggml_tensor *, ggml_prec> prec_acc;
 
     // the key is the weight tensor `res->src[0]`, stores the recommended activation precision type
     std::unordered_map<const ggml_tensor *, ggml_prec> prec_src1;
 
     bool apply(ggml_tensor * res) const;
+
+    void set_acc(const ggml_tensor * w, ggml_prec prec) {
+        if (w) {
+            prec_acc[w] = prec;
+        }
+    }
 
     void load(llama_model_loader & ml, const llama_model & model);
 };
@@ -749,6 +798,23 @@ struct llama_hadamard {
     llama_hadamard_rotations inv; // latent lookup table -> inverse transform
 };
 
+struct llama_rope_params {
+    int32_t n_rot      = 0; // 0 if the layer has no RoPE
+    int32_t n_offs     = 0; // first rotated dim in a cached K head
+    int32_t type       = LLAMA_ROPE_TYPE_NONE;
+    int32_t n_ctx_orig = 0;
+
+    float freq_base   = 0.0f;
+    float freq_scale  = 0.0f;
+    float ext_factor  = 0.0f;
+    float attn_factor = 0.0f;
+    float beta_fast   = 0.0f;
+    float beta_slow   = 0.0f;
+
+    ggml_tensor * factors = nullptr;
+    ggml_tensor * k_norm  = nullptr; // K norm weight applied after RoPE, a K-shift has to undo it
+};
+
 struct llama_model {
     llm_type type = LLM_TYPE_UNKNOWN;
     llm_arch arch = LLM_ARCH_UNKNOWN;
@@ -762,6 +828,11 @@ struct llama_model {
     llama_prec_policy prec_policy;
 
     llama_hadamard hdmd;
+
+    // weight -> "<name>.scale" tensor (e.g. NVFP4 scale2), applied by build_lora_mm and build_lora_mm_id
+    std::unordered_map<const ggml_tensor *, ggml_tensor *> w_scales;
+
+    ggml_tensor * get_w_scale(const ggml_tensor * w) const;
 
     // see llama_model_set_attn_rot
     bool attn_rot = true;
@@ -781,6 +852,7 @@ struct llama_model {
 
     struct ggml_tensor * output_norm     = nullptr;
     struct ggml_tensor * output_res_score = nullptr; // kimi-k3: final cross-layer residual mix
+    struct ggml_tensor * output_res_query = nullptr; // inkling2: query of the final attention-residual mix
     struct ggml_tensor * output_norm_b   = nullptr;
     struct ggml_tensor * output          = nullptr;
     struct ggml_tensor * output_b        = nullptr;
@@ -846,6 +918,8 @@ struct llama_model {
     struct ggml_tensor * altup_proj           = nullptr;
     struct ggml_tensor * altup_unembd_proj    = nullptr;
     struct ggml_tensor * per_layer_tok_embd   = nullptr;
+    struct ggml_tensor * per_layer_tok_embd_s = nullptr; // optional scalar scale of an FP8 table
+    float per_layer_tok_embd_scale            = 1.0f;    // value of per_layer_tok_embd_s, read after load
 
     // limite value embeddings
     struct ggml_tensor * value_embd = nullptr;
@@ -874,6 +948,10 @@ struct llama_model {
     struct ggml_tensor * dspark_joint_proj   = nullptr; // rnn markov head
     struct ggml_tensor * dspark_joint_proj_b = nullptr;
     struct ggml_tensor * dspark_mask_embd    = nullptr; // per-slot mask embeddings
+
+    // zaya1
+    struct ggml_tensor * res_scale_in   = nullptr;
+    struct ggml_tensor * res_scale_in_b = nullptr;
 
     struct ggml_tensor * dflash_selector_prev   = nullptr;
     struct ggml_tensor * dflash_selector_next   = nullptr;
@@ -956,6 +1034,9 @@ struct llama_model {
     // gguf metadata
     std::unordered_map<std::string, std::string> gguf_kv;
 
+    // the gguf metadata string arrays kept after load, see load_hparams()
+    std::unordered_map<std::string, std::vector<std::string>> gguf_kv_arr;
+
     // list of devices used in this model
     std::vector<llama_device> devices;
 
@@ -1012,12 +1093,24 @@ struct llama_model {
 
     const struct ggml_tensor * get_tensor(const char * name) const;
 
+    // the RoPE of a layer, used by both the model graph and the K-shift
+    virtual llama_rope_params get_rope_params(const llama_cparams & cparams, int il) const;
+
+    // same, for the keys of the lightning indexer
+    virtual llama_rope_params get_rope_params_indexer(const llama_cparams & cparams, int il) const;
+
     float get_rope_freq_base (const llama_cparams & cparams, int il) const;
     float get_rope_freq_scale(const llama_cparams & cparams, int il) const;
 
     ggml_tensor * get_rope_factors(const llama_cparams & cparams, int il) const;
 
     llama_memory_i * create_memory(const llama_memory_params & params, const llama_cparams & cparams) const;
+
+    // graph size budget: max graph nodes per model tensor
+    virtual uint32_t graph_nodes_per_tensor() const { return 8; }
+
+    // apply Hadamard transform to the lightning indexer keys
+    virtual bool lid_k_hdmd() const { return false; }
 
     ggml_cgraph * build_graph(const llm_graph_params & params) const;
 
@@ -1037,6 +1130,9 @@ struct llama_model {
         GGML_UNUSED(n_tokens);
         GGML_UNUSED(n_new);
     }
+
+    // optional, runs after the scale pass
+    virtual void post_arch_tensors(llama_model_loader &) {}
 
 protected:
     llama_model_params params;

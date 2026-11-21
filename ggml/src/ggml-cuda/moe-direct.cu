@@ -1015,7 +1015,7 @@ bool ggml_cuda_moe_direct_mul_mat_id(ggml_backend_cuda_context & ctx, const ggml
         const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
 
         ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), ne13*ne12*ne11*ne10_padded*sizeof(block_q8_1)/QK8_1);
-        quantize_row_q8_1_cuda((const float *) src1->data, nullptr, src1_q8_1.get(), src0->type, ne10,
+        quantize_row_q8_1_cuda((const float *) src1->data, src1_q8_1.get(), ne10,
             src1->nb[1]/ts1, src1->nb[2]/ts1, src1->nb[3]/ts1, ne10_padded, ne11, ne12, ne13, stream);
 
         const int64_t s11 = ne10_padded/QK8_1;
