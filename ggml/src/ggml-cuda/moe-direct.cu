@@ -155,6 +155,7 @@ struct ggml_cuda_moe_direct_ctx {
     size_t   bytes         = 0;
     size_t   reserve_bytes = 0;
     uint64_t grow_retry_at = 0;
+    size_t   dense_peak    = 0; // largest dense copy the pool has grown for
 
     uint64_t steps        = 0;
     uint64_t decay_count  = 0;
@@ -1084,6 +1085,16 @@ bool ggml_cuda_moe_direct_mul_mat_id(ggml_backend_cuda_context & ctx, const ggml
     tmp0.buffer = mm->buffer;
     const size_t nbytes = ggml_nbytes(src0);
     const size_t alloc  = std::max(nbytes, ggml_backend_buffer_get_alloc_size(mm->buffer, &tmp0));
+    // the elastic expert cache of the stock path fills VRAM down to 512 MiB, release it before the pool first grows for this copy
+    if (alloc > md.dense_peak) {
+        size_t free_mem  = 0;
+        size_t total_mem = 0;
+        CUDA_CHECK(cudaMemGetInfo(&free_mem, &total_mem));
+        if (free_mem < alloc + (size_t(256) << 20)) {
+            ctx.expert_cache.clear();
+        }
+        md.dense_peak = alloc;
+    }
     ggml_cuda_pool_alloc<char> dense(ctx.pool(), alloc);
     tmp0.data = dense.get();
     if (alloc > nbytes) {
