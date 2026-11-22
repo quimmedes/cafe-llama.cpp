@@ -2269,6 +2269,7 @@ bool ggml_cuda_moe_direct_mmv_supported(ggml_type type) {
         case GGML_TYPE_Q5_1:
         case GGML_TYPE_Q8_0:
         case GGML_TYPE_MXFP4:
+        case GGML_TYPE_NVFP4:
         case GGML_TYPE_Q2_K:
         case GGML_TYPE_Q3_K:
         case GGML_TYPE_Q4_K:
@@ -2301,6 +2302,7 @@ void ggml_cuda_moe_direct_mmv(ggml_type type, const ggml_cuda_moe_direct_mmv_arg
         MOE_DIRECT_MMV_CASE(GGML_TYPE_Q5_1);
         MOE_DIRECT_MMV_CASE(GGML_TYPE_Q8_0);
         MOE_DIRECT_MMV_CASE(GGML_TYPE_MXFP4);
+        MOE_DIRECT_MMV_CASE(GGML_TYPE_NVFP4);
         MOE_DIRECT_MMV_CASE(GGML_TYPE_Q2_K);
         MOE_DIRECT_MMV_CASE(GGML_TYPE_Q3_K);
         MOE_DIRECT_MMV_CASE(GGML_TYPE_Q4_K);
