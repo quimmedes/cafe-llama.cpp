@@ -10,6 +10,9 @@ struct topk_moe_config {
     bool use_sigmoid;
     bool use_sqrt_softplus;
     bool with_norm;
+    bool norm_affine; // the weight sum is norm_s*sum + norm_b, else max(sum, clamp_val)
+    float norm_s;
+    float norm_b;
     bool delayed_softmax;
     int  n_groups;
     int  n_group_used;
@@ -142,61 +145,13 @@ static __device__ constexpr int calc_experts_per_thread(int n_experts, int warp_
     return n_experts / warp_size + 1;
 }
 
-/*
-    This kernel does the following:
-    1. optionally softmax over the logits per token [n_experts, n_tokens]
-    2. argmax reduce over the top-k (n_experts_used) logits
-    3. write weights + ids to global memory
-    4. optionally normalize the weights or apply softmax over the selected logits
-
-    It is intended as fusion of softmax->top-k->get_rows pipeline for MoE models
-*/
+// the experts of one token from its logits in wt (lane l: expert i*warp_size + l in wt[i]), steps 1. to 4. below, one warp
 template <int n_experts, bool has_bias>
-__launch_bounds__(TOPK_MOE_ROWS_PER_BLOCK * ggml_cuda_get_physical_warp_size(), 1)
-__global__ void topk_moe_cuda(const float *         logits,
-                              float *               weights,
-                              int32_t *             ids,
-                              float *               bias,
-                              const int             n_rows,
-                              const int             n_expert_used,
-                              const float           clamp_val,
-                              const float           scale_val,
-                              const topk_moe_config config) {
-    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
-
-#if defined(GGML_USE_MUSA)
-    // MUSA: every warp of a partially filled block must reach the barrier below.
-    const int row = MIN(blockIdx.x * blockDim.y + threadIdx.y, n_rows - 1);
-#else
-    const int row = blockIdx.x * blockDim.y + threadIdx.y;
-#endif // defined(GGML_USE_MUSA)
-    if (row >= n_rows) {
-        return;
-    }
-
-    logits += n_experts * row;
-    weights += n_expert_used * row;
-    ids += n_experts * row;
-
+static __device__ __forceinline__ void topk_moe_select(float (&wt)[calc_experts_per_thread(n_experts, ggml_cuda_get_physical_warp_size())],
+        float * weights, int32_t * ids, const float * bias, const int n_expert_used, const float clamp_val, const float scale_val,
+        const topk_moe_config & config) {
+    constexpr int warp_size          = ggml_cuda_get_physical_warp_size();
     constexpr int experts_per_thread = calc_experts_per_thread(n_experts, warp_size);
-
-    float wt[experts_per_thread];
-
-    // Initialize all slots to -INFINITY
-#pragma unroll
-    for (int i = 0; i < experts_per_thread; i++) {
-        wt[i] = -INFINITY;
-    }
-
-    ggml_cuda_pdl_sync();
-#pragma unroll
-    for (int i = 0; i < n_experts; i += warp_size) {
-        const int expert  = i + threadIdx.x;
-        wt[i / warp_size] = (n_experts % warp_size == 0 || expert < n_experts) ? logits[expert] : -INFINITY;
-    }
-
-    // Weights and IDs can alias logits, so wait until every row in the block reads its logits.
-    __syncthreads();
 
     if (!config.delayed_softmax) {
         if (config.use_sigmoid) {
@@ -334,7 +289,7 @@ __global__ void topk_moe_cuda(const float *         logits,
 
     if (config.with_norm) {
         wt_sum              = warp_reduce_sum<warp_size>(wt_sum);
-        wt_sum              = max(wt_sum, clamp_val);
+        wt_sum              = config.norm_affine ? config.norm_s*wt_sum + config.norm_b : max(wt_sum, clamp_val);
         const float inv_sum = 1.0f / wt_sum;
 
         for (int i = 0; i < experts_per_thread; i++) {
@@ -353,6 +308,65 @@ __global__ void topk_moe_cuda(const float *         logits,
             weights[idx] = output_weights[i] * scale_val;
         }
     }
+}
+
+/*
+    This kernel does the following:
+    1. optionally softmax over the logits per token [n_experts, n_tokens]
+    2. argmax reduce over the top-k (n_experts_used) logits
+    3. write weights + ids to global memory
+    4. optionally normalize the weights or apply softmax over the selected logits
+
+    It is intended as fusion of softmax->top-k->get_rows pipeline for MoE models
+*/
+template <int n_experts, bool has_bias>
+__launch_bounds__(TOPK_MOE_ROWS_PER_BLOCK * ggml_cuda_get_physical_warp_size(), 1)
+__global__ void topk_moe_cuda(const float *         logits,
+                              float *               weights,
+                              int32_t *             ids,
+                              float *               bias,
+                              const int             n_rows,
+                              const int             n_expert_used,
+                              const float           clamp_val,
+                              const float           scale_val,
+                              const topk_moe_config config) {
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+
+#if defined(GGML_USE_MUSA)
+    // MUSA: every warp of a partially filled block must reach the barrier below.
+    const int row = MIN(blockIdx.x * blockDim.y + threadIdx.y, n_rows - 1);
+#else
+    const int row = blockIdx.x * blockDim.y + threadIdx.y;
+#endif // defined(GGML_USE_MUSA)
+    if (row >= n_rows) {
+        return;
+    }
+
+    logits += n_experts * row;
+    weights += n_expert_used * row;
+    ids += n_experts * row;
+
+    constexpr int experts_per_thread = calc_experts_per_thread(n_experts, warp_size);
+
+    float wt[experts_per_thread];
+
+    // Initialize all slots to -INFINITY
+#pragma unroll
+    for (int i = 0; i < experts_per_thread; i++) {
+        wt[i] = -INFINITY;
+    }
+
+    ggml_cuda_pdl_sync();
+#pragma unroll
+    for (int i = 0; i < n_experts; i += warp_size) {
+        const int expert  = i + threadIdx.x;
+        wt[i / warp_size] = (n_experts % warp_size == 0 || expert < n_experts) ? logits[expert] : -INFINITY;
+    }
+
+    // Weights and IDs can alias logits, so wait until every row in the block reads its logits.
+    __syncthreads();
+
+    topk_moe_select<n_experts, has_bias>(wt, weights, ids, bias, n_expert_used, clamp_val, scale_val, config);
 }
 
 template<bool has_bias>
@@ -434,6 +448,135 @@ static void launch_topk_moe_cuda(ggml_backend_cuda_context & ctx,
     }
 }
 
+static topk_moe_config topk_moe_config_of(const ggml_tensor * clamp, const ggml_cuda_topk_moe_args & args, float & clamp_val) {
+    clamp_val = clamp && clamp->op == GGML_OP_CLAMP ? ggml_get_op_params_f32(clamp, 0) : -INFINITY;
+
+    topk_moe_config config;
+    config.norm_affine       = clamp && clamp->op == GGML_OP_SCALE;
+    config.norm_s            = config.norm_affine ? ggml_get_op_params_f32(clamp, 0) : 1.0f;
+    config.norm_b            = config.norm_affine ? ggml_get_op_params_f32(clamp, 1) : 0.0f;
+
+    config.use_sigmoid       = args.sigmoid;
+    config.use_sqrt_softplus = args.sqrt_softplus;
+    config.with_norm         = clamp != nullptr;
+    config.delayed_softmax   = args.delayed_softmax;
+    config.n_groups          = args.n_groups;
+    config.n_group_used      = args.n_group_used;
+    return config;
+}
+
+#define TOPK_MOE_ROUTER_WARPS 8
+#define TOPK_MOE_ROUTER_SPLIT 4 // warps of a router row, each a stride of its columns
+
+// the blocks of a router launch that are done, the last one sets it back to 0
+static __device__ unsigned int topk_moe_router_done;
+
+// one token: TOPK_MOE_ROUTER_SPLIT warps a router row (logits[e] = w row e . x), then the last block to finish picks the experts
+template <int n_experts, bool has_bias>
+__launch_bounds__(TOPK_MOE_ROUTER_WARPS * WARP_SIZE, 1)
+__global__ void topk_moe_router_cuda(const float * w, const int64_t w_s1, const float * x, const int K, float * logits, float * weights,
+        int32_t * ids, const float * bias, const int n_expert_used, const float clamp_val, const float scale_val, const topk_moe_config config) {
+    constexpr int experts_per_thread = calc_experts_per_thread(n_experts, WARP_SIZE);
+    constexpr int rows               = TOPK_MOE_ROUTER_WARPS/TOPK_MOE_ROUTER_SPLIT;
+
+    __shared__ bool  last;
+    __shared__ float part[TOPK_MOE_ROUTER_WARPS];
+
+    const int lane  = threadIdx.x;
+    const int split = threadIdx.y % TOPK_MOE_ROUTER_SPLIT;
+    const int e     = blockIdx.x*rows + threadIdx.y/TOPK_MOE_ROUTER_SPLIT;
+
+    ggml_cuda_pdl_sync();
+
+    float sum = 0.0f;
+    if (e < n_experts) {
+        const float4 * w4 = (const float4 *) (w + e*w_s1);
+        const float4 * x4 = (const float4 *) x;
+        for (int k = split*WARP_SIZE + lane; k < K/4; k += TOPK_MOE_ROUTER_SPLIT*WARP_SIZE) {
+            const float4 a = w4[k];
+            const float4 b = x4[k];
+            sum += a.x*b.x + a.y*b.y + a.z*b.z + a.w*b.w;
+        }
+    }
+    sum = warp_reduce_sum(sum);
+    if (lane == 0) {
+        part[threadIdx.y] = sum;
+    }
+    __syncthreads();
+    if (split == 0 && lane == 0 && e < n_experts) {
+        float tot = 0.0f;
+#pragma unroll
+        for (int s = 0; s < TOPK_MOE_ROUTER_SPLIT; ++s) {
+            tot += part[threadIdx.y + s];
+        }
+        logits[e] = tot;
+    }
+
+    __threadfence();
+    __syncthreads();
+    if (lane == 0 && threadIdx.y == 0) {
+        last = atomicAdd(&topk_moe_router_done, 1) == gridDim.x - 1;
+    }
+    __syncthreads();
+    if (!last || threadIdx.y != 0) {
+        return;
+    }
+    if (lane == 0) {
+        topk_moe_router_done = 0;
+    }
+
+    // the logits of the other blocks from L2
+    float wt[experts_per_thread];
+#pragma unroll
+    for (int i = 0; i < experts_per_thread; i++) {
+        const int expert = i*WARP_SIZE + lane;
+        wt[i] = expert < n_experts ? __ldcg(logits + expert) : -INFINITY;
+    }
+    topk_moe_select<n_experts, has_bias>(wt, weights, ids, bias, n_expert_used, clamp_val, scale_val, config);
+}
+
+bool ggml_cuda_op_topk_moe_router(ggml_backend_cuda_context &     ctx,
+                                  const ggml_tensor *             router,
+                                  ggml_tensor *                   weights,
+                                  ggml_tensor *                   ids,
+                                  const ggml_tensor *             clamp,
+                                  const ggml_tensor *             scale,
+                                  const ggml_tensor *             bias,
+                                  const ggml_cuda_topk_moe_args & args) {
+    const ggml_tensor * w = router->src[0];
+    const ggml_tensor * x = router->src[1];
+    const int n_experts = router->ne[0];
+    const int K         = w->ne[0];
+    if (ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size != WARP_SIZE || args.delayed_softmax ||
+            router->type != GGML_TYPE_F32 || !ggml_is_contiguous(router) || ggml_nrows(router) != 1 ||
+            w->type != GGML_TYPE_F32 || w->nb[0] != sizeof(float) || w->nb[1] % 16 != 0 || (uintptr_t) w->data % 16 != 0 || ggml_nrows(w) != n_experts ||
+            x->type != GGML_TYPE_F32 || !ggml_is_contiguous(x) || ggml_nelements(x) != K || (uintptr_t) x->data % 16 != 0 || K % 4 != 0 ||
+            weights->type != GGML_TYPE_F32 || ids->type != GGML_TYPE_I32 || ids->nb[1]/ggml_type_size(ids->type) != (size_t) n_experts) {
+        return false;
+    }
+
+    float clamp_val;
+    const topk_moe_config config = topk_moe_config_of(clamp, args, clamp_val);
+    const float scale_val = scale ? ggml_get_op_params_f32(scale, 0) : 1.0f;
+
+    const int  rows = TOPK_MOE_ROUTER_WARPS/TOPK_MOE_ROUTER_SPLIT;
+    const dim3 grid_dims((n_experts + rows - 1)/rows, 1, 1);
+    const dim3 block_dims(WARP_SIZE, TOPK_MOE_ROUTER_WARPS, 1);
+    const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(grid_dims, block_dims, 0, ctx.stream());
+    auto launch = [&](auto kernel) {
+        ggml_cuda_kernel_launch(kernel, launch_params, (const float *) w->data, (int64_t) (w->nb[1]/sizeof(float)), (const float *) x->data, K,
+            (float *) router->data, (float *) weights->data, (int32_t *) ids->data, bias ? (const float *) bias->data : nullptr,
+            (int) weights->ne[1], clamp_val, scale_val, config);
+    };
+    switch (n_experts) {
+        case 64:  bias ? launch(topk_moe_router_cuda<64,  true>) : launch(topk_moe_router_cuda<64,  false>); break;
+        case 128: bias ? launch(topk_moe_router_cuda<128, true>) : launch(topk_moe_router_cuda<128, false>); break;
+        case 256: bias ? launch(topk_moe_router_cuda<256, true>) : launch(topk_moe_router_cuda<256, false>); break;
+        default: return false;
+    }
+    return true;
+}
+
 void ggml_cuda_op_topk_moe(ggml_backend_cuda_context &     ctx,
                            const ggml_tensor *             logits,
                            ggml_tensor *                   weights,
@@ -460,20 +603,8 @@ void ggml_cuda_op_topk_moe(ggml_backend_cuda_context &     ctx,
 
     const int n_expert_used = weights->ne[1];
 
-    const bool with_norm = clamp != nullptr;
-
     float clamp_val = -INFINITY;
-    if (clamp) {
-        clamp_val = ggml_get_op_params_f32(clamp, 0);
-    }
-
-    topk_moe_config config;
-    config.use_sigmoid       = args.sigmoid;
-    config.use_sqrt_softplus = args.sqrt_softplus;
-    config.with_norm         = with_norm;
-    config.delayed_softmax   = args.delayed_softmax;
-    config.n_groups          = args.n_groups;
-    config.n_group_used      = args.n_group_used;
+    const topk_moe_config config = topk_moe_config_of(clamp, args, clamp_val);
 
     if (bias) {
         launch_topk_moe_cuda<true>(ctx, logits_d, weights_d, ids_d, bias_d, n_rows, n_experts, n_expert_used, clamp_val,

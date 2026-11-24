@@ -25,6 +25,7 @@
 #include <cassert>
 #include <cfloat>
 #include <cstdio>
+#include <functional>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -1602,6 +1603,29 @@ struct ggml_backend_cuda_context {
 
     ggml_cuda_moe_direct_ctx * moe_direct = nullptr;
 
+    // set by the graph evaluation for a mat-vec whose src1 has more mat-vec consumers: src1 quantized to q8_1 once for all of them
+    struct mmvq_shared_q8_1 {
+        const ggml_tensor * src1      = nullptr;
+        char              * data      = nullptr;
+        bool              * quantized = nullptr;
+    } mmvq_shared;
+
+    // set by the graph evaluation: the q8_1 of the single-token mat-vecs that read t (t or a view of all of t), made once for all
+    // of them; empty if no mat-vec reads t. Producers of t may write it, see mmvq_shared.
+    std::function<mmvq_shared_q8_1(const ggml_tensor * t)> mmvq_q8_of;
+
+    // set by a fusion around a FLASH_ATTN_EXT of one token: the combine of its blocks also applies the Walsh-Hadamard transform of
+    // n_rot values (scaled by 1/sqrt(n_rot)) and multiplies by sigmoid(gate), to dst and to q8 (if set); applied when it did
+    struct fattn_gate_epilogue {
+        const float * gate      = nullptr;
+        float       * dst       = nullptr;
+        block_q8_1  * q8        = nullptr;
+        bool        * quantized = nullptr;
+        int           n_q8      = 0;
+        int           n_rot     = 0;
+        bool          applied   = false;
+    } fattn_gate;
+
 #ifdef USE_CUDA_GRAPH
     // Map from graph key to cuda_graph - allows multiple graphs per context when the
     // computation is split across CPU/GPU (e.g., with --n-cpu-moe), and when the same
@@ -1695,6 +1719,8 @@ struct ggml_backend_cuda_context {
     }
 };
 
+#define GGML_CUDA_MMVQ_MULTI_MAX 4
+
 struct ggml_cuda_mm_fusion_args_host {
     const ggml_tensor * x_bias = nullptr;
     const ggml_tensor * gate = nullptr;
@@ -1707,6 +1733,16 @@ struct ggml_cuda_mm_fusion_args_host {
     const ggml_tensor * shared_up = nullptr;
     const ggml_tensor * shared_gate = nullptr;
     ggml_tensor * shared_dst = nullptr;
+    // more mat-vecs in the same launch, same type and row size as src0, of the same src1 or of multi_src1 (one token, as src1)
+    const ggml_tensor * multi_src0[GGML_CUDA_MMVQ_MULTI_MAX] = {};
+    const ggml_tensor * multi_src1[GGML_CUDA_MMVQ_MULTI_MAX] = {};
+    ggml_tensor * multi_dst[GGML_CUDA_MMVQ_MULTI_MAX] = {};
+    int n_multi = 0;
+    // one token: a short conv (width 4) of the output with its tail stored, plus a residual, see ggml_cuda_mm_fusion_args_device
+    const ggml_tensor * conv = nullptr; // the SHORT_CONV node: past (src0), weights (src1), scale
+    ggml_tensor * conv_tail = nullptr;  // the state cells of the tail
+    const ggml_tensor * conv_res = nullptr;
+    ggml_tensor * conv_out = nullptr;   // the ADD of the conv output and the residual
 };
 struct ggml_cuda_mm_fusion_args_device {
     const void * x_bias = nullptr;
@@ -1720,6 +1756,20 @@ struct ggml_cuda_mm_fusion_args_device {
     const void * shared_gate = nullptr;
     float * shared_dst = nullptr;
     uint32_t shared_stride_col_dst = 0;
+    const void * multi_x[GGML_CUDA_MMVQ_MULTI_MAX] = {};
+    const void * multi_y[GGML_CUDA_MMVQ_MULTI_MAX] = {}; // the q8_1 of another src1, or nullptr: the one of src1
+    float * multi_dst[GGML_CUDA_MMVQ_MULTI_MAX] = {};
+    uint32_t multi_nrows[GGML_CUDA_MMVQ_MULTI_MAX] = {};
+    uint32_t n_multi = 0;
+    // row r: conv_out[r] = conv_res[r] + conv_scale*(y + sum_k conv_c[4*r + k]*x[k]), x = [past(0..2, r), y], tail[3*r + k] = x[1 + k]; dst not written
+    const float * conv_past = nullptr;
+    uint32_t conv_p0 = 0;
+    uint32_t conv_p1 = 0;
+    const float * conv_c = nullptr;
+    float * conv_tail = nullptr;
+    const float * conv_res = nullptr;
+    float * conv_out = nullptr;
+    float conv_scale = 0.0f;
 };
 
 struct ggml_cuda_kernel_launch_params {

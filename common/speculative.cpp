@@ -2563,6 +2563,28 @@ struct common_speculative_impl_inkling2_dspark final : public common_speculative
     std::vector<std::mt19937> rng;
     std::vector<int64_t> seeds;
 
+    // adaptive depth: acceptance falls fast along a block, so a deeper block only pays when the
+    // last round accepted all of it (n_depth: current depth of a sequence, n_last: the last drafted)
+    std::vector<int32_t> n_depth;
+    std::vector<int32_t> n_last;
+
+    void accept(llama_seq_id seq_id, uint16_t n_accepted, bool is_other) override {
+        common_speculative_impl_draft_dflash::accept(seq_id, n_accepted, is_other);
+        if (seq_id < 0 || seq_id >= (llama_seq_id) n_seq || is_other) {
+            return;
+        }
+        const int32_t used = n_last[seq_id];
+        n_last[seq_id] = 0;
+        if (used <= 0) {
+            return;
+        }
+        if (n_accepted >= used) {
+            n_depth[seq_id] = std::min<int32_t>(this->n_max, n_depth[seq_id] + 1);
+        } else if (2*n_accepted < used) {
+            n_depth[seq_id] = std::max<int32_t>(1, n_depth[seq_id] - 1);
+        }
+    }
+
     common_speculative_impl_inkling2_dspark(const common_params_speculative & config, uint32_t n_seq)
         : common_speculative_impl_draft_dflash(config, n_seq, COMMON_SPECULATIVE_TYPE_DRAFT_DSPARK), rng(n_seq), seeds(n_seq, -1) {
         const auto * model = llama_get_model(params.ctx_dft);
@@ -2580,6 +2602,8 @@ struct common_speculative_impl_inkling2_dspark final : public common_speculative
         }
         init_context_features();
         init({ block_size - 1, false, true, false });
+        n_depth.assign(n_seq, this->n_max);
+        n_last.assign(n_seq, 0);
     }
 
     void begin(llama_seq_id seq_id, const llama_tokens & prompt) override {
@@ -2589,6 +2613,10 @@ struct common_speculative_impl_inkling2_dspark final : public common_speculative
         }
         if ((size_t) seq_id < sampler_cfg.size()) {
             sampler_cfg[seq_id].temp = NAN;
+        }
+        if ((size_t) seq_id < n_depth.size()) {
+            n_depth[seq_id] = this->n_max;
+            n_last[seq_id]  = 0;
         }
     }
 
@@ -2614,8 +2642,11 @@ struct common_speculative_impl_inkling2_dspark final : public common_speculative
             if (context_pos[slot] != dp.pos0 - 1) {
                 continue;
             }
-            const int32_t count = dp.n_max >= 0 ? std::min(params.n_max, dp.n_max) : params.n_max;
+            int32_t count = dp.n_max >= 0 ? std::min(params.n_max, dp.n_max) : params.n_max;
+            count = std::min(count, n_depth[seq_id]);
+            n_last[seq_id] = count;
             if (count < params.n_min || count == 0) {
+                n_last[seq_id] = 0;
                 continue;
             }
             const bool sample = params.probabilistic && dp.result_q && dp.temp > 0;

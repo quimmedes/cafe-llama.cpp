@@ -352,3 +352,141 @@ bool ggml_cuda_op_fwht_signed(ggml_backend_cuda_context & ctx, const ggml_tensor
                               const ggml_tensor * signs, ggml_tensor * dst) {
     return fwht_dispatch(ctx, src, dst, signs);
 }
+
+static __global__ void __launch_bounds__(4*WARP_SIZE) k_fwht_rows(const fwht_rows_params p) {
+    const int r    = blockIdx.x*blockDim.y + threadIdx.y;
+    const int lane = threadIdx.x;
+    if (r >= p.n_rows) {
+        return;
+    }
+
+    ggml_cuda_pdl_sync();
+
+    float reg[FWHT_ROWS_EL];
+#pragma unroll
+    for (int i = 0; i < FWHT_ROWS_EL; ++i) {
+        reg[i] = p.x[(int64_t) r*128 + i*WARP_SIZE + lane];
+    }
+    fwht_rows_row(p, r, lane, reg);
+}
+
+bool ggml_cuda_fwht_rows_plan(const ggml_tensor * pre, const ggml_tensor * tok, const ggml_tensor * mm, const ggml_tensor * set_rows,
+        fwht_rows_params & p) {
+    // the rows of the pre-op are [128, n_head, n_tokens]
+    if (!pre) {
+        return false;
+    }
+    const ggml_tensor * x = pre->src[0];
+    if (!ggml_cuda_op_mul_mat_use_fwht(mm) || (mm->ne[0] != 128 && mm->ne[0] != 64) || x->type != GGML_TYPE_F32 || !ggml_is_contiguous(x) ||
+            ggml_nelements(x) != ggml_nelements(mm) || x->ne[3] != 1) {
+        return false;
+    }
+
+    p = {};
+    p.x      = (const float *) x->data;
+    p.n_head = x->ne[1];
+    p.n_rows = ggml_nelements(x)/128;
+    p.n_rot  = mm->ne[0];
+    p.scale  = 1.0f/sqrtf((float) p.n_rot);
+    p.s_rows = 1;
+    p.pre    = FWHT_ROWS_PRE_NONE;
+
+    if (x->ne[0] != 128 || ggml_nrows(x) != p.n_rows) {
+        return false;
+    }
+    if (pre && pre->op == GGML_OP_L2_CLIP) {
+        const ggml_tensor * s = pre->src[1];
+        if (s && (s->type != GGML_TYPE_F32 || !ggml_is_contiguous(s) || s->ne[0] != 128 || s->ne[2] != 1 || s->ne[3] != 1)) {
+            return false;
+        }
+        p.pre    = FWHT_ROWS_PRE_L2_CLIP;
+        p.s      = s ? (const float *) s->data : nullptr;
+        p.s_rows = s ? s->ne[1] : 1;
+        p.p0     = ggml_get_op_params_f32(pre, 0);
+        p.eps    = ggml_get_op_params_f32(pre, 1);
+    } else if (pre && pre->op == GGML_OP_RMS_NORM) {
+        p.pre = FWHT_ROWS_PRE_RMS_NORM;
+        p.eps = ggml_get_op_params_f32(pre, 0);
+    } else if (pre) {
+        return false;
+    }
+    if (tok) {
+        // the factor of a token: a [1, 1, n_tokens] operand of a MUL
+        const ggml_tensor * f = tok->src[1]->ne[0] == 1 ? tok->src[1] : tok->src[0];
+        if (f->type != GGML_TYPE_F32 || !ggml_is_contiguous(f) || ggml_nelements(f) != x->ne[2] || f->ne[0] != 1 || f->ne[1] != 1) {
+            return false;
+        }
+        p.tok = (const float *) f->data;
+    }
+
+    if (set_rows) {
+        const ggml_tensor * idx = set_rows->src[1];
+        if (set_rows->type != GGML_TYPE_Q8_0 || (idx->type != GGML_TYPE_I64 && idx->type != GGML_TYPE_I32) || !ggml_is_contiguous(idx) ||
+                set_rows->ne[0] != 128*p.n_head || ggml_nelements(idx) != x->ne[2] || set_rows->ne[2] != 1 || set_rows->ne[3] != 1) {
+            return false;
+        }
+        p.dst_q   = (char *) set_rows->data;
+        p.dst_nb1 = set_rows->nb[1];
+        p.idx     = idx->data;
+        p.idx_i64 = idx->type == GGML_TYPE_I64;
+    } else {
+        if (mm->type != GGML_TYPE_F32 || !ggml_is_contiguous(mm)) {
+            return false;
+        }
+        p.dst_f = (float *) mm->data;
+    }
+    return true;
+}
+
+bool ggml_cuda_fwht_rows_fused(ggml_backend_cuda_context & ctx, const ggml_tensor * pre, const ggml_tensor * tok,
+        const ggml_tensor * mm, const ggml_tensor * set_rows) {
+    fwht_rows_params p;
+    if (!ggml_cuda_fwht_rows_plan(pre, tok, mm, set_rows, p)) {
+        return false;
+    }
+
+    const dim3 block_dims(WARP_SIZE, 4, 1);
+    const dim3 blocks_num((p.n_rows + 3)/4, 1, 1);
+    const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(blocks_num, block_dims, 0, ctx.stream());
+    ggml_cuda_kernel_launch(k_fwht_rows, launch_params, p);
+    return true;
+}
+
+bool ggml_cuda_fwht_rows_gate(ggml_backend_cuda_context & ctx, const ggml_tensor * mm, const ggml_tensor * sig, ggml_tensor * mul) {
+    const ggml_tensor * x = mm->src[1];
+    const ggml_tensor * g = sig->src[0];
+    if (!ggml_cuda_op_mul_mat_use_fwht(mm) || (mm->ne[0] != 128 && mm->ne[0] != 64) || x->type != GGML_TYPE_F32 || !ggml_is_contiguous(x) ||
+            ggml_nelements(x) % 128 != 0 || mul->type != GGML_TYPE_F32 || !ggml_is_contiguous(mul) || ggml_nelements(mul) != ggml_nelements(x) ||
+            g->type != GGML_TYPE_F32 || !ggml_is_contiguous(g) || ggml_nelements(g) != ggml_nelements(x)) {
+        return false;
+    }
+
+    fwht_rows_params p = {};
+    p.x      = (const float *) x->data;
+    p.gate   = (const float *) g->data;
+    p.dst_f  = (float *) mul->data;
+    p.n_head = 1;
+    p.n_rows = ggml_nelements(x)/128;
+    p.n_rot  = mm->ne[0];
+    p.scale  = 1.0f/sqrtf((float) p.n_rot);
+    p.s_rows = 1;
+    p.pre    = FWHT_ROWS_PRE_NONE;
+
+    // a mat-vec reads mul: its q8_1 too, see mmvq_shared
+    const auto & shared = ctx.mmvq_shared;
+    const bool   q8_1   = shared.src1 && shared.data && (shared.src1 == mul || shared.src1->view_src == mul) &&
+        ggml_nelements(shared.src1) == ggml_nelements(mul) && ggml_nrows(shared.src1) == 1;
+    if (q8_1) {
+        p.dst_q8_1 = (block_q8_1 *) shared.data;
+        p.n_q8_1   = GGML_PAD(shared.src1->ne[0], MATRIX_ROW_PADDING)/QK8_1;
+    }
+
+    const dim3 block_dims(WARP_SIZE, 4, 1);
+    const dim3 blocks_num((p.n_rows + 3)/4, 1, 1);
+    const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(blocks_num, block_dims, 0, ctx.stream());
+    ggml_cuda_kernel_launch(k_fwht_rows, launch_params, p);
+    if (q8_1) {
+        *shared.quantized = true;
+    }
+    return true;
+}

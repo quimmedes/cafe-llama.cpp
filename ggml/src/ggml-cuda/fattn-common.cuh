@@ -1237,13 +1237,23 @@ static __global__ void flash_attn_stream_k_fixup_general(
     *dst = dst_val / rowsum;
 }
 
+// the gated Walsh-Hadamard transform of the combined rows of one token, see ggml_backend_cuda_context::fattn_gate; gate == nullptr: none
+struct fattn_gate_args {
+    const float * gate;
+    float       * dst;
+    block_q8_1  * q8;
+    int           n_q8;
+    int           n_rot;
+};
+
 template<int D> // D == head size
 __launch_bounds__(D, 1)
 static __global__ void flash_attn_combine_results(
         const float  * VKQ_parts_ptr,
         const float2 * VKQ_meta_ptr,
         float * dst_ptr,
-        const int parallel_blocks) {
+        const int parallel_blocks,
+        const fattn_gate_args g) {
     ggml_cuda_pdl_lc();
     const float  * GGML_CUDA_RESTRICT VKQ_parts = VKQ_parts_ptr;
     const float2 * GGML_CUDA_RESTRICT VKQ_meta  = VKQ_meta_ptr;
@@ -1292,7 +1302,47 @@ static __global__ void flash_attn_combine_results(
         VKQ_denominator += KQ_max_scale * meta[l].y;
     }
 
-    dst[tid] = VKQ_numerator / VKQ_denominator;
+    const float val = VKQ_numerator / VKQ_denominator;
+    if (!g.gate) {
+        dst[tid] = val;
+        return;
+    }
+
+    // as k_fwht_rows: the scale, the butterflies of bit 1 up to n_rot/2, then times sigmoid(gate); dst of the attention is not written
+    __shared__ float s[D];
+    s[tid] = val*(1.0f/sqrtf((float) g.n_rot));
+    __syncthreads();
+    for (int h = 1; h < g.n_rot; h *= 2) {
+        const float lo = s[tid & ~h];
+        const float hi = s[tid | h];
+        __syncthreads();
+        s[tid] = (tid & h) ? lo - hi : lo + hi;
+        __syncthreads();
+    }
+    const int   k = j_dst_unrolled*D + tid;
+    const float v = s[tid]*(1.0f/(1.0f + expf(-g.gate[k])));
+    g.dst[k] = v;
+    if (!g.q8) {
+        return;
+    }
+    // as quantize_q8_1, 32 threads a block of 32 values
+    const float  amax = warp_reduce_max<QK8_1>(fabsf(v));
+    const float  d    = amax / 127.0f;
+    const int8_t q    = amax == 0.0f ? 0 : roundf(v / d);
+    const int    sum  = warp_reduce_sum<QK8_1>((int) q);
+    block_q8_1 * y    = g.q8 + k/QK8_1;
+    y->qs[tid % QK8_1] = q;
+    if (tid % QK8_1 == 0) {
+        y->ds = make_half2(d, d * sum);
+    }
+    if (j_dst_unrolled == 0) {
+        for (int b = ne01*ne02*D/QK8_1 + tid; b < g.n_q8; b += D) {
+            g.q8[b].ds = make_half2(0.0f, 0.0f);
+            for (int j = 0; j < QK8_1/4; ++j) {
+                ((int *) g.q8[b].qs)[j] = 0;
+            }
+        }
+    }
 }
 
 template <int DV, int ncols1, int ncols2>
@@ -1636,9 +1686,17 @@ void launch_fattn(
         const dim3 blocks_num_combine(Q->ne[1], Q->ne[2], Q->ne[3]);
         const size_t nbytes_shared_combine = parallel_blocks*sizeof(float2);
 
+        // the gated transform of a fusion: one token, the rows of a head a whole number of transforms
+        auto & ep = ctx.fattn_gate;
+        fattn_gate_args g = {};
+        if (ep.gate && Q->ne[1] == 1 && Q->ne[3] == 1 && ep.n_rot >= 1 && ep.n_rot <= DV && DV % ep.n_rot == 0 && DV % QK8_1 == 0) {
+            g = { ep.gate, ep.dst, ep.q8, ep.n_q8, ep.n_rot };
+            ep.applied = true;
+        }
+
         const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(blocks_num_combine, block_dim_combine, nbytes_shared_combine, main_stream);
         ggml_cuda_kernel_launch(flash_attn_combine_results<DV>, launch_params,
-            dst_tmp.ptr, dst_tmp_meta.ptr, (float *) KQV->data, parallel_blocks);
+            dst_tmp.ptr, dst_tmp_meta.ptr, (float *) KQV->data, parallel_blocks, g);
     }
     CUDA_CHECK(cudaGetLastError());
 }

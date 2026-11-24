@@ -1662,17 +1662,19 @@ struct llm_graph_context {
             uint32_t extent,
             uint32_t extent_swa) const;
 
-    // the per-head KQ bias is gathered by distance from bias, then added to the KQ mask, after the KQ scale
+    // the per-head KQ bias is table[d] of the distance d of inp (zero past the table) minus the per-query bias_sinks,
+    // added to the KQ mask after the KQ scale
     ggml_tensor * build_attn(
             llm_graph_input_mem_hybrid_iswa_rel * inp,
             ggml_tensor * wo,
             ggml_tensor * wo_b,
             ggml_tensor * wo_s,
-            ggml_tensor * q_cur, // [n_embd_head_q, n_head_q, n_tokens]
-            ggml_tensor * k_cur, // [n_embd_head_k, n_head_k, n_tokens]
-            ggml_tensor * v_cur, // [n_embd_head_v, n_head_v, n_tokens]
-            ggml_tensor * bias,  // [n_head_q, extent + 1, n_tokens], indexed by the distances of inp
-            ggml_tensor * sinks, // [n_head_q]
+            ggml_tensor * q_cur,      // [n_embd_head_q, n_head_q, n_tokens]
+            ggml_tensor * k_cur,      // [n_embd_head_k, n_head_k, n_tokens]
+            ggml_tensor * v_cur,      // [n_embd_head_v, n_head_v, n_tokens]
+            ggml_tensor * table,      // [extent, n_head_q, n_tokens], indexed by the distances of inp
+            ggml_tensor * bias_sinks, // [n_head_q, n_tokens] or nullptr
+            ggml_tensor * sinks,      // [n_head_q]
                   float   kq_scale,
                     int   il) const;
 

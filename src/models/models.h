@@ -2547,7 +2547,8 @@ struct llama_model_inkling2 : public llama_model_base {
     llama_model_inkling2(const struct llama_model_params & params) : llama_model_base(params) {}
     void load_arch_hparams(llama_model_loader & ml) override;
     void load_arch_tensors(llama_model_loader & ml) override;
-    uint32_t graph_nodes_per_tensor() const override { return 32; }
+    // long prompts attend a few heads at a time (the relative bias), a chunk of nodes per head and visit
+    uint32_t graph_nodes_per_tensor() const override { return 64; }
 
     // the layers stored in the file
     virtual int n_layer_phys() const { return hparams.n_layer(); }
@@ -2594,6 +2595,9 @@ struct llama_model_inkling2 : public llama_model_base {
 
         ggml_tensor * inp_out_ids = nullptr;
         ggml_tensor * tau         = nullptr; // log-scaled positions
+        ggml_tensor * zero_sinks  = nullptr; // the attention sink logits, zero, see build_layer
+        // the conv states of each cache slot, gathered before the layers so the backend can do them at once
+        std::vector<ggml_tensor *> histories;
     };
 
     std::unique_ptr<llm_graph_context> build_arch_graph(const llm_graph_params & params) const override;

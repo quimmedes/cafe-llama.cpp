@@ -3716,6 +3716,46 @@ static void ggml_compute_forward_swiglu_clamp(const ggml_compute_params * params
     }
 }
 
+// ggml_compute_forward_situ
+
+static void ggml_compute_forward_situ(const ggml_compute_params * params, ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+
+    GGML_ASSERT(src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(ggml_is_contiguous_1(src0) && ggml_is_contiguous_1(dst));
+    GGML_ASSERT(src1 == nullptr || (ggml_is_contiguous_1(src1) && src1->type == GGML_TYPE_F32));
+
+    const char * src0_d = (const char *) src0->data;
+    const char * src1_d = (const char *) (src1 ? src1->data : src0->data);
+    const size_t src0_o = src0->nb[1];
+    const size_t src1_o = src1 ? src1->nb[1] : src0->nb[1];
+
+    const int nc = src1 ? src0->ne[0] : src0->ne[0] / 2;
+    const int nr = ggml_nrows(src0);
+
+    const int32_t swapped = ggml_get_op_params_i32(dst, 1);
+    const float beta = ggml_get_op_params_f32(dst, 2);
+    const float lb   = ggml_get_op_params_f32(dst, 3);
+
+    for (int i1 = params->ith; i1 < nr; i1 += params->nth) {
+        const float * g = (const float *) (src0_d + i1*src0_o);
+        const float * u = (const float *) (src1_d + i1*src1_o);
+        float       * y = (float *) ((char *) dst->data + i1*dst->nb[1]);
+
+        if (!src1) {
+            g += swapped ? nc : 0;
+            u += swapped ? 0 : nc;
+        }
+
+        for (int k = 0; k < nc; k++) {
+            const float act = tanhf(g[k]*(1.0f/beta))*beta * (1.0f/(1.0f + expf(-g[k])));
+            const float up  = lb > 0.0f ? tanhf(u[k]*(1.0f/lb))*lb : u[k];
+            y[k] = act*up;
+        }
+    }
+}
+
 // ggml_compute_forward_geglu_erf
 
 static void ggml_compute_forward_geglu_erf_f32(
@@ -4611,6 +4651,315 @@ void ggml_compute_forward_l2_norm(
             {
                 GGML_ABORT("fatal error");
             }
+    }
+}
+
+// ggml_compute_forward_l2_clip
+
+static void ggml_compute_forward_l2_clip_f32(
+    const ggml_compute_params * params,
+    ggml_tensor * dst) {
+
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+
+    GGML_ASSERT(ggml_are_same_shape(src0, dst));
+    GGML_ASSERT(src0->nb[0] == sizeof(float) && dst->nb[0] == sizeof(float));
+    GGML_ASSERT(src1 == nullptr || src1->nb[0] == sizeof(float));
+
+    const int ith = params->ith;
+    const int nth = params->nth;
+
+    GGML_TENSOR_UNARY_OP_LOCALS
+
+    const float threshold = ggml_get_op_params_f32(dst, 0);
+    const float eps       = ggml_get_op_params_f32(dst, 1);
+
+    for (int64_t i03 = 0; i03 < ne03; i03++) {
+        for (int64_t i02 = 0; i02 < ne02; i02++) {
+            for (int64_t i01 = ith; i01 < ne01; i01 += nth) {
+                const float * x = (const float *) ((const char *) src0->data + i01*nb01 + i02*nb02 + i03*nb03);
+                float       * y = (float       *) ((char       *)  dst->data + i01*nb1  + i02*nb2  + i03*nb3);
+                const float * s = src1 == nullptr ? nullptr : (const float *) ((const char *) src1->data +
+                        (i01 % src1->ne[1])*src1->nb[1] + (i02 % src1->ne[2])*src1->nb[2] + (i03 % src1->ne[3])*src1->nb[3]);
+
+                ggml_float sum = 0.0;
+                for (int64_t i00 = 0; i00 < ne00; i00++) {
+                    const float yi = s ? x[i00]*s[i00 % src1->ne[0]] : x[i00];
+                    y[i00] = yi;
+                    sum += (ggml_float)(yi*yi);
+                }
+
+                const float factor = fminf(fmaxf(threshold/(sqrtf(sum) + eps), 0.0f), 1.0f);
+                ggml_vec_scale_f32(ne00, y, factor);
+            }
+        }
+    }
+}
+
+void ggml_compute_forward_l2_clip(
+    const ggml_compute_params * params,
+    ggml_tensor * dst) {
+
+    switch (dst->src[0]->type) {
+        case GGML_TYPE_F32:
+            {
+                ggml_compute_forward_l2_clip_f32(params, dst);
+            } break;
+        default:
+            {
+                GGML_ABORT("fatal error");
+            }
+    }
+}
+
+// ggml_compute_forward_state_mix
+
+void ggml_compute_forward_state_mix(
+    const ggml_compute_params * params,
+    ggml_tensor * dst) {
+
+    const ggml_tensor * q = dst->src[0];
+
+    int n_states = 0;
+    while (n_states + 1 < GGML_MAX_SRC && dst->src[1 + n_states]) {
+        n_states++;
+    }
+
+    const int64_t n        = q->ne[0];
+    const int64_t n_q      = q->ne[1];
+    const int64_t n_tokens = dst->ne[2];
+
+    const float scale = ggml_get_op_params_f32(dst, 0);
+    const float eps   = ggml_get_op_params_f32(dst, 1);
+
+    std::vector<float> rms(n_states);
+    std::vector<float> w(n_states*n_q);
+
+    for (int64_t t = params->ith; t < n_tokens; t += params->nth) {
+        for (int j = 0; j < n_states; ++j) {
+            const ggml_tensor * s = dst->src[1 + j];
+            const float * x = (const float *) ((const char *) s->data + t*s->nb[1]);
+            ggml_float sum = 0.0;
+            for (int64_t c = 0; c < n; ++c) {
+                sum += (ggml_float)(x[c]*x[c]);
+            }
+            rms[j] = 1.0f/sqrtf(sum/n + eps);
+
+            for (int64_t i = 0; i < n_q; ++i) {
+                const float * qi = (const float *) q->data + i*n;
+                ggml_float dot = 0.0;
+                for (int64_t c = 0; c < n; ++c) {
+                    dot += (ggml_float)(x[c]*rms[j]*qi[c]);
+                }
+                w[i*n_states + j] = scale*dot;
+            }
+        }
+        for (int64_t i = 0; i < n_q; ++i) {
+            float * wi = w.data() + i*n_states;
+            float max = -INFINITY;
+            for (int j = 0; j < n_states; ++j) {
+                max = fmaxf(max, wi[j]);
+            }
+            float sum = 0.0f;
+            for (int j = 0; j < n_states; ++j) {
+                wi[j] = expf(wi[j] - max);
+                sum += wi[j];
+            }
+            for (int j = 0; j < n_states; ++j) {
+                wi[j] /= sum;
+            }
+
+            float * y = (float *) ((char *) dst->data + i*dst->nb[1] + t*dst->nb[2]);
+            for (int64_t c = 0; c < n; ++c) {
+                float acc = 0.0f;
+                for (int j = 0; j < n_states; ++j) {
+                    const ggml_tensor * s = dst->src[1 + j];
+                    acc += wi[j]*rms[j]*((const float *) ((const char *) s->data + t*s->nb[1]))[c];
+                }
+                y[c] = acc;
+            }
+        }
+    }
+}
+
+// ggml_compute_forward_loop_gate
+
+void ggml_compute_forward_loop_gate(
+    const ggml_compute_params * params,
+    ggml_tensor * dst) {
+
+    const ggml_tensor * x = dst->src[0];
+    const ggml_tensor * m = dst->src[1];
+    const ggml_tensor * g = dst->src[2];
+    const ggml_tensor * f = dst->src[3];
+
+    const int64_t nr = ggml_nrows(dst);
+    for (int64_t r = params->ith; r < nr; r += params->nth) {
+        const int64_t i3 = r/(dst->ne[2]*dst->ne[1]);
+        const int64_t i2 = (r - i3*dst->ne[2]*dst->ne[1])/dst->ne[1];
+        const int64_t i1 = r - i3*dst->ne[2]*dst->ne[1] - i2*dst->ne[1];
+
+        auto row = [&](const ggml_tensor * t) {
+            return (const float *) ((const char *) t->data + i1*t->nb[1] + i2*t->nb[2] + i3*t->nb[3]);
+        };
+        const float * xr = row(x);
+        const float * mr = row(m);
+        const float * gr = row(g);
+        const float * fr = row(f);
+        float * y = (float *) ((char *) dst->data + i1*dst->nb[1] + i2*dst->nb[2] + i3*dst->nb[3]);
+
+        for (int64_t c = 0; c < dst->ne[0]; ++c) {
+            y[c] = (xr[c] - tanhf(fr[c])*xr[c]) + tanhf(gr[c])*mr[c];
+        }
+    }
+}
+
+// ggml_compute_forward_loop_control
+
+void ggml_compute_forward_loop_control(
+    const ggml_compute_params * params,
+    ggml_tensor * dst) {
+
+    const ggml_tensor * x  = dst->src[0];
+    const ggml_tensor * m  = dst->src[1];
+    const ggml_tensor * wd = dst->src[2];
+    const ggml_tensor * wg = dst->src[3];
+    const ggml_tensor * wf = dst->src[4];
+
+    const int64_t n        = dst->ne[0];
+    const int64_t n_tokens = dst->ne[1];
+    const int64_t r        = wd->ne[1];
+    const float   eps      = ggml_get_op_params_f32(dst, 0);
+
+    float * z = (float *) params->wdata;
+
+    // z of each (token, rank) pair
+    for (int64_t i = params->ith; i < n_tokens*r; i += params->nth) {
+        const int64_t t = i / r;
+        const int64_t k = i % r;
+        const float * xr = (const float *) ((const char *) x->data + t*x->nb[1]);
+        const float * mr = (const float *) ((const char *) m->data + t*m->nb[1]);
+        const float * w  = (const float *) wd->data + k*2*n;
+
+        double ssx = 0.0, ssm = 0.0, dx = 0.0, dm = 0.0;
+        for (int64_t c = 0; c < n; ++c) {
+            ssx += (double) xr[c]*xr[c];
+            ssm += (double) mr[c]*mr[c];
+            dx  += (double) w[c]*xr[c];
+            dm  += (double) w[n + c]*mr[c];
+        }
+        z[i] = (float) (dx/sqrt(ssx/n + eps) + dm/sqrt(ssm/n + eps));
+    }
+
+    ggml_barrier(params->threadpool);
+
+    for (int64_t i = params->ith; i < n_tokens*n; i += params->nth) {
+        const int64_t t = i / n;
+        const int64_t c = i % n;
+        const float * zt = z + t*r;
+        const float * g  = (const float *) wg->data + c*r;
+        const float * f  = (const float *) wf->data + c*r;
+
+        float gs = 0.0f, fs = 0.0f;
+        for (int64_t k = 0; k < r; ++k) {
+            gs += g[k]*zt[k];
+            fs += f[k]*zt[k];
+        }
+        const float xc = ((const float *) ((const char *) x->data + t*x->nb[1]))[c];
+        const float mc = ((const float *) ((const char *) m->data + t*m->nb[1]))[c];
+        ((float *) ((char *) dst->data + t*dst->nb[1]))[c] = (xc - tanhf(fs)*xc) + tanhf(gs)*mc;
+    }
+}
+
+// ggml_compute_forward_rel_mask
+
+void ggml_compute_forward_rel_mask(
+    const ggml_compute_params * params,
+    ggml_tensor * dst) {
+
+    const ggml_tensor * table = dst->src[0];
+    const ggml_tensor * dist  = dst->src[1];
+    const ggml_tensor * sinks = dst->src[2];
+    const ggml_tensor * mask  = dst->src[3];
+
+    const int64_t n_kv     = dst->ne[0];
+    const int64_t n_rows   = dst->ne[1];
+    const int64_t nh       = dst->ne[2];
+    const int64_t n_tokens = n_rows*dst->ne[3];
+    const int64_t n_extent = table->ne[0];
+    const int     h0       = ggml_get_op_params_i32(dst, 0);
+    const bool    f16      = dst->type == GGML_TYPE_F16;
+
+    for (int64_t r = params->ith; r < n_tokens*nh; r += params->nth) {
+        const int64_t t   = r % n_tokens;
+        const int64_t h   = r / n_tokens;
+        const int64_t row = t % n_rows;
+        const int64_t s   = t / n_rows;
+
+        const float   * tab = (const float   *) ((const char *) table->data + (h0 + h)*table->nb[1] + t*table->nb[2]);
+        const int32_t * d   = (const int32_t *) ((const char *) dist->data + t*dist->nb[1]);
+        const char    * m   = (const char    *) mask->data + row*mask->nb[1] + s*mask->nb[3];
+        char          * y   = (char          *) dst->data + row*dst->nb[1] + h*dst->nb[2] + s*dst->nb[3];
+
+        const float sink = sinks ? *(const float *) ((const char *) sinks->data + (h0 + h)*sizeof(float) + t*sinks->nb[1]) : 0.0f;
+
+        for (int64_t kv = 0; kv < n_kv; ++kv) {
+            const int32_t di = d[kv];
+            const float   b  = (di >= 0 && di < n_extent ? tab[di] : 0.0f) - sink;
+            if (f16) {
+                ((ggml_fp16_t *) y)[kv] = GGML_CPU_FP32_TO_FP16(GGML_CPU_FP16_TO_FP32(((const ggml_fp16_t *) m)[kv]) + b);
+            } else {
+                ((float *) y)[kv] = ((const float *) m)[kv] + b;
+            }
+        }
+    }
+}
+
+// ggml_compute_forward_short_conv
+
+void ggml_compute_forward_short_conv(
+    const ggml_compute_params * params,
+    ggml_tensor * dst) {
+
+    const ggml_tensor * past = dst->src[0];
+    const ggml_tensor * c    = dst->src[1];
+    const ggml_tensor * d    = dst->src[2];
+    const ggml_tensor * cur  = dst->src[3];
+
+    const int64_t n_conv  = c->ne[0];
+    const int64_t n_c     = dst->ne[0];
+    const int64_t n_t     = dst->ne[1];
+    const int64_t n_s     = dst->ne[2];
+    const int64_t n_heads = d ? d->ne[0]/n_conv : 1;
+    const int64_t head_c  = n_c/n_heads;
+
+    const float scale = ggml_get_op_params_f32(dst, 0);
+
+    for (int64_t ch = params->ith; ch < n_c; ch += params->nth) {
+        const float * w = (const float *) c->data + ch*n_conv;
+        for (int64_t s = 0; s < n_s; ++s) {
+            // column col of [past | cur]
+            auto x = [&](int64_t col) {
+                return col < n_conv - 1 ?
+                    *(const float *) ((const char *) past->data + col*past->nb[0] + ch*past->nb[1] + s*past->nb[2]) :
+                    *(const float *) ((const char *) cur->data + (col - n_conv + 1)*cur->nb[0] + ch*cur->nb[1] + s*cur->nb[2]);
+            };
+            for (int64_t t = 0; t < n_t; ++t) {
+                float out = 0.0f;
+                for (int64_t j = 0; j < n_conv; ++j) {
+                    out += x(t + j)*w[j];
+                }
+                if (d) {
+                    const float * tap = (const float *) ((const char *) d->data + (s*n_t + t)*d->nb[1]) + (ch/head_c)*n_conv;
+                    for (int64_t lag = 0; lag < n_conv; ++lag) {
+                        out += x(t + n_conv - 1 - lag)*tap[lag];
+                    }
+                }
+                float * y = (float *) ((char *) dst->data + t*dst->nb[1] + s*dst->nb[2]);
+                y[ch] = (x(t + n_conv - 1) + out)*scale;
+            }
+        }
     }
 }
 
@@ -10536,6 +10885,10 @@ void ggml_compute_forward_glu(
         case GGML_GLU_OP_SWIGLU_CLAMP:
             {
                 ggml_compute_forward_swiglu_clamp(params, dst);
+            } break;
+        case GGML_GLU_OP_SITU:
+            {
+                ggml_compute_forward_situ(params, dst);
             } break;
         default:
             {

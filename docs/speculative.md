@@ -242,6 +242,11 @@ DSpark drafts exported in the [speculators](https://github.com/vllm-project/spec
 (for example [`RedHatAI/gemma-4-31B-it-speculator.dspark`](https://huggingface.co/RedHatAI/gemma-4-31B-it-speculator.dspark))
 convert the same way.
 
+An Inkling2 target uses a draft with the `inkling2` architecture (`dspark-Inkling-2-Mini`). Put it on
+the GPU with `-ngld` (the draft runs on the CPU otherwise). Its acceptance falls along the block, so
+the depth adapts: it grows after a block fully accepts and shrinks when less than half of it does,
+with `--spec-draft-n-max` as the upper bound.
+
 See:
 
 - #25173

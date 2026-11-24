@@ -12,4 +12,12 @@ void get_rows_cuda(
 
 void ggml_cuda_op_get_rows(ggml_backend_cuda_context & ctx, ggml_tensor * dst);
 
+#define GGML_CUDA_GET_ROWS_MULTI_MAX 64
+
+// true if dst is a GET_ROWS of a few F32 rows that ggml_cuda_op_get_rows_multi can do
+bool ggml_cuda_get_rows_multi_ok(const ggml_tensor * dst);
+
+// independent GET_ROWS (see ggml_cuda_get_rows_multi_ok) as one launch
+void ggml_cuda_op_get_rows_multi(ggml_backend_cuda_context & ctx, ggml_tensor * const * dsts, int n);
+
 void ggml_cuda_op_get_rows_back(ggml_backend_cuda_context & ctx, ggml_tensor * dst);

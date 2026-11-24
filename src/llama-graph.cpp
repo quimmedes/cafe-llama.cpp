@@ -27,6 +27,7 @@
 #include <sstream>
 #include <string>
 #include <unordered_set>
+#include <functional>
 
 // dedup helpers
 
@@ -2689,15 +2690,7 @@ ggml_tensor * llm_graph_context::build_moe_ffn(
                 {
                     // situ(gate, up) = beta*tanh(gate/beta)*sigmoid(gate) * lb*tanh(up/lb)
                     GGML_ASSERT(has_gate);
-                    const float beta = hparams.situ_beta;
-                    const float lb   = hparams.situ_linear_beta;
-
-                    ggml_tensor * act = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, cur, 1.0f/beta)), beta);
-                    act = ggml_mul(ctx0, act, ggml_sigmoid(ctx0, cur));
-                    if (lb > 0.0f) {
-                        up = ggml_scale(ctx0, ggml_tanh(ctx0, ggml_scale(ctx0, up, 1.0f/lb)), lb);
-                    }
-                    cur = ggml_mul(ctx0, act, up);
+                    cur = ggml_situ_split(ctx0, cur, up, hparams.situ_beta, hparams.situ_linear_beta);
                     cb(cur, "ffn_moe_situ", il);
                 } break;
             case LLM_FFN_GELU:
@@ -3766,6 +3759,7 @@ ggml_tensor * llm_graph_context::build_attn(
 }
 
 // the iswa build_attn with the KQ mask and kv_rows given by the caller, which has to keep them in sync
+// with mask_heads, the mask has a head dimension and is built per chunk of n_head_chunk Q heads, which attend over their own K/V heads
 static ggml_tensor * build_attn_iswa_impl(
         const llm_graph_context & gctx,
         llm_graph_input_attn_kv_iswa * inp,
@@ -3781,7 +3775,9 @@ static ggml_tensor * build_attn_iswa_impl(
         ggml_tensor * sinks,
         ggml_tensor * v_mla,
             float     kq_scale,
-            int       il) {
+            int       il,
+        const std::function<ggml_tensor * (int64_t h0, int64_t nh)> & mask_heads = nullptr,
+            int64_t   n_head_chunk = 0) {
     ggml_context * ctx0 = gctx.ctx0;
     ggml_cgraph  * gf   = gctx.gf;
 
@@ -3810,18 +3806,6 @@ static ggml_tensor * build_attn_iswa_impl(
 
     build_attn_scale_kv_inputs(ctx0, mctx_cur, q_cur, k_cur, v_cur, il);
 
-    // these nodes are added to the graph together so that they are not reordered
-    // by doing so, the number of splits in the graph is reduced
-    ggml_build_forward_expand(gf, q_cur);
-
-    if (k_cur) {
-        ggml_build_forward_expand(gf, k_cur);
-    }
-
-    if (v_cur) {
-        ggml_build_forward_expand(gf, v_cur);
-    }
-
     // whole seq fits into batch in training mode
     const bool use_kv_cur = cparams.training && k_cur && v_cur;
     if (use_kv_cur) {
@@ -3830,24 +3814,54 @@ static ggml_tensor * build_attn_iswa_impl(
 
     const bool store_kv = !use_kv_cur || hparams.n_layer_kv_from_start >= 0;
 
-    // optionally store to KV cache
-    if (store_kv && k_cur) {
-        const auto & k_idxs = is_swa ? inp->get_k_idxs_swa() : inp->get_k_idxs();
+    // these nodes are added to the graph together so that they are not reordered
+    // by doing so, the number of splits in the graph is reduced
+    // the store of K (V) follows K (V), so that a backend can fuse the last ops of K (V) with the store
+    ggml_build_forward_expand(gf, q_cur);
 
-        ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs, il));
+    if (k_cur) {
+        ggml_build_forward_expand(gf, k_cur);
+        if (store_kv) {
+            const auto & k_idxs = is_swa ? inp->get_k_idxs_swa() : inp->get_k_idxs();
+            ggml_build_forward_expand(gf, mctx_cur->cpy_k(ctx0, k_cur, k_idxs, il));
+        }
     }
 
-    if (store_kv && v_cur) {
-        const auto & v_idxs = is_swa ? inp->get_v_idxs_swa() : inp->get_v_idxs();
-
-        ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs, il));
+    if (v_cur) {
+        ggml_build_forward_expand(gf, v_cur);
+        if (store_kv) {
+            const auto & v_idxs = is_swa ? inp->get_v_idxs_swa() : inp->get_v_idxs();
+            ggml_build_forward_expand(gf, mctx_cur->cpy_v(ctx0, v_cur, v_idxs, il));
+        }
     }
 
     ggml_tensor * q = q_cur;
     ggml_tensor * k = use_kv_cur ? k_cur : mctx_cur->get_k(ctx0, il);
     ggml_tensor * v = use_kv_cur ? v_cur : mctx_cur->get_v(ctx0, il);
 
-    ggml_tensor * cur = gctx.build_attn_mha(q, k, v, kq_b, kq_mask, kv_rows, sinks, v_mla, 0, kq_scale, il);
+    ggml_tensor * cur = nullptr;
+    if (mask_heads && n_head_chunk >= q->ne[1]) {
+        cur = gctx.build_attn_mha(q, k, v, kq_b, mask_heads(0, q->ne[1]), kv_rows, sinks, v_mla, 0, kq_scale, il);
+    } else if (mask_heads) {
+        const int64_t n_head = q->ne[1];
+        const int64_t gqa    = n_head/k->ne[1];
+        GGML_ASSERT(n_head_chunk % gqa == 0);
+        for (int64_t h0 = 0; h0 < n_head; h0 += n_head_chunk) {
+            const int64_t nh = std::min(n_head_chunk, n_head - h0);
+
+            ggml_tensor * qh = ggml_view_3d(ctx0, q, q->ne[0], nh, q->ne[2], q->nb[1], q->nb[2], h0*q->nb[1]);
+            ggml_tensor * kh = ggml_view_4d(ctx0, k, k->ne[0], nh/gqa, k->ne[2], k->ne[3], k->nb[1], k->nb[2], k->nb[3], (h0/gqa)*k->nb[1]);
+            ggml_tensor * vh = ggml_view_4d(ctx0, v, v->ne[0], nh/gqa, v->ne[2], v->ne[3], v->nb[1], v->nb[2], v->nb[3], (h0/gqa)*v->nb[1]);
+            ggml_tensor * sh = sinks ? ggml_view_1d(ctx0, sinks, nh, h0*sinks->nb[0]) : nullptr;
+
+            ggml_tensor * oh = gctx.build_attn_mha(qh, kh, vh, kq_b, mask_heads(h0, nh), kv_rows, sh, v_mla, 0, kq_scale, il);
+            cur = cur ? ggml_concat(ctx0, cur, oh, 0) : oh;
+            // in order, so that the mask of a chunk is freed before the next one is built
+            ggml_build_forward_expand(gf, cur);
+        }
+    } else {
+        cur = gctx.build_attn_mha(q, k, v, kq_b, kq_mask, kv_rows, sinks, v_mla, 0, kq_scale, il);
+    }
     cur = build_attn_scale_kv_output(ctx0, mctx_cur, cur, il);
     gctx.cb(cur, "kqv_out", il);
 
@@ -4542,7 +4556,8 @@ ggml_tensor * llm_graph_context::build_attn(
         ggml_tensor * q_cur,
         ggml_tensor * k_cur,
         ggml_tensor * v_cur,
-        ggml_tensor * bias,
+        ggml_tensor * table,
+        ggml_tensor * bias_sinks,
         ggml_tensor * sinks,
             float     kq_scale,
             int       il) const {
@@ -4558,42 +4573,35 @@ ggml_tensor * llm_graph_context::build_attn(
     GGML_ASSERT(attn_mask.rows == nullptr);
 
     // a mask per head, in the dense layout of the input mask, which flash attention takes in F16
-    ggml_tensor * raw = attn_mask.raw;
-    if (raw->type != GGML_TYPE_F32) {
-        raw = ggml_cast(ctx0, raw, GGML_TYPE_F32);
-    }
     const ggml_type type = cparams.flash_attn ? GGML_TYPE_F16 : GGML_TYPE_F32;
+    ggml_tensor * raw = attn_mask.raw;
+    if (raw->type != type) {
+        raw = ggml_cast(ctx0, raw, type);
+    }
 
-    const int64_t n_head   = bias->ne[0];
+    const int64_t n_head   = table->ne[1];
+    const int64_t gqa      = n_head/hparams.n_head_kv(il);
     const int64_t n_kv     = rel_pos->ne[0];
     const int64_t n_rows   = raw->ne[1];
     const int64_t n_stream = raw->ne[3];
 
-    // the heads are stacked as rows (row h*n_rows + t), each chunk of heads overwrites its rows
-    ggml_tensor * kq_mask = ggml_repeat_4d(ctx0, ggml_cast(ctx0, raw, type), n_kv, n_rows, n_head, n_stream);
-    kq_mask = ggml_reshape_4d(ctx0, kq_mask, n_kv, n_rows*n_head, 1, n_stream);
+    auto mask_heads = [&](int64_t h0, int64_t nh) {
+        ggml_tensor * b = ggml_rel_mask(ctx0, table, rel_pos, bias_sinks, raw, h0, nh);
+        cb(b, "kq_mask_rel_pos", il);
+        return b;
+    };
 
-    // gather the bias a few heads at a time, so that only one chunk of it is alive in F32
-    const int64_t head_bytes = n_kv*n_tokens*(int64_t) sizeof(float);
-    const int64_t n_chunk    = std::clamp<int64_t>((int64_t(256) << 20)/std::max<int64_t>(head_bytes, 1), 1, n_head);
-    for (int64_t h0 = 0; h0 < n_head; h0 += n_chunk) {
-        const int64_t nh = std::min(n_chunk, n_head - h0);
-
-        ggml_tensor * b = ggml_view_3d(ctx0, bias, nh, bias->ne[1], bias->ne[2], bias->nb[1], bias->nb[2], h0*bias->nb[0]);
-        b = ggml_get_rows(ctx0, b, rel_pos);
-        b = ggml_reshape_4d(ctx0, b, nh, n_kv, n_rows, n_stream);
-        b = ggml_add(ctx0, ggml_cont(ctx0, ggml_permute(ctx0, b, 2, 0, 1, 3)), raw);
-        b = ggml_reshape_4d(ctx0, b, n_kv, n_rows*nh, 1, n_stream);
-
-        ggml_tensor * rows = ggml_cast(ctx0, ggml_arange(ctx0, h0*n_rows, (h0 + nh)*n_rows, 1), GGML_TYPE_I32);
-        kq_mask = ggml_set_rows(ctx0, kq_mask, b, rows);
-        // in order, else the graph computes every chunk before the first write
-        ggml_build_forward_expand(gf, kq_mask);
+    // a long prompt attends a few K/V heads at a time, so that only their mask is alive
+    // smaller chunks than one K/V head leave too few query tiles to fill the GPU
+    const int64_t head_bytes = n_kv*n_rows*n_stream*(int64_t) ggml_type_size(type);
+    int64_t n_head_chunk = n_head;
+    if (cparams.flash_attn) {
+        n_head_chunk = std::clamp<int64_t>((int64_t(512) << 20)/std::max<int64_t>(head_bytes, 1), gqa, n_head);
+        n_head_chunk -= n_head_chunk % gqa;
     }
-    kq_mask = ggml_reshape_4d(ctx0, kq_mask, n_kv, n_rows, n_head, n_stream);
-    cb(kq_mask, "kq_mask_rel_pos", il);
 
-    return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur, nullptr, kq_mask, nullptr, sinks, nullptr, kq_scale, il);
+    return build_attn_iswa_impl(*this, inp_attn, wo, wo_b, wo_s, q_cur, k_cur, v_cur, nullptr, nullptr, nullptr, sinks, nullptr, kq_scale, il,
+            mask_heads, n_head_chunk);
 }
 
 void llm_graph_context::build_dense_out(

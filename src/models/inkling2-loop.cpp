@@ -154,6 +154,27 @@ llama_model_inkling2_loop::graph::graph(const llm_graph_params & params) : llama
             cur = prelude;
             blocks = prelude_blocks;
         }
+        // the messages of all core layers of the pass first, next to each other, so that a backend can make them in one launch
+        std::vector<ggml_tensor *> messages(end - start, nullptr);
+        if (pass > 0) {
+            for (ggml_tensor * q : msg_query) {
+                ggml_build_forward_expand(gf, q);
+            }
+            for (int ip = start; ip < end; ++ip) {
+                messages[ip - start] = mix(bank, bank_out, msg_query[ip - start]);
+                ggml_build_forward_expand(gf, messages[ip - start]);
+            }
+            // one token: the bank and the queries stay alive past the messages, so that no message takes the memory of an input of another one
+            if (n_tokens == 1) {
+                for (ggml_tensor * t : bank) {
+                    ggml_build_forward_expand(gf, ggml_view_1d(ctx0, t, 1, 0));
+                }
+                ggml_build_forward_expand(gf, ggml_view_1d(ctx0, bank_out, 1, 0));
+                for (ggml_tensor * q : msg_query) {
+                    ggml_build_forward_expand(gf, ggml_view_1d(ctx0, q, 1, 0));
+                }
+            }
+        }
         for (int ip = start; ip < end; ++ip) {
             const int il = pass == 0 ? ip : m.n_phys + (pass - 1)*(end - start) + (ip - start);
             res->t_layer_inp[visit++] = cur;
@@ -162,7 +183,7 @@ llama_model_inkling2_loop::graph::graph(const llm_graph_params & params) : llama
                 continue;
             }
             const auto & loop = m.loop_layers[ip - start];
-            cur = build_layer(il, ip, cur, blocks, mix(bank, bank_out, msg_query[ip - start]), &loop);
+            cur = build_layer(il, ip, cur, blocks, messages[ip - start], &loop);
         }
     }
 

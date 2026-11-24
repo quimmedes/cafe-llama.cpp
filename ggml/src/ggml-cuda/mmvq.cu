@@ -124,7 +124,7 @@ static constexpr __device__ mmvq_parameter_table_id get_device_table_id() {
     return MMVQ_PARAMETERS_TURING;
 #elif defined(__CUDA_ARCH__) && __CUDA_ARCH__ == GGML_CUDA_CC_GB10
     return MMVQ_PARAMETERS_GB10;
-#elif __CUDA_ARCH__ == GGML_CUDA_CC_ORIN
+#elif __CUDA_ARCH__ == GGML_CUDA_CC_ORIN || __CUDA_ARCH__ == 860 // (860: GeForce RTX 30, the same rows as Orin are faster there too)
     return MMVQ_PARAMETERS_ORIN;
 #else
     return MMVQ_PARAMETERS_GENERIC;
@@ -153,7 +153,7 @@ static __host__ mmvq_parameter_table_id get_device_table_id(int cc) {
     if (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_GB10) {
         return MMVQ_PARAMETERS_GB10;
     }
-    if (GGML_CUDA_CC_IS_NVIDIA(cc) && ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_ORIN) {
+    if (GGML_CUDA_CC_IS_NVIDIA(cc) && (ggml_cuda_highest_compiled_arch(cc) == GGML_CUDA_CC_ORIN || ggml_cuda_highest_compiled_arch(cc) == 860)) {
         return MMVQ_PARAMETERS_ORIN;
     }
     return MMVQ_PARAMETERS_GENERIC;
@@ -751,11 +751,25 @@ static __global__ void mul_mat_vec_q(
     constexpr int blocks_per_iter = vdr * nwarps*warp_size / qi;
 
     const bool shared_expert = has_fusion && fusion.shared_up && blockIdx.y == gridDim.y - 1;
-    const uint32_t channel_dst = shared_expert ? 0 : blockIdx.y;
+    const bool multi = has_fusion && fusion.n_multi && blockIdx.y > 0;
+    const uint32_t channel_dst = shared_expert || multi ? 0 : blockIdx.y;
     if (shared_expert) {
         vx = fusion.shared_up;
         dst = fusion.shared_dst;
         stride_col_dst = fusion.shared_stride_col_dst;
+    }
+    // the rows of this block's matrix, the grid covers the largest one
+    uint32_t row_bound = stride_col_dst;
+    if (multi) {
+        vx        = fusion.multi_x[blockIdx.y - 1];
+        dst       = fusion.multi_dst[blockIdx.y - 1];
+        row_bound = fusion.multi_nrows[blockIdx.y - 1];
+        if (fusion.multi_y[blockIdx.y - 1]) {
+            vy = fusion.multi_y[blockIdx.y - 1];
+        }
+    }
+    if (has_fusion && fusion.n_multi && uint32_t(row0) >= row_bound) {
+        return;
     }
 
     uint32_t channel_x;
@@ -804,18 +818,33 @@ static __global__ void mul_mat_vec_q(
     [[maybe_unused]] float gate_biases[ncols_dst] = { 0.0f };
     [[maybe_unused]] float x_scales = 1.0f;
     [[maybe_unused]] float gate_scales = 1.0f;
+    [[maybe_unused]] float conv_x[3] = { 0.0f, 0.0f, 0.0f };
+    [[maybe_unused]] float conv_w[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+    [[maybe_unused]] float conv_r    = 0.0f;
     if constexpr (has_fusion) {
         // 1. Hide latency by prefetching bias, gates and scales here
         // 2. load only on threads that won't die after partial sum calculation
         const uint32_t channel_bias = ids ? channel_x : channel_dst;
         if (threadIdx.x < rows_per_cuda_block && threadIdx.y == 0 &&
-            (rows_per_cuda_block == 1 || uint32_t(row0 + threadIdx.x) < stride_col_dst)) {
+            (rows_per_cuda_block == 1 || uint32_t(row0 + threadIdx.x) < row_bound)) {
             if (use_bias) {
                 x_bias = x_bias + sample_dst * stride_sample_dst + channel_bias * stride_channel_dst + row0;
 #pragma unroll
                 for (int j = 0; j < ncols_dst; ++j) {
                     x_biases[j] = x_bias[j * stride_col_dst + threadIdx.x];
                 }
+            }
+            if (fusion.conv_c) {
+                const int r = row0 + threadIdx.x;
+#pragma unroll
+                for (int k = 0; k < 3; ++k) {
+                    conv_x[k] = fusion.conv_past[r*fusion.conv_p1 + k*fusion.conv_p0];
+                }
+#pragma unroll
+                for (int k = 0; k < 4; ++k) {
+                    conv_w[k] = fusion.conv_c[4*r + k];
+                }
+                conv_r = fusion.conv_res[r];
             }
             if (use_gate_bias) {
                 gate_bias = gate_bias + sample_dst * stride_sample_dst + channel_bias * stride_channel_dst + row0;
@@ -1001,7 +1030,7 @@ static __global__ void mul_mat_vec_q(
                 }
             }
 
-            if (threadIdx.x == i && (rows_per_cuda_block == 1 || uint32_t(row0 + i) < stride_col_dst)) {
+            if (threadIdx.x == i && (rows_per_cuda_block == 1 || uint32_t(row0 + i) < row_bound)) {
                 float result = tmp[j][i];
                 if constexpr (has_fusion) {
                     if constexpr (type == GGML_TYPE_NVFP4) {
@@ -1031,6 +1060,25 @@ static __global__ void mul_mat_vec_q(
                                 result = result * gate_value;
                                 break;
                         }
+                    }
+                }
+                if constexpr (has_fusion) {
+                    if (fusion.conv_c) {
+                        // the operands of row row0 + i were loaded by this thread (threadIdx.x == i) up front
+                        const int r = row0 + i;
+                        const float x[4] = { conv_x[0], conv_x[1], conv_x[2], result };
+                        float out = 0.0f;
+#pragma unroll
+                        for (int k = 0; k < 4; ++k) {
+                            out += x[k]*conv_w[k];
+                        }
+                        const float y = (x[3] + out)*fusion.conv_scale;
+#pragma unroll
+                        for (int k = 0; k < 3; ++k) {
+                            fusion.conv_tail[3*r + k] = x[1 + k];
+                        }
+                        fusion.conv_out[r] = conv_r + y;
+                        continue;
                     }
                 }
                 dst[j*stride_col_dst + i] = result;
@@ -1227,7 +1275,7 @@ static void mul_mat_vec_q_switch_fusion(
         const uint32_t ids_stride, cudaStream_t stream) {
 
     const bool has_fusion = fusion.gate != nullptr || fusion.x_bias != nullptr || fusion.gate_bias != nullptr ||
-                            fusion.x_scale != nullptr || fusion.gate_scale != nullptr;
+                            fusion.x_scale != nullptr || fusion.gate_scale != nullptr || fusion.n_multi != 0 || fusion.conv_c != nullptr;
     if constexpr (c_ncols_dst == 1) {
         if (has_fusion) {
             const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, nbytes_shared, stream);
@@ -1411,7 +1459,7 @@ static void mul_mat_vec_q_switch_ncols_dst(
 
                 constexpr bool c_halve_iters = decltype(halve_iters_tag)::value && c_promoted;
 
-                const std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst + (fusion.shared_up != nullptr),
+                const std::pair<dim3, dim3> dims = calc_launch_params<type>(c_ncols_dst, nrows_x, nchannels_dst + (fusion.shared_up != nullptr) + fusion.n_multi,
                                                                               nsamples_dst, warp_size, table_id, c_small_k, c_halve_iters);
                 mul_mat_vec_q_switch_fusion<type, c_ncols_dst, c_small_k, c_halve_iters>(
                     vx, vy, ids, fusion, dst, ncols_x, nchannels_y_fd, stride_row_x, stride_col_y, stride_col_dst,
@@ -1686,6 +1734,7 @@ void ggml_cuda_mul_mat_vec_q(
 
     ggml_cuda_mm_fusion_args_device fusion_local{};
 
+    std::vector<std::unique_ptr<ggml_cuda_pool_alloc<char>>> multi_q8; // the q8_1 of other src1 of a multi mat-vec
     if (fusion) {
         const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
         GGML_ASSERT( !ids || dst->ne[2] <= get_mmvq_mmid_max_batch(src0->type, cc));
@@ -1741,6 +1790,55 @@ void ggml_cuda_mul_mat_vec_q(
         }
         fusion_local.glu_op = fusion->glu_op;
         fusion_local.glu_limit = fusion->glu_limit;
+
+        if (fusion->n_multi) {
+            GGML_ASSERT(!ids && ne11 == 1 && ne12 == 1 && ne13 == 1 && ne02 == 1 && ne03 == 1 && ggml_is_contiguous(dst));
+            GGML_ASSERT(!fusion->shared_up && !fusion->gate && !fusion->x_bias && !fusion->x_scale);
+            GGML_ASSERT(fusion->n_multi <= GGML_CUDA_MMVQ_MULTI_MAX);
+            for (int m = 0; m < fusion->n_multi; ++m) {
+                const ggml_tensor * x = fusion->multi_src0[m];
+                const ggml_tensor * d = fusion->multi_dst[m];
+                GGML_ASSERT(x->type == src0->type && x->ne[0] == ne00 && x->nb[1] == nb01 && ggml_is_matrix(x));
+                GGML_ASSERT(d->type == GGML_TYPE_F32 && ggml_is_contiguous(d) && d->ne[0] == x->ne[1] && ggml_nrows(d) == 1);
+                fusion_local.multi_x[m]     = x->data;
+                fusion_local.multi_dst[m]   = (float *) d->data;
+                fusion_local.multi_nrows[m] = x->ne[1];
+
+                // another src1: its q8_1 from its producer, else quantized here
+                const ggml_tensor * y = fusion->multi_src1[m];
+                if (y && y != src1) {
+                    GGML_ASSERT(y->type == GGML_TYPE_F32 && ggml_is_contiguous(y) && y->ne[0] == ne10 && ggml_nrows(y) == 1);
+                    const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
+                    auto q8 = ctx.mmvq_q8_of ? ctx.mmvq_q8_of(y) : ggml_backend_cuda_context::mmvq_shared_q8_1{};
+                    if (!q8.data || q8.src1 != y) {
+                        multi_q8.push_back(std::make_unique<ggml_cuda_pool_alloc<char>>(ctx.pool(), ne10_padded*sizeof(block_q8_1)/QK8_1));
+                        q8 = { y, multi_q8.back()->get(), nullptr };
+                    }
+                    if (!q8.quantized || !*q8.quantized) {
+                        quantize_row_q8_1_cuda((const float *) y->data, q8.data, ne10, ne10, ne10, ne10, ne10_padded, 1, 1, 1, stream);
+                        if (q8.quantized) {
+                            *q8.quantized = true;
+                        }
+                    }
+                    fusion_local.multi_y[m] = q8.data;
+                }
+            }
+            fusion_local.n_multi = fusion->n_multi;
+        }
+
+        if (fusion->conv) {
+            const ggml_tensor * past = fusion->conv->src[0];
+            GGML_ASSERT(!ids && ne11 == 1 && ne12 == 1 && ne13 == 1 && ne02 == 1 && ne03 == 1 && !fusion->n_multi && !fusion->gate && !fusion->x_bias);
+            GGML_ASSERT(fusion->conv->src[1]->ne[0] == 4 && ggml_is_contiguous(fusion->conv->src[1]) && past->ne[0] == 3 && !fusion->conv->src[2]);
+            fusion_local.conv_past  = (const float *) past->data;
+            fusion_local.conv_p0    = past->nb[0]/sizeof(float);
+            fusion_local.conv_p1    = past->nb[1]/sizeof(float);
+            fusion_local.conv_c     = (const float *) fusion->conv->src[1]->data;
+            fusion_local.conv_tail  = (float *) fusion->conv_tail->data;
+            fusion_local.conv_res   = (const float *) fusion->conv_res->data;
+            fusion_local.conv_out   = (float *) fusion->conv_out->data;
+            fusion_local.conv_scale = ggml_get_op_params_f32(fusion->conv, 0);
+        }
     }
 
     // If src0 is a temporary compute buffer, clear any potential padding.
@@ -1755,12 +1853,21 @@ void ggml_cuda_mul_mat_vec_q(
     }
 
     const int64_t ne10_padded = GGML_PAD(ne10, MATRIX_ROW_PADDING);
-    ggml_cuda_pool_alloc<char> src1_q8_1(ctx.pool(), ne13*ne12 * ne11*ne10_padded * sizeof(block_q8_1)/QK8_1);
-    {
+
+    // a src1 that the graph evaluation quantized for several mat-vecs already
+    const auto & shared = ctx.mmvq_shared;
+    const bool use_shared = shared.src1 == src1 && shared.data;
+
+    ggml_cuda_pool_alloc<char> src1_q8_1_alloc(ctx.pool());
+    char * src1_q8_1 = use_shared ? shared.data : src1_q8_1_alloc.alloc(ne13*ne12 * ne11*ne10_padded * sizeof(block_q8_1)/QK8_1);
+    if (!use_shared || !*shared.quantized) {
         const int64_t s11 = src1->nb[1] / ts_src1;
         const int64_t s12 = src1->nb[2] / ts_src1;
         const int64_t s13 = src1->nb[3] / ts_src1;
-        quantize_row_q8_1_cuda(src1_d, src1_q8_1.get(), ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
+        quantize_row_q8_1_cuda(src1_d, src1_q8_1, ne10, s11, s12, s13, ne10_padded, ne11, ne12, ne13, stream);
+        if (use_shared) {
+            *shared.quantized = true;
+        }
     }
 
     const int64_t s01 = src0->nb[1] / ts_src0;
@@ -1785,9 +1892,15 @@ void ggml_cuda_mul_mat_vec_q(
 
     const int64_t ids_stride = ids ? ids->nb[1] / ggml_type_size(ids->type) : 0;
 
+    // the grid covers the largest matrix of a multi mat-vec
+    int64_t nrows_x = ne01;
+    for (int m = 0; fusion && m < fusion->n_multi; ++m) {
+        nrows_x = std::max(nrows_x, fusion->multi_src0[m]->ne[1]);
+    }
+
     mul_mat_vec_q_switch_type(
-        src0->data, src0->type, src1_q8_1.get(), ids_d, fusion_local, dst_d, ne00,
-        ne01,              ncols_dst,     s01, stride_col_y,     stride_col_dst,
+        src0->data, src0->type, src1_q8_1, ids_d, fusion_local, dst_d, ne00,
+        nrows_x,           ncols_dst,     s01, stride_col_y,     stride_col_dst,
         ne02, nchannels_y, nchannels_dst, s02, stride_channel_y, stride_channel_dst,
         ne03,              ne3,           s03, s13,              s3,               ids_stride, stream);
 }

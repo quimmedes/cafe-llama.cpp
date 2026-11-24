@@ -371,6 +371,12 @@ extern "C" {
         GGML_OP_RMS_NORM_BACK,
         GGML_OP_GROUP_NORM,
         GGML_OP_L2_NORM,
+        GGML_OP_L2_CLIP,
+        GGML_OP_STATE_MIX,
+        GGML_OP_LOOP_GATE,
+        GGML_OP_LOOP_CONTROL,
+        GGML_OP_REL_MASK,
+        GGML_OP_SHORT_CONV,
 
         GGML_OP_MUL_MAT,
         GGML_OP_MUL_MAT_ID,
@@ -494,6 +500,7 @@ extern "C" {
         GGML_GLU_OP_GEGLU_ERF,
         GGML_GLU_OP_GEGLU_QUICK,
         GGML_GLU_OP_SWIGLU_CLAMP,
+        GGML_GLU_OP_SITU,
 
         GGML_GLU_OP_COUNT,
     };
@@ -1227,6 +1234,14 @@ extern "C" {
             struct ggml_tensor  * b,
             float                 limit);
 
+    // beta*tanh(a/beta)*sigmoid(a) * lb*tanh(b/lb), the softcapped SwiGLU of Inkling
+    GGML_API struct ggml_tensor * ggml_situ_split(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * b,
+            float                 beta,
+            float                 lb);
+
     // normalize along rows
     GGML_API struct ggml_tensor * ggml_norm(
             struct ggml_context * ctx,
@@ -1273,6 +1288,68 @@ extern "C" {
             struct ggml_context * ctx,
             struct ggml_tensor  * a,
             float                 eps);
+
+    // scale each row of a*s down to an L2 norm of at most threshold: a*s*clamp(threshold/(||a*s|| + eps), 0, 1)
+    // s is optional, broadcast to a
+    GGML_API struct ggml_tensor * ggml_l2_clip(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * a,
+            struct ggml_tensor  * s,
+            float                 threshold,
+            float                 eps);
+
+    // attention over a stack of states, per token: out[:, i] = sum_j softmax_j(scale*<rms_norm(s_j), q[:, i]>)*rms_norm(s_j)
+    // q: [n, n_q], states: n_states tensors [n, n_tokens] (at most GGML_MAX_SRC - 1), result: [n, n_q, n_tokens]
+    GGML_API struct ggml_tensor * ggml_state_mix(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor ** states,
+            int                   n_states,
+            float                 scale,
+            float                 eps);
+
+    // gated update: x - tanh(f)*x + tanh(g)*m, all of the shape of x
+    GGML_API struct ggml_tensor * ggml_loop_gate(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * x,
+            struct ggml_tensor  * m,
+            struct ggml_tensor  * g,
+            struct ggml_tensor  * f);
+
+    // gated update by a low-rank controller: z = w_down*[rms_norm(x); rms_norm(m)], then x - tanh(w_forget*z)*x + tanh(w_gain*z)*m
+    // x, m: [n, n_tokens], w_down: [2*n, r], w_gain, w_forget: [r, n], result: [n, n_tokens]
+    GGML_API struct ggml_tensor * ggml_loop_control(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * x,
+            struct ggml_tensor  * m,
+            struct ggml_tensor  * w_down,
+            struct ggml_tensor  * w_gain,
+            struct ggml_tensor  * w_forget,
+            float                 eps);
+
+    // causal short convolution with a residual: scale*(x_t + sum_j c[j]*x_{t-K+1+j} + sum_lag d[lag, head]*x_{t-lag}), x = [past | cur] per channel
+    // past: [K - 1, n_c, n_s] the earlier inputs of each sequence, cur: [n_t, n_c, n_s] the new ones (both may be strided), c: [K, n_c]
+    // d (optional): [K*n_heads, n_t*n_s] per-token taps of each head of n_c/n_heads channels, result: [n_c, n_t, n_s]
+    GGML_API struct ggml_tensor * ggml_short_conv(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * past,
+            struct ggml_tensor  * cur,
+            struct ggml_tensor  * c,
+            struct ggml_tensor  * d,
+            float                 scale);
+
+    // attention mask of heads [h0, h0 + nh) with a relative-position bias, for token t = r + s*n_rows:
+    // result[kv, r, h, s] = mask[kv, r, 0, s] + (0 <= d < E ? table[d, h0 + h, t] : 0) - (sinks ? sinks[h0 + h, t] : 0), d = dist[kv, t]
+    // table: [E, n_head, n_tokens] F32, dist: [n_kv, n_tokens] I32, sinks: [n_head, n_tokens] F32, mask: [n_kv, n_rows, 1, n_stream] F16 or F32
+    // result: [n_kv, n_rows, nh, n_stream] of the mask type
+    GGML_API struct ggml_tensor * ggml_rel_mask(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * table,
+            struct ggml_tensor  * dist,
+            struct ggml_tensor  * sinks,
+            struct ggml_tensor  * mask,
+            int                   h0,
+            int                   nh);
 
     // a - x
     // b - dy

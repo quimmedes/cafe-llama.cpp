@@ -47,6 +47,12 @@ void ggml_compute_forward_rms_norm_mul_fused(const struct ggml_compute_params * 
 void ggml_compute_forward_rms_norm_back(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_group_norm(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_l2_norm(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_l2_clip(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_state_mix(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_loop_gate(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_loop_control(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_rel_mask(const struct ggml_compute_params * params, struct ggml_tensor * dst);
+void ggml_compute_forward_short_conv(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_out_prod(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_scale(const struct ggml_compute_params * params, struct ggml_tensor * dst);
 void ggml_compute_forward_set(const struct ggml_compute_params * params, struct ggml_tensor * dst);

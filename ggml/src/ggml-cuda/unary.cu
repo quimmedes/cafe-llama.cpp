@@ -555,6 +555,54 @@ void ggml_cuda_op_swiglu_clamp(ggml_backend_cuda_context & ctx, ggml_tensor * ds
     }
 }
 
+// situ: beta*tanh(g/beta)*sigmoid(g) * lb*tanh(u/lb)
+
+static __global__ void situ_kernel(const float * g, const float * u, float * dst, const int64_t k, const int64_t n,
+        const int64_t o0, const int64_t o1, const float beta, const float lb) {
+    const int64_t i = int64_t(blockDim.x)*blockIdx.x + threadIdx.x;
+    if (i >= k) {
+        return;
+    }
+    const int64_t j0 = (i / n) * o0 + (i % n);
+    const int64_t j1 = o0 == o1 ? j0 : (i / n) * o1 + (i % n);
+
+    const float gi  = g[j0];
+    const float ui  = u[j1];
+    const float act = tanhf(gi*(1.0f/beta))*beta * (1.0f/(1.0f + expf(-gi)));
+    const float up  = lb > 0.0f ? tanhf(ui*(1.0f/lb))*lb : ui;
+    dst[i] = act*up;
+}
+
+void ggml_cuda_op_situ(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
+    const ggml_tensor * src0 = dst->src[0];
+    const ggml_tensor * src1 = dst->src[1];
+    const int64_t nc = src1 ? src0->ne[0] : src0->ne[0] / 2;
+
+    GGML_ASSERT(ggml_is_contiguous_1(src0) && src0->nb[0] == sizeof(float) && ggml_is_contiguous(dst));
+    GGML_ASSERT(src0->type == GGML_TYPE_F32 && dst->type == GGML_TYPE_F32);
+    GGML_ASSERT(dst->ne[0] == nc && ggml_nrows(dst) == ggml_nrows(src0));
+    if (src1) {
+        GGML_ASSERT(ggml_is_contiguous_1(src1) && src1->nb[0] == sizeof(float) && src1->ne[0] == nc && src1->type == GGML_TYPE_F32);
+    }
+
+    const int32_t swapped = ggml_get_op_params_i32(dst, 1);
+    const float beta = ggml_get_op_params_f32(dst, 2);
+    const float lb   = ggml_get_op_params_f32(dst, 3);
+
+    const float * g = (const float *) src0->data;
+    const float * u = (const float *) (src1 ? src1->data : src0->data);
+    if (!src1) {
+        g += swapped ? nc : 0;
+        u += swapped ? 0 : nc;
+    }
+    const int64_t o0 = src0->nb[1] / sizeof(float);
+    const int64_t o1 = src1 ? src1->nb[1] / sizeof(float) : o0;
+
+    const int64_t k = ggml_nelements(dst);
+    const int64_t num_blocks = (k + CUDA_GLU_BLOCK_SIZE - 1) / CUDA_GLU_BLOCK_SIZE;
+    situ_kernel<<<num_blocks, CUDA_GLU_BLOCK_SIZE, 0, ctx.stream()>>>(g, u, (float *) dst->data, k, nc, o0, o1, beta, lb);
+}
+
 /* CUDA kernel + launcher for xIELU */
 
 template <typename T>
