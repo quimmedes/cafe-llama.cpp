@@ -5621,7 +5621,7 @@ struct test_gated_delta_net : public test_case {
             int v_repeat = 1, bool permuted = false, bool kda = false, bool correlated = false, bool padded_v = false, bool padded_q = false, bool permuted_k = false, float g_min = -20.0f,
             bool rows_mode = false, int64_t cache_rows = -1, bool raw_gates = false, bool tree = false, int64_t K = 1)
         : type(type), head_count(head_count), head_size(head_size), n_seq_tokens(n_seq_tokens), n_seqs(n_seqs),
-          v_repeat(v_repeat), permuted(permuted), kda(kda), correlated(correlated), padded_v(padded_v), padded_q(padded_q), permuted_k(permuted_k), g_min(g_min), rows_mode(rows_mode), cache_rows(cache_rows), raw_gates(raw_gates), tree(tree), K(K) {}
+          v_repeat(v_repeat), permuted(permuted), kda(kda), K(K), correlated(correlated), padded_v(padded_v), padded_q(padded_q), permuted_k(permuted_k), g_min(g_min), rows_mode(rows_mode), cache_rows(cache_rows), raw_gates(raw_gates), tree(tree) {}
 
     template <typename T, typename = std::enable_if_t<std::is_integral_v<T> && !std::is_same_v<std::decay_t<T>, bool>>>
     test_gated_delta_net(ggml_type type, int64_t head_count, int64_t head_size, int64_t n_seq_tokens, int64_t n_seqs,

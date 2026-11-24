@@ -164,6 +164,8 @@ ggml_tensor * llama_model_bailingmoe3::graph::build_causal_conv1d(
         llm_graph_input_rs * inp_rs, ggml_tensor * conv_states_all, ggml_tensor * conv_state_all,
         int64_t qkv, ggml_tensor * x, ggml_tensor * proj_w, ggml_tensor * conv_w,
         int64_t d_conv, int64_t head_dim, int64_t n_head, int64_t n_seq_tokens, int64_t n_seqs, int il) {
+    GGML_UNUSED(il);
+
     const int64_t d_inner = head_dim * n_head;
     const int64_t conv_state_size = (d_conv - 1) * d_inner;
     const int64_t total_state_size = 3 * conv_state_size;
