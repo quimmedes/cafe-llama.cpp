@@ -306,15 +306,16 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # CTK >= 13.5 bundles CCCL >= 3.5; omit GGML_CUDA_CCCL_VERSION for those versions
           - cuda: '12.4'
             arch: x64
             defines: '-DGGML_CUDA_CCCL_VERSION=v3.4.3'
-          - cuda: '13.4'
+          - cuda: '13.5'
             arch: x64
-            defines: '-DGGML_CUDA_CCCL_VERSION=v3.4.3'
-          - cuda: '13.4'
+            defines: ''
+          - cuda: '13.5'
             arch: arm64
-            defines: '-DGGML_CUDA_CCCL_VERSION=v3.4.3 -DCMAKE_TOOLCHAIN_FILE=cmake/arm64-windows-msvc-cuda.cmake'
+            defines: '-DCMAKE_TOOLCHAIN_FILE=cmake/arm64-windows-msvc-cuda.cmake'
 
     steps:
       - name: Clone
@@ -723,8 +724,8 @@ jobs:
           ls -lh release/
           expected=(
             "cudart-llama-bin-win-cuda-12.4-x64.zip"
-            "cudart-llama-bin-win-cuda-13.4-x64.zip"
-            "cudart-llama-bin-win-cuda-13.4-arm64.zip"
+            "cudart-llama-bin-win-cuda-13.5-x64.zip"
+            "cudart-llama-bin-win-cuda-13.5-arm64.zip"
             "llama-${{ steps.tag.outputs.name }}-bin-linux-cuda-12.4-x64.tar.gz"
             "llama-${{ steps.tag.outputs.name }}-bin-linux-cuda-12.8-x64.tar.gz"
             "llama-${{ steps.tag.outputs.name }}-bin-linux-cuda-13.3-x64.tar.gz"
@@ -738,8 +739,8 @@ jobs:
             "llama-${{ steps.tag.outputs.name }}-bin-win-cpu-arm64.zip"
             "llama-${{ steps.tag.outputs.name }}-bin-win-cpu-x64.zip"
             "llama-${{ steps.tag.outputs.name }}-bin-win-cuda-12.4-x64.zip"
-            "llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.4-x64.zip"
-            "llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.4-arm64.zip"
+            "llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.5-x64.zip"
+            "llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.5-arm64.zip"
             "llama-${{ steps.tag.outputs.name }}-bin-win-vulkan-x64.zip"
             "llama-${{ steps.tag.outputs.name }}-bin-ubuntu-rocm-10.0-x64.tar.gz"
             "llama-${{ steps.tag.outputs.name }}-bin-win-rocm-10.0-x64.zip"
@@ -782,8 +783,8 @@ jobs:
 
           **Windows (CUDA):**
           - [Windows x64 (CUDA 12.4)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-cuda-12.4-x64.zip) - [CUDA runtime DLLs](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/cudart-llama-bin-win-cuda-12.4-x64.zip)
-          - [Windows x64 (CUDA 13.4)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.4-x64.zip) - [CUDA runtime DLLs](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/cudart-llama-bin-win-cuda-13.4-x64.zip)
-          - [Windows arm64 (CUDA 13.4)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.4-arm64.zip) - [CUDA runtime DLLs](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/cudart-llama-bin-win-cuda-13.4-arm64.zip)
+          - [Windows x64 (CUDA 13.5)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.5-x64.zip) - [CUDA runtime DLLs](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/cudart-llama-bin-win-cuda-13.5-x64.zip)
+          - [Windows arm64 (CUDA 13.5)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-win-cuda-13.5-arm64.zip) - [CUDA runtime DLLs](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/cudart-llama-bin-win-cuda-13.5-arm64.zip)
 
           **Linux (ROCm):**
           - [Ubuntu x64 (ROCm 10.0)](https://github.com/${{ github.repository }}/releases/download/${{ steps.tag.outputs.name }}/llama-${{ steps.tag.outputs.name }}-bin-ubuntu-rocm-10.0-x64.tar.gz)
