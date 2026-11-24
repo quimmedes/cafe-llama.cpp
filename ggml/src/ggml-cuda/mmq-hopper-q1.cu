@@ -41,7 +41,7 @@ __global__ void quant_act_per128(const float * __restrict__ x,
     float          amax = fmaxf(fmaxf(fabsf(v.x), fabsf(v.y)), fmaxf(fabsf(v.z), fabsf(v.w)));
 #    pragma unroll
     for (int o = 16; o > 0; o >>= 1) {
-        amax = fmaxf(amax, __shfl_xor_sync(0xffffffff, amax, o));
+        amax = fmaxf(amax, __shfl_xor_sync(GGML_CUDA_FULL_THREAD_MASK, amax, o));
     }
     const float scale = amax / 127.0f;
     const float inv   = scale > 0.f ? 1.0f / scale : 0.f;

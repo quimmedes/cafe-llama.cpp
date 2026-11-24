@@ -91,7 +91,7 @@ static __device__ __forceinline__ void fwht_rows_row(const fwht_rows_params & p,
 #pragma unroll
         for (int j = 0; j < el_w; j++) {
             const float val  = reg[j];
-            const float val2 = __shfl_xor_sync(0xffffffff, val, hh, WARP_SIZE);
+            const float val2 = __shfl_xor_sync(GGML_CUDA_FULL_THREAD_MASK, val, hh, WARP_SIZE);
             reg[j] = (lane & hh) == 0 ? val + val2 : val2 - val;
         }
     }
