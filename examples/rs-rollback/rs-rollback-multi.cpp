@@ -115,42 +115,38 @@ int main(int argc, char ** argv) {
         }
         llama_memory_t mem = llama_get_memory(ctx);
 
-        llama_batch      batch = llama_batch_init(512, 0, n_seqs);
+        llama_batch_ext * batch = llama_batch_ext_init(ctx);
         std::vector<int> npos(n_seqs, 0);
 
         auto submit = [&](const std::vector<std::pair<int, llama_token>> & items) -> bool {
-            batch.n_tokens = 0;
+            llama_batch_ext_clear(batch);
             for (auto & it : items) {
-                const int s        = it.first;
-                const int i        = batch.n_tokens;
-                batch.token[i]     = it.second;
-                batch.pos[i]       = npos[s];
-                batch.n_seq_id[i]  = 1;
-                batch.seq_id[i][0] = s;
-                batch.logits[i]    = 1;
-                batch.n_tokens++;
+                const int       s   = it.first;
+                const int32_t   idx = llama_batch_ext_add_token(batch, s, it.second);
+                const llama_pos pos = npos[s];
+                llama_batch_ext_set_pos(batch, idx, &pos);
+                llama_batch_ext_set_output_logits(batch, idx, true);
                 npos[s]++;
             }
-            return llama_decode(ctx, batch) == 0;
+            return llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch) == 0;
         };
 
         // prompts: one sequence at a time (each is a multi-token ubatch)
         for (int s = 0; s < n_seqs; s++) {
-            batch.n_tokens = 0;
+            llama_batch_ext_clear(batch);
+            int32_t last = -1;
             for (size_t k = 0; k < ptoks[s].size(); k++) {
-                batch.token[batch.n_tokens]     = ptoks[s][k];
-                batch.pos[batch.n_tokens]       = npos[s];
-                batch.n_seq_id[batch.n_tokens]  = 1;
-                batch.seq_id[batch.n_tokens][0] = s;
-                batch.logits[batch.n_tokens]    = (k + 1 == ptoks[s].size());
-                batch.n_tokens++;
+                last = llama_batch_ext_add_token(batch, s, ptoks[s][k]);
+                const llama_pos pos = npos[s];
+                llama_batch_ext_set_pos(batch, last, &pos);
+                llama_batch_ext_set_output_logits(batch, last, k + 1 == ptoks[s].size());
                 npos[s]++;
             }
-            if (llama_decode(ctx, batch)) {
+            if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch)) {
                 fprintf(stderr, "decode(prompt %d) failed\n", s);
                 return false;
             }
-            out[s].push_back(greedy_ith(ctx, vocab, batch.n_tokens - 1));
+            out[s].push_back(greedy_ith(ctx, vocab, last));
         }
 
         int since = 0;
@@ -200,7 +196,7 @@ int main(int argc, char ** argv) {
             }
         }
 
-        llama_batch_free(batch);
+        llama_batch_ext_free(batch);
         llama_free(ctx);
         return true;
     };

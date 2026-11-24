@@ -18,6 +18,23 @@
 #include <string>
 #include <vector>
 
+static void batch_tokens(llama_batch_ext * batch, const llama_token * tokens, int32_t n_tokens, llama_pos pos_0) {
+    llama_batch_ext_clear(batch);
+    for (int32_t i = 0; i < n_tokens; i++) {
+        const int32_t   idx = llama_batch_ext_add_token(batch, 0, tokens[i]);
+        const llama_pos pos = pos_0 + i;
+        llama_batch_ext_set_pos(batch, idx, &pos);
+    }
+    llama_batch_ext_set_output_logits(batch, n_tokens - 1, true);
+}
+
+static void batch_one(llama_batch_ext * batch, llama_token tok, llama_pos pos) {
+    llama_batch_ext_clear(batch);
+    const int32_t idx = llama_batch_ext_add_token(batch, 0, tok);
+    llama_batch_ext_set_pos(batch, idx, &pos);
+    llama_batch_ext_set_output_logits(batch, idx, true);
+}
+
 static llama_token greedy(llama_context * ctx, const llama_vocab * vocab) {
     const int     n_vocab = llama_vocab_n_tokens(vocab);
     const float * logits  = llama_get_logits_ith(ctx, -1);
@@ -91,8 +108,9 @@ int main(int argc, char ** argv) {
         }
         llama_memory_t mem = llama_get_memory(ctx);
 
-        llama_batch batch = llama_batch_get_one(ptoks.data(), ptoks.size());
-        if (llama_decode(ctx, batch)) {
+        llama_batch_ext * batch = llama_batch_ext_init(ctx);
+        batch_tokens(batch, ptoks.data(), (int32_t) ptoks.size(), 0);
+        if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch)) {
             fprintf(stderr, "decode(prompt) failed\n");
             return false;
         }
@@ -103,8 +121,8 @@ int main(int argc, char ** argv) {
             llama_token tok = greedy(ctx, vocab);
             out.push_back(tok);
 
-            batch = llama_batch_get_one(&tok, 1);
-            if (llama_decode(ctx, batch)) {
+            batch_one(batch, tok, n_pos);
+            if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch)) {
                 fprintf(stderr, "decode failed\n");
                 return false;
             }
@@ -116,8 +134,8 @@ int main(int argc, char ** argv) {
                 // over-generate `rewind` tokens, then throw them away
                 for (int r = 0; r < rewind; r++) {
                     llama_token t = greedy(ctx, vocab);
-                    batch         = llama_batch_get_one(&t, 1);
-                    if (llama_decode(ctx, batch)) {
+                    batch_one(batch, t, n_pos);
+                    if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch)) {
                         fprintf(stderr, "decode(draft) failed\n");
                         return false;
                     }
@@ -134,8 +152,8 @@ int main(int argc, char ** argv) {
                 }
                 n_pos = keep;
 
-                batch = llama_batch_get_one(&out.back(), 1);
-                if (llama_decode(ctx, batch)) {
+                batch_one(batch, out.back(), keep);
+                if (llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch)) {
                     fprintf(stderr, "decode(replay) failed\n");
                     return false;
                 }
@@ -143,6 +161,7 @@ int main(int argc, char ** argv) {
                 since = 0;
             }
         }
+        llama_batch_ext_free(batch);
         llama_free(ctx);
         return true;
     };
