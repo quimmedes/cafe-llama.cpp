@@ -471,6 +471,16 @@ static topk_moe_config topk_moe_config_of(const ggml_tensor * clamp, const ggml_
 // the blocks of a router launch that are done, the last one sets it back to 0
 static __device__ unsigned int topk_moe_router_done;
 
+// the router logits are written by another block, so the load must skip the L1 a plain load hits;
+// HIP has no __ldcg for float, and its cached loads may serve a line read before that write
+static __device__ __forceinline__ float topk_moe_ldcg(const float * p) {
+#ifdef GGML_USE_HIP
+    return *(volatile const float *) p;
+#else
+    return __ldcg(p);
+#endif
+}
+
 // one token: TOPK_MOE_ROUTER_SPLIT warps a router row (logits[e] = w row e . x), then the last block to finish picks the experts
 template <int n_experts, bool has_bias>
 __launch_bounds__(TOPK_MOE_ROUTER_WARPS * WARP_SIZE, 1)
@@ -530,7 +540,7 @@ __global__ void topk_moe_router_cuda(const float * w, const int64_t w_s1, const 
 #pragma unroll
     for (int i = 0; i < experts_per_thread; i++) {
         const int expert = i*WARP_SIZE + lane;
-        wt[i] = expert < n_experts ? __ldcg(logits + expert) : -INFINITY;
+        wt[i] = expert < n_experts ? topk_moe_ldcg(logits + expert) : -INFINITY;
     }
     topk_moe_select<n_experts, has_bias>(wt, weights, ids, bias, n_expert_used, clamp_val, scale_val, config);
 }
