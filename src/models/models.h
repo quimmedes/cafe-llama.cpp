@@ -2254,7 +2254,7 @@ struct llama_model_bailingmoe3 : public llama_model_base {
         // causal conv1d over one of Q/K/V, qkv selects which third of the conv state row is used
         ggml_tensor * build_causal_conv1d(llm_graph_input_rs * inp_rs, ggml_tensor * conv_states_all, ggml_tensor * conv_state_all,
                                           int64_t qkv, ggml_tensor * x, ggml_tensor * proj_w, ggml_tensor * conv_w,
-                                          int64_t d_conv, int64_t head_dim, int64_t n_head, int64_t n_seq_tokens, int64_t n_seqs);
+                                          int64_t d_conv, int64_t head_dim, int64_t n_head, int64_t n_seq_tokens, int64_t n_seqs, int il);
     };
 
     struct graph_mtp : public llm_graph_context {
@@ -2985,7 +2985,7 @@ struct llama_model_clef : public llama_model_qwen35 {
                  input_decision * inp);
 
         ggml_tensor * build_head_norm(ggml_tensor * cur, const norm & n);
-        ggml_tensor * build_head_attn(ggml_tensor * q, ggml_tensor * kv, const attn & a);
+        ggml_tensor * build_head_attn(ggml_tensor * q, ggml_tensor * kv, const attn & a, ggml_tensor * kq_mask = nullptr);
         ggml_tensor * build_head_ffn (ggml_tensor * cur, const head_layer & layer);
 
         const llama_model_clef & model;
@@ -3231,7 +3231,7 @@ struct llama_model_kimi_k3 : public llama_model_base {
         // causal conv1d over one of Q/K/V, qkv selects which third of the conv state row is used
         ggml_tensor * build_kda_conv1d(llm_graph_input_rs * inp_rs, ggml_tensor * conv_states_all, ggml_tensor * conv_state_all,
                                        int64_t qkv, ggml_tensor * x, ggml_tensor * proj_w, ggml_tensor * conv_w,
-                                       int64_t d_conv, int64_t head_dim, int64_t n_head_kda, int64_t n_seq_tokens, int64_t n_seqs);
+                                       int64_t d_conv, int64_t head_dim, int64_t n_head_kda, int64_t n_seq_tokens, int64_t n_seqs, int il);
 
         ggml_tensor * build_mla_layer(ggml_tensor * cur, const llama_layer & layer,
                                       llm_graph_input_attn_k  * inp_attn_k,
@@ -3268,7 +3268,7 @@ struct llama_model_kimi_k31 : public llama_model_base {
                                        ggml_tensor * conv_states_all, ggml_tensor * conv_state_all,
                                        int64_t qkv, ggml_tensor * x, ggml_tensor * proj_w, ggml_tensor * conv_w,
                                        int64_t d_conv, int64_t head_dim, int64_t n_head_kda,
-                                       int64_t n_seq_tokens, int64_t n_seqs);
+                                       int64_t n_seq_tokens, int64_t n_seqs, int il);
 
         ggml_tensor * build_kda_layer(ggml_tensor * cur, const llama_layer & layer,
                                       llm_graph_input_rs * inp_rs,
@@ -3358,7 +3358,7 @@ struct llama_model_glm5_next : public llama_model_base {
         // causal conv1d over one of Q/K/V, qkv selects which third of the conv state row is used
         ggml_tensor * build_kda_conv1d(llm_graph_input_rs * inp_rs, ggml_tensor * conv_states_all, ggml_tensor * conv_state_all,
                                        int64_t qkv, ggml_tensor * x, ggml_tensor * proj_w, ggml_tensor * conv_w,
-                                       int64_t d_conv, int64_t head_dim, int64_t n_head_kda, int64_t n_seq_tokens, int64_t n_seqs);
+                                       int64_t d_conv, int64_t head_dim, int64_t n_head_kda, int64_t n_seq_tokens, int64_t n_seqs, int il);
 
         ggml_tensor * build_kpool_select(ggml_tensor * cur, ggml_tensor * qr, const llama_layer & layer,
                                          const llama_memory_hybrid_idx_context * mctx_hyb, llm_graph_input_kpool * inp_kpool, int il);
