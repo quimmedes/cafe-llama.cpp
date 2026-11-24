@@ -169,37 +169,30 @@ static std::vector<float> run_forward(llama_context *              ctx,
     }
     llama_set_dspark_ctx(ctx, ctx_feat.data(), n_ctx_rows, n_embd_cap, ctx_pos.data());
 
-    const int32_t n_tokens = (int32_t) n_ctx_rows + block_size;
-    llama_batch   batch    = llama_batch_init(n_tokens, 0, 1);
-    batch.n_tokens         = n_tokens;
+    llama_batch_ext * batch = llama_batch_ext_init(ctx);
 
     for (int32_t i = 0; i < (int32_t) n_ctx_rows; ++i) {
-        batch.token[i]     = 0;  // dummy: unused (context rows never join the trunk/embedding path)
-        batch.pos[i]       = ctx_pos[i];
-        batch.n_seq_id[i]  = 1;
-        batch.seq_id[i][0] = 0;
-        batch.logits[i]    = 0;
+        const int32_t idx = llama_batch_ext_add_token(batch, 0, 0); // dummy: unused (context rows never join the trunk/embedding path)
+        llama_batch_ext_set_pos(batch, idx, &ctx_pos[i]);
+        llama_batch_ext_set_output_logits(batch, idx, false);
     }
     for (int32_t j = 0; j < block_size; ++j) {
-        const int32_t i    = (int32_t) n_ctx_rows + j;
-        batch.token[i]     = draft_tokens[j];
-        batch.pos[i]       = draft_pos[j];
-        batch.n_seq_id[i]  = 1;
-        batch.seq_id[i][0] = 0;
-        batch.logits[i]    = j < output_rows;
+        const int32_t idx = llama_batch_ext_add_token(batch, 0, draft_tokens[j]);
+        llama_batch_ext_set_pos(batch, idx, &draft_pos[j]);
+        llama_batch_ext_set_output_logits(batch, idx, j < output_rows);
     }
 
     int32_t rc;
     try {
-        rc = llama_decode(ctx, batch);
+        rc = llama_process(ctx, LLAMA_PROCESS_TYPE_DECODE, batch);
     } catch (...) {
-        llama_batch_free(batch);
+        llama_batch_ext_free(batch);
         llama_set_dspark_ctx(ctx, nullptr, 0, 0, nullptr);
         throw;
     }
-    llama_batch_free(batch);
+    llama_batch_ext_free(batch);
     if (rc != 0) {
-        fail("llama_decode returned " + std::to_string(rc));
+        fail("llama_process returned " + std::to_string(rc));
     }
 
     llama_set_dspark_ctx(ctx, nullptr, 0, 0, nullptr);  // clear staged context
