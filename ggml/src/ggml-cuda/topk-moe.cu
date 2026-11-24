@@ -553,6 +553,19 @@ bool ggml_cuda_op_topk_moe_router(ggml_backend_cuda_context &     ctx,
                                   const ggml_tensor *             scale,
                                   const ggml_tensor *             bias,
                                   const ggml_cuda_topk_moe_args & args) {
+#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
+    // the router kernel is laid out for a 32-wide warp (see the width check below), and the rows
+    // kernel already handles these devices
+    GGML_UNUSED(ctx);
+    GGML_UNUSED(router);
+    GGML_UNUSED(weights);
+    GGML_UNUSED(ids);
+    GGML_UNUSED(clamp);
+    GGML_UNUSED(scale);
+    GGML_UNUSED(bias);
+    GGML_UNUSED(args);
+    return false;
+#else
     const ggml_tensor * w = router->src[0];
     const ggml_tensor * x = router->src[1];
     const int n_experts = router->ne[0];
@@ -585,6 +598,7 @@ bool ggml_cuda_op_topk_moe_router(ggml_backend_cuda_context &     ctx,
         default: return false;
     }
     return true;
+#endif // defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
 }
 
 void ggml_cuda_op_topk_moe(ggml_backend_cuda_context &     ctx,
